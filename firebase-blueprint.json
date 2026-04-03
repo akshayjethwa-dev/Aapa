@@ -1,0 +1,36 @@
+{
+  "entities": {
+    "beta_users": {
+      "title": "Beta Users Whitelist",
+      "description": "A list of users allowed to access the beta version of the app.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "The email address of the whitelisted user."
+        },
+        "mobile": {
+          "type": "string",
+          "description": "The mobile number of the whitelisted user."
+        },
+        "is_approved": {
+          "type": "boolean",
+          "description": "Whether the user is approved for beta access."
+        },
+        "added_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the user was added to the whitelist."
+        }
+      },
+      "required": ["email", "is_approved"]
+    }
+  },
+  "firestore": {
+    "/beta_users/{userId}": {
+      "schema": "beta_users",
+      "description": "Collection of whitelisted beta users."
+    }
+  }
+}

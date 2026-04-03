@@ -1,0 +1,9 @@
+{
+  "name": "AAPA CAPITAL",
+  "description": "A professional fintech stock trading platform for the Indian market, featuring real-time market data and comprehensive portfolio management.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}
