@@ -6,3 +6,8 @@ coverage/
 *.log
 .env*
 !.env.example
+.env.example
+"sqlite.db" 
+"server_log.txt" 
+"*.db" 
+".env" 

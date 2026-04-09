@@ -1,36 +1,20 @@
-import Database from "better-sqlite3";
-import bcrypt from "bcryptjs";
+import bcrypt from 'bcrypt';
+import { db } from './src/db'; // your DB connection
 
-const db = new Database("sqlite.db");
+const adminEmail = process.env.ADMIN_EMAIL;
+const adminPassword = process.env.ADMIN_PASSWORD;
 
-async function seed() {
-  const admins = [
-    { email: "bharvadvijay371@gmail.com", password: "Aniket@371" },
-    { email: "dwarkeshtrading7@gmail.com", password: "Aniket@371" }
-  ];
-
-  for (const admin of admins) {
-    const hashedPassword = await bcrypt.hash(admin.password, 10);
-    try {
-      db.prepare("INSERT OR IGNORE INTO users (email, password, role, balance) VALUES (?, ?, ?, ?)").run(
-        admin.email, 
-        hashedPassword, 
-        'admin',
-        100000
-      );
-      console.log(`Admin user created: ${admin.email}`);
-    } catch (e) {
-      db.prepare("UPDATE users SET role = 'admin' WHERE email = ?").run(admin.email);
-      console.log(`User ${admin.email} promoted to admin`);
-    }
-
-    try {
-      db.prepare("INSERT OR IGNORE INTO beta_whitelist (identifier, is_approved) VALUES (?, 1)").run(admin.email);
-      console.log(`Admin ${admin.email} added to beta whitelist`);
-    } catch (e) {
-      console.log(`Admin ${admin.email} already in whitelist`);
-    }
-  }
+if (!adminEmail || !adminPassword) {
+  console.error('ADMIN_EMAIL and ADMIN_PASSWORD env vars are required');
+  process.exit(1);
 }
 
-seed();
+const passwordHash = await bcrypt.hash(adminPassword, 12);
+
+await db.run(
+  `INSERT OR IGNORE INTO users (email, password_hash, role, is_approved) 
+   VALUES (?, ?, 'admin', 1)`,
+  [adminEmail, passwordHash]
+);
+
+console.log(`Admin user created: ${adminEmail}`);
