@@ -11,3 +11,9 @@ coverage/
 "server_log.txt" 
 "*.db" 
 ".env" 
+.env
+# Database files
+*.db
+sqlite.db
+*.sqlite
+*.sqlite3
