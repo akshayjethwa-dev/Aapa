@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { ChevronDown, RefreshCw, Activity, Zap, TrendingDown } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useAuthStore } from '../store/authStore';
+import { apiClient } from '../api/client'; // <-- Import apiClient
 
 interface OptionData {
   strike: number;
@@ -47,12 +48,10 @@ const OptionChain: React.FC<OptionChainProps> = ({ onPlaceOrder, stocks = {}, fu
           'FINNIFTY': 'NSE_INDEX|Nifty Fin Service'
         };
         const instrumentKey = indexMap[symbol] || `NSE_INDEX|${symbol}`;
-        const response = await fetch(`/api/option-chain?instrument_key=${encodeURIComponent(instrumentKey)}&expiry_date=${expiry}`, {
-          headers: {
-            'Authorization': `Bearer ${token}`
-          }
-        });
-        const data = await response.json();
+        
+        // --> USING APICLIENT (No manual headers needed!)
+        const response = await apiClient.get(`/api/option-chain?instrument_key=${encodeURIComponent(instrumentKey)}&expiry_date=${expiry}`);
+        const data = response.data; // Axios puts JSON in .data
         
         if (data.status === 'success' && data.data) {
           const formattedData: OptionData[] = data.data.map((item: any) => ({
@@ -95,13 +94,11 @@ const OptionChain: React.FC<OptionChainProps> = ({ onPlaceOrder, stocks = {}, fu
     const strikeInterval = symbol.includes('BANKNIFTY') ? 100 : 50;
     const atmStrike = Math.round(spotPrice / strikeInterval) * strikeInterval;
 
-    // Find ATM index or closest
     const atmIdx = options.findIndex(opt => opt.strike === atmStrike);
     
     if (atmIdx !== -1) {
       return options.slice(Math.max(0, atmIdx - 1), Math.min(options.length, atmIdx + 2));
     } else {
-      // If exact ATM strike not found in data, find the closest one
       let closestIdx = 0;
       let minDiff = Math.abs(options[0].strike - spotPrice);
       

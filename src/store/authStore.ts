@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { apiClient } from '../api/client'; // <-- Import apiClient
 
 interface User {
   id: number;
@@ -42,13 +43,17 @@ export const useAuthStore = create<AuthState>((set) => ({
     }
     set({ user, token });
   },
-  logout: () => {
+  logout: async () => {
     try {
+      // Hit backend to clear the HTTP-only refresh cookie
+      await apiClient.post('/api/auth/logout').catch(() => {});
       localStorage.removeItem('user');
       localStorage.removeItem('token');
     } catch (e) {
       console.error("Failed to remove auth from localStorage", e);
     }
     set({ user: null, token: null });
+    // Force a full reload to clear any residual states/interceptors
+    window.location.href = '/';
   },
 }));

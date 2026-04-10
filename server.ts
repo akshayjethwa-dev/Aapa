@@ -8,6 +8,7 @@ import path from "path";
 import fs from "fs/promises";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
+import cookieParser from "cookie-parser"; // <-- Added cookie-parser
 
 // Import PostgreSQL Database setup
 import { pool, query } from "./src/db/index"; 
@@ -17,14 +18,23 @@ const __dirname = path.dirname(__filename);
 
 dotenv.config();
 
-
 // Run Migration & Seed Admin
 const initDbAndSeed = async () => {
   try {
     const schemaPath = path.join(__dirname, "migrations", "001_initial_schema.sql");
     const schema = await fs.readFile(schemaPath, "utf8");
     await pool.query(schema);
-    console.log("[DB] PostgreSQL Schema initialized successfully.");
+    console.log("[DB] PostgreSQL Schema 001 initialized successfully.");
+
+    // Run Audit & Compliance Migration
+    try {
+      const migration2Path = path.join(__dirname, "migrations", "002_add_audit_compliance_fields.sql");
+      const migration2 = await fs.readFile(migration2Path, "utf8");
+      await pool.query(migration2);
+      console.log("[DB] PostgreSQL Schema 002 (Audit Fields) applied successfully.");
+    } catch (migErr) {
+      console.log("[DB] Skipping Migration 002: File not found or error.", migErr);
+    }
 
     const admins = [
       { email: "bharvadvijay371@gmail.com", password: "Aniket@371" },
@@ -74,6 +84,7 @@ async function startServer() {
   });
 
   app.use(express.json());
+  app.use(cookieParser()); // <-- Initialized cookie parser middleware
 
   app.use((req, res, next) => {
     console.log(`[HTTP] ${req.method} ${req.url}`);
@@ -81,6 +92,7 @@ async function startServer() {
   });
 
   const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret";
+  const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || "fallback-refresh-secret"; // <-- Added Refresh Secret
 
   const authenticateToken = (req: any, res: any, next: any) => {
     const authHeader = req.headers['authorization'];
@@ -92,6 +104,26 @@ async function startServer() {
       req.user = user;
       next();
     });
+  };
+
+  const requireKyc = async (req: any, res: any, next: any) => {
+    try {
+      const { rows } = await query("SELECT kyc_status, role FROM users WHERE id = $1", [req.user.id]);
+      const user = rows[0];
+      
+      if (!user) return res.status(404).json({ error: "User not found" });
+      if (user.role === 'admin') return next();
+
+      if (user.kyc_status !== 'approved') {
+        return res.status(403).json({ 
+          error: `Trading is restricted. Your KYC status is '${user.kyc_status}'. Please complete compliance verification.` 
+        });
+      }
+      next();
+    } catch (e) {
+      console.error("[Compliance] KYC Check failed:", e);
+      return res.status(500).json({ error: "Internal compliance check failed" });
+    }
   };
 
   app.get("/api/health", (req, res) => {
@@ -112,7 +144,7 @@ async function startServer() {
       const role = (userCount === 0 || email === superAdminEmail) ? 'admin' : 'user';
       
       const { rows: inserted } = await query(
-        "INSERT INTO users (email, mobile, password, role) VALUES ($1, $2, $3, $4) RETURNING id",
+        "INSERT INTO users (email, mobile, password, role, terms_accepted_at) VALUES ($1, $2, $3, $4, NOW()) RETURNING id",
         [email, mobile, hashedPassword, role]
       );
       
@@ -120,7 +152,6 @@ async function startServer() {
       res.json({ id: inserted[0].id });
     } catch (e: any) {
       console.error(`[Auth] Registration failed for ${email}:`, e.message);
-      // Postgres Unique constraint error codes
       if (e.code === '23505') {
         if (e.constraint === 'users_email_key') {
           return res.status(400).json({ error: "Email already registered. Please login instead." });
@@ -142,26 +173,71 @@ async function startServer() {
       const user = rows[0];
       
       if (!user) {
-        console.log(`[Auth] Login failed: User ${login} not found`);
         return res.status(401).json({ error: "Invalid credentials" });
       }
 
       const isMatch = await bcrypt.compare(password, user.password);
       if (!isMatch) {
-        console.log(`[Auth] Login failed: Incorrect password for ${login}`);
         return res.status(401).json({ error: "Invalid credentials" });
       }
       
       const superAdminEmail = 'bharvadvijay371@gmail.com';
       const effectiveRole = (user.email === superAdminEmail) ? 'admin' : user.role;
       
-      const token = jwt.sign({ id: user.id, email: user.email, role: effectiveRole }, JWT_SECRET);
+      // 1. Generate Short-Lived Access Token (15 minutes)
+      const token = jwt.sign({ id: user.id, email: user.email, role: effectiveRole }, JWT_SECRET, { expiresIn: '15m' });
+      
+      // 2. Generate Long-Lived Refresh Token (7 days)
+      const refreshToken = jwt.sign({ id: user.id }, JWT_REFRESH_SECRET, { expiresIn: '7d' });
+
+      // 3. Set the HTTP-Only cookie
+      res.cookie('refreshToken', refreshToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'strict',
+        maxAge: 7 * 24 * 60 * 60 * 1000 // 7 Days in ms
+      });
+
       console.log(`[Auth] Login successful for ${login} (ID: ${user.id}) with role: ${effectiveRole}`);
       res.json({ token, user: { id: user.id, email: user.email, role: effectiveRole, balance: parseFloat(user.balance) } });
     } catch (e: any) {
       console.error(`[Auth] Login error for ${login}:`, e.message);
       res.status(500).json({ error: "Internal server error during login" });
     }
+  });
+
+  // NEW: Refresh Token Endpoint
+  app.post("/api/auth/refresh", async (req, res) => {
+    const refreshToken = req.cookies.refreshToken;
+    if (!refreshToken) return res.status(401).json({ error: "Refresh token required" });
+
+    jwt.verify(refreshToken, JWT_REFRESH_SECRET, async (err: any, decoded: any) => {
+      if (err) return res.status(403).json({ error: "Invalid or expired refresh token" });
+      
+      try {
+        const { rows } = await query("SELECT id, email, role FROM users WHERE id = $1", [decoded.id]);
+        const user = rows[0];
+        if (!user) return res.status(403).json({ error: "User no longer exists" });
+
+        const effectiveRole = (user.email === 'bharvadvijay371@gmail.com') ? 'admin' : user.role;
+        
+        // Issue new short-lived access token
+        const newToken = jwt.sign({ id: user.id, email: user.email, role: effectiveRole }, JWT_SECRET, { expiresIn: '15m' });
+        res.json({ token: newToken });
+      } catch (dbErr) {
+        res.status(500).json({ error: "Database error during refresh" });
+      }
+    });
+  });
+
+  // NEW: Logout Endpoint
+  app.post("/api/auth/logout", (req, res) => {
+    res.clearCookie('refreshToken', {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict'
+    });
+    res.json({ success: true, message: "Logged out successfully" });
   });
 
   app.post("/api/auth/angelone/login", authenticateToken, async (req: any, res) => {
@@ -259,7 +335,7 @@ async function startServer() {
   });
 
   app.get("/api/user/profile", authenticateToken, async (req: any, res) => {
-    const { rows: userRows } = await query("SELECT id, email, mobile, role, is_kyc_approved, balance FROM users WHERE id = $1", [req.user.id]);
+    const { rows: userRows } = await query("SELECT id, email, mobile, role, kyc_status, is_kyc_approved, balance FROM users WHERE id = $1", [req.user.id]);
     const user = userRows[0];
     if (!user) return res.status(404).json({ error: "User not found" });
     
@@ -406,7 +482,7 @@ async function startServer() {
     res.json(localHoldings);
   });
 
-  app.post("/api/orders", authenticateToken, async (req: any, res) => {
+  app.post("/api/orders", authenticateToken, requireKyc, async (req: any, res) => {
     const { symbol, type, order_type, quantity, price, product = 'I', broker = 'upstox' } = req.body;
     const userId = req.user.id;
     const { rows } = await query("SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = $2", [userId, broker]);
@@ -427,12 +503,26 @@ async function startServer() {
         });
         const data = await response.json();
         if (data.status === 'success') {
-          await query("INSERT INTO orders (user_id, symbol, type, order_type, quantity, price) VALUES ($1, $2, $3, $4, $5, $6)", 
-            [userId, symbol, type, order_type, quantity, price]);
+          await query(
+            "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, broker_order_id, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed')", 
+            [userId, symbol, type, order_type, quantity, price, broker, data.data.order_id]
+          );
           return res.json({ success: true, order_id: data.data.order_id });
         }
-        return res.status(400).json({ error: data.errors?.[0]?.message || "Upstox order failed" });
-      } catch (e) { return res.status(500).json({ error: "Upstox API Error" }); }
+        
+        const errorMsg = data.errors?.[0]?.message || "Upstox order failed";
+        await query(
+          "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8)", 
+          [userId, symbol, type, order_type, quantity, price, broker, errorMsg]
+        );
+        return res.status(400).json({ error: errorMsg });
+      } catch (e: any) { 
+        await query(
+          "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8)", 
+          [userId, symbol, type, order_type, quantity, price, broker, e.message]
+        );
+        return res.status(500).json({ error: "Upstox API Error" }); 
+      }
     } else if (broker === 'angelone') {
       try {
         const response = await fetch("https://apiconnect.angelone.in/rest/auth/angelone/order/v1/placeOrder", {
@@ -446,12 +536,26 @@ async function startServer() {
         });
         const data = await response.json();
         if (data.status && data.data && data.data.orderid) {
-          await query("INSERT INTO orders (user_id, symbol, type, order_type, quantity, price) VALUES ($1, $2, $3, $4, $5, $6)", 
-            [userId, symbol, type, order_type, quantity, price]);
+          await query(
+            "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, broker_order_id, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed')", 
+            [userId, symbol, type, order_type, quantity, price, broker, data.data.orderid]
+          );
           return res.json({ success: true, order_id: data.data.orderid });
         }
-        return res.status(400).json({ error: data.message || "Angel One order failed" });
-      } catch (e) { return res.status(500).json({ error: "Angel One API error" }); }
+
+        const errorMsg = data.message || "Angel One order failed";
+        await query(
+          "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8)", 
+          [userId, symbol, type, order_type, quantity, price, broker, errorMsg]
+        );
+        return res.status(400).json({ error: errorMsg });
+      } catch (e: any) { 
+        await query(
+          "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8)", 
+          [userId, symbol, type, order_type, quantity, price, broker, e.message]
+        );
+        return res.status(500).json({ error: "Angel One API error" }); 
+      }
     }
   });
 
