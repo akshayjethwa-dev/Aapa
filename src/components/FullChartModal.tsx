@@ -1,9 +1,9 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, ChevronRight } from 'lucide-react';
 import { formatCurrency, cn } from '../lib/utils';
 import TradingViewWidget from './TradingViewWidget';
-
+import ErrorBoundary from './ErrorBoundary';
 
 const FullChartModal = ({ instrument, onClose }: { instrument: any, onClose: () => void }) => {
   const [timeframe, setTimeframe] = useState('5m');

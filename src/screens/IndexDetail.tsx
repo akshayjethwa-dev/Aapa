@@ -1,10 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, TrendingUp, ArrowUpRight, ArrowDownRight, Activity, Filter, Target, Layers, ChevronDown } from 'lucide-react';
+import { ArrowLeft, TrendingUp, ArrowUpRight, ArrowDownRight, Activity, Filter, Target, Layers, ChevronDown, BarChart3, Settings2, AlertCircle } from 'lucide-react';
 import { formatCurrency, cn } from '../lib/utils';
 import TradingViewWidget from '../components/TradingViewWidget';
 import OptionChain from '../components/OptionChain';
 import { INDEX_CONSTITUENTS, F_O_INDICES } from '../constants/marketData';
+import { useAuthStore } from '../store/authStore';
+import FullChartModal from '../components/FullChartModal';
 
 const IndexDetail = ({ indexName, stocks, onClose, onPlaceOrder }: { 
   indexName: string, 
@@ -181,7 +183,7 @@ const IndexDetail = ({ indexName, stocks, onClose, onPlaceOrder }: {
                   <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Loading Chain...</p>
                 </div>
               ) : filteredChainData.length > 0 ? (
-                filteredChainData.map((row, i) => {
+                filteredChainData.map((row: any, i: number) => {
                   const strike = row.strike_price;
                   const isATM = Math.abs(strike - spotPrice) < (strikeInterval / 2);
                   const isCallITM = strike < spotPrice;

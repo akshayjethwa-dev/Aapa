@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, Users, Activity, TrendingUp, ShieldCheck, FileText, AlertTriangle, Settings, Zap, Info } from 'lucide-react';
+import { ArrowLeft, Users, Activity, TrendingUp, ShieldCheck, FileText, AlertTriangle, Settings, Zap, Info, LogOut } from 'lucide-react';
 import { toast } from 'sonner';
 import { formatCurrency, cn } from '../../lib/utils';
 import { useAuthStore } from '../../store/authStore';

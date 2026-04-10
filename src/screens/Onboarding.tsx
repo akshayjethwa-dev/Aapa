@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ShieldCheck, ArrowRight } from 'lucide-react';
+import { ShieldCheck, ArrowRight, User as UserIcon } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 const Onboarding = ({ onComplete }: { onComplete: () => void }) => {

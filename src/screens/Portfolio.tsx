@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { PieChart, TrendingUp, ArrowUpRight, ArrowDownRight, CreditCard, History, ArrowRight } from 'lucide-react';
+import { PieChart, TrendingUp, ArrowUpRight, ArrowDownRight, CreditCard, History, ArrowRight, AlertCircle, BarChart3, Calendar, Plus, Minus, ArrowRightLeft } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart as RePieChart, Pie, Cell } from 'recharts';
 import { formatCurrency, cn } from '../lib/utils';
 import { useAuthStore } from '../store/authStore';

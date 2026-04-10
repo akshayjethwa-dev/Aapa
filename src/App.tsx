@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { LogOut, ChevronRight, Search } from 'lucide-react';
 import { useAuthStore } from './store/authStore';
 import { formatCurrency } from './lib/utils';
+import { apiClient } from './api/client';
 
 // Layout Components
 import ErrorBoundary from './components/ErrorBoundary';
@@ -65,28 +66,14 @@ function App() {
     e.preventDefault();
     setIsConnectingAngel(true);
     try {
-      const res = await fetch('/api/auth/angelone/login', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify(angelForm)
-      });
-      const data = await res.json();
-      if (res.ok) {
-        toast.success('Angel One connected successfully!');
-        setShowAngelLogin(false);
-        const pRes = await fetch('/api/user/profile', {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        const pData = await pRes.json();
-        setAuth(pData, token as string);   // ← E3 fix: cast to string
-      } else {
-        toast.error(data.error || 'Angel One login failed');
-      }
-    } catch (e) {
-      toast.error('Network error');
+      await apiClient.post('/api/auth/angelone/login', angelForm);
+      toast.success('Angel One connected successfully!');
+      setShowAngelLogin(false);
+      
+      const pRes = await apiClient.get('/api/user/profile');
+      setAuth(pRes.data, token as string);
+    } catch (e: any) {
+      toast.error(e.response?.data?.error || 'Angel One login failed');
     } finally {
       setIsConnectingAngel(false);
     }
@@ -96,17 +83,17 @@ function App() {
     setIsConnectingUptox(true);
     const authWindow = window.open('about:blank', 'uptox_auth', 'width=500,height=600');
     try {
-      const res = await fetch('/api/auth/uptox/url');
-      const { url, error } = await res.json();
+      const res = await apiClient.get('/api/auth/uptox/url');
+      const { url, error } = res.data;
       if (url && authWindow) {
         authWindow.location.href = url;
       } else {
         authWindow?.close();
         toast.error(error || 'Uptox configuration missing on server');
       }
-    } catch (e) {
+    } catch (e: any) {
       authWindow?.close();
-      toast.error('Failed to get connection URL');
+      toast.error(e.response?.data?.error || 'Failed to get connection URL');
     } finally {
       setIsConnectingUptox(false);
     }
@@ -115,20 +102,11 @@ function App() {
   const handleForceRefresh = async () => {
     setIsRefreshing(true);
     try {
-      const res = await fetch('/api/market/refresh', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success) {
-          setStocks(data.last_prices);
-          const debugRes = await fetch('/api/market-status');
-          if (debugRes.ok) {
-            const debugData = await debugRes.json();
-            setDebugInfo(debugData);
-          }
-        }
+      const res = await apiClient.post('/api/market/refresh');
+      if (res.data.success) {
+        setStocks(res.data.last_prices);
+        const debugRes = await apiClient.get('/api/market-status');
+        setDebugInfo(debugRes.data);
       }
     } catch (e) {
       console.error('Refresh failed', e);
@@ -140,11 +118,8 @@ function App() {
   useEffect(() => {
     const fetchDebug = async () => {
       try {
-        const res = await fetch('/api/market-status');
-        if (res.ok) {
-          const data = await res.json();
-          setDebugInfo(data);
-        }
+        const res = await apiClient.get('/api/market-status');
+        setDebugInfo(res.data);
       } catch (e) {}
     };
     if (activeTab === 'more') fetchDebug();
@@ -171,22 +146,18 @@ function App() {
     const verifyToken = async () => {
       if (!token) return;
       try {
-        const res = await fetch('/api/user/profile', {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        if (!res.ok) {
-          if (res.status === 401 || res.status === 404) logout();
-          return;
-        }
-        const data = await res.json();
-        if (!data.id) {
+        const res = await apiClient.get('/api/user/profile');
+        if (!res.data.id) {
           console.log('[App] Token invalid, logging out');
           logout();
         } else {
-          setAuth(data, token);
+          setAuth(res.data, token);
         }
-      } catch (e) {
+      } catch (e: any) {
         console.error('[App] Failed to verify token', e);
+        if (e.response?.status === 401 || e.response?.status === 404) {
+          logout();
+        }
       }
     };
     verifyToken();
@@ -198,25 +169,14 @@ function App() {
         const { token: uptoxToken, refresh_token: uptoxRefreshToken } = event.data;
         if (!token) return;
         try {
-          const res = await fetch('/api/auth/uptox/save-token', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${token}`
-            },
-            body: JSON.stringify({
-              access_token: uptoxToken,
-              refresh_token: uptoxRefreshToken
-            })
+          await apiClient.post('/api/auth/uptox/save-token', {
+            access_token: uptoxToken,
+            refresh_token: uptoxRefreshToken
           });
-          if (res.ok) {
-            const profileRes = await fetch('/api/user/profile', {
-              headers: { 'Authorization': `Bearer ${token}` }
-            });
-            if (profileRes.ok) {
-              const profileData = await profileRes.json();
-              if (profileData.id) setAuth(profileData, token);
-            }
+          
+          const profileRes = await apiClient.get('/api/user/profile');
+          if (profileRes.data.id) {
+            setAuth(profileRes.data, token);
           }
         } catch (e) {
           console.error('Failed to save Uptox token', e);

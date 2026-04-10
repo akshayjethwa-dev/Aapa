@@ -1,11 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, TrendingUp, ArrowUpRight, ArrowDownRight, Layers, ChevronDown, Zap, MousePointer2, Activity, BarChart3, Target, ArrowRightLeft } from 'lucide-react';
+import { ArrowLeft, TrendingUp, ArrowUpRight, ArrowDownRight, Layers, ChevronDown, Zap, MousePointer2, Activity, BarChart3, Target, ArrowRightLeft, XCircle, ShieldCheck } from 'lucide-react';
 import { formatCurrency, cn } from '../lib/utils';
 import TradingViewWidget from '../components/TradingViewWidget';
 import OptionChain from '../components/OptionChain';
 import { useAuthStore } from '../store/authStore';
 import { F_O_INDICES } from '../constants/marketData';
+import { toast } from 'sonner';
+import Sparkline from '../components/Sparkline';
+import FullChartModal from '../components/FullChartModal';
 
 const FOTradingCenter = ({ 
   stocks, 

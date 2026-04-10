@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, Filter, ArrowUpRight, ArrowDownRight, TrendingUp, Activity, Newspaper, Calendar, Zap, ChevronRight } from 'lucide-react';
+import { Search, Filter, ArrowUpRight, ArrowDownRight, TrendingUp, Activity, Newspaper, Calendar, Zap, ChevronRight, FileText, Plus } from 'lucide-react';
 import { formatCurrency, cn } from '../lib/utils';
 import TradingViewWidget from '../components/TradingViewWidget';
 import Sparkline from '../components/Sparkline';
+import OptionChain from '../components/OptionChain';
+import ErrorBoundary from '../components/ErrorBoundary';
 import { INDEX_CONSTITUENTS, F_O_INDICES } from '../constants/marketData';
 
 const Market = ({ stocks, onIndexClick, onPlaceOrder, initialSelectedStock }: { 

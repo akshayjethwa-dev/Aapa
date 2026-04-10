@@ -1,5 +1,7 @@
 import React from 'react';
-import { LayoutDashboard, TrendingUp, Wallet, User as UserIcon, MoreHorizontal } from 'lucide-react';
+import { LayoutDashboard, TrendingUp, Wallet, User as UserIcon, MoreHorizontal, Zap, PieChart, ShieldCheck } from 'lucide-react';
+import { useAuthStore } from '../store/authStore';
+import { cn } from '../lib/utils';
 
 const Navbar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab: (t: string) => void }) => {
   const { user } = useAuthStore();

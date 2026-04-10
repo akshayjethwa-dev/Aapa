@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { TrendingUp, ArrowUpRight, ArrowDownRight, Newspaper, Calendar, Activity, Bell, Zap, ChevronRight, ZapOff, BarChart3 } from 'lucide-react';
@@ -6,6 +6,7 @@ import { formatCurrency, cn } from '../lib/utils';
 import Sparkline from '../components/Sparkline';
 import TradingViewWidget from '../components/TradingViewWidget';
 import { useAuthStore } from '../store/authStore';
+import AISignals from './admin/AISignals';
 
 const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { stocks: Record<string, number>, onMarketClick: () => void, onIndexClick: (index: string) => void, onProfileClick: () => void }) => {
   const { user } = useAuthStore();
@@ -110,7 +111,7 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
   const sortedGainersLosers = useMemo(() => {
     const list = Object.entries(stocks)
       .filter(([s]) => !primaryIndices.includes(s) && !secondaryIndices.includes(s))
-      .map(([symbol, price]) => ({ symbol, price, change: 0 })); // We don't have change in ticker yet, so 0
+      .map(([symbol, price]) => ({ symbol, price, change: 0 })); 
     
     return list.slice(0, 5);
   }, [stocks, primaryIndices, secondaryIndices]);
@@ -290,7 +291,7 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
           ))}
         </div>
         <div className="space-y-2">
-          {sortedGainersLosers.map(({ symbol, price, change }) => (
+          {sortedGainersLosers.map(({ symbol, price, change }: { symbol: string, price: number, change: number }) => (
             <div key={symbol} className="bg-zinc-900/20 border border-zinc-800/30 rounded-xl p-3 flex justify-between items-center">
               <div className="flex items-center gap-3">
                 <div className="w-9 h-9 rounded-xl bg-zinc-900 flex items-center justify-center font-bold text-[11px] text-zinc-500">
@@ -426,7 +427,7 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
           </div>
         </div>
         <div className="px-5 overflow-x-auto scrollbar-hide flex gap-2.5 py-2">
-          {filteredEvents.map(event => (
+          {filteredEvents.map((event: any) => (
             <div key={event.id} className="min-w-45 bg-zinc-900/30 border border-zinc-800/50 rounded-xl p-3 space-y-2">
               <div className="flex justify-between items-start">
                 <p className="text-[13px] font-bold text-white tracking-tight">{event.company}</p>

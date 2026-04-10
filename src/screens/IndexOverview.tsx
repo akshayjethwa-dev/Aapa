@@ -1,8 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, TrendingUp, ArrowUpRight, ArrowDownRight, Activity, ChevronRight } from 'lucide-react';
+import { ArrowLeft, TrendingUp, ArrowUpRight, ArrowDownRight, Activity, ChevronRight, Zap, BarChart3, Layers } from 'lucide-react';
+import { ResponsiveContainer, BarChart, Bar } from 'recharts';
 import { formatCurrency, cn } from '../lib/utils';
 import TradingViewWidget from '../components/TradingViewWidget';
+import Sparkline from '../components/Sparkline';
+import FullChartModal from '../components/FullChartModal';
 import { INDEX_CONSTITUENTS } from '../constants/marketData';
 
 const IndexOverview = ({ indexName, stocks, onClose, onOpenOptionChain }: { 
@@ -149,7 +152,7 @@ const IndexOverview = ({ indexName, stocks, onClose, onOpenOptionChain }: {
             </div>
 
             <div className="space-y-3">
-              {sortedConstituents.map(stock => (
+              {sortedConstituents.map((stock: any) => (
                 <div key={stock.symbol} className="bg-zinc-50 border border-zinc-100 rounded-2xl p-4 flex justify-between items-center">
                   <div className="flex items-center gap-4">
                     <div className="w-10 h-10 rounded-xl bg-white border border-zinc-100 flex items-center justify-center font-black text-[10px] text-zinc-400">
@@ -177,7 +180,7 @@ const IndexOverview = ({ indexName, stocks, onClose, onOpenOptionChain }: {
           </>
         ) : (
           <div className="grid grid-cols-3 gap-2">
-            {sortedConstituents.map(stock => (
+            {sortedConstituents.map((stock: any) => (
               <div 
                 key={stock.symbol}
                 className={cn(

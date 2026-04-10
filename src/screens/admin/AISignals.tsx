@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Zap, TrendingUp, Target } from 'lucide-react';
-import { formatCurrency } from '../../lib/utils';
+import { formatCurrency, cn } from '../../lib/utils';
+import { useAuthStore } from '../../store/authStore';
 
 const AISignals = () => {
   const [signals, setSignals] = useState<any[]>([]);
