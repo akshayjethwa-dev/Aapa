@@ -260,7 +260,7 @@ const OptionChain: React.FC<OptionChainProps> = ({ onPlaceOrder, stocks = {}, fu
             initial={{ y: 20, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
             exit={{ y: 20, opacity: 0 }}
-            className="fixed bottom-24 left-4 right-4 z-[100] bg-zinc-900 border border-zinc-800 rounded-2xl p-4 shadow-2xl flex items-center justify-between gap-4"
+            className="fixed bottom-24 left-4 right-4 z-100 bg-zinc-900 border border-zinc-800 rounded-2xl p-4 shadow-2xl flex items-center justify-between gap-4"
           >
             <div className="flex items-center gap-3">
               <div className={cn(
