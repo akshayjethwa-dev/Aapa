@@ -17,3 +17,4 @@ coverage/
 sqlite.db
 *.sqlite
 *.sqlite3
+.env.example

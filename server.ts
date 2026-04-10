@@ -8,10 +8,29 @@ import path from "path";
 import fs from "fs/promises";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
-import cookieParser from "cookie-parser"; // <-- Added cookie-parser
+import cookieParser from "cookie-parser";
+import rateLimit from "express-rate-limit";
 
 // Import PostgreSQL Database setup
 import { pool, query } from "./src/db/index"; 
+
+// Zod Validation Imports
+import { validate } from "./src/middleware/validate";
+import { 
+  registerSchema, 
+  loginSchema, 
+  placeOrderSchema, 
+  angelOneLoginSchema, 
+  upstoxSaveTokenSchema, 
+  adminCreateUserSchema, 
+  whitelistSchema 
+} from "./src/validation/schemas";
+
+// Logger Import
+import { logger } from "./src/utils/logger";
+
+// --- NEW ENCRYPTION IMPORT ---
+import { encrypt, decrypt } from "./src/utils/encryption";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,16 +43,16 @@ const initDbAndSeed = async () => {
     const schemaPath = path.join(__dirname, "migrations", "001_initial_schema.sql");
     const schema = await fs.readFile(schemaPath, "utf8");
     await pool.query(schema);
-    console.log("[DB] PostgreSQL Schema 001 initialized successfully.");
+    logger.info("[DB] PostgreSQL Schema 001 initialized successfully.");
 
     // Run Audit & Compliance Migration
     try {
       const migration2Path = path.join(__dirname, "migrations", "002_add_audit_compliance_fields.sql");
       const migration2 = await fs.readFile(migration2Path, "utf8");
       await pool.query(migration2);
-      console.log("[DB] PostgreSQL Schema 002 (Audit Fields) applied successfully.");
+      logger.info("[DB] PostgreSQL Schema 002 (Audit Fields) applied successfully.");
     } catch (migErr) {
-      console.log("[DB] Skipping Migration 002: File not found or error.", migErr);
+      logger.warn("[DB] Skipping Migration 002: File not found or error.", migErr);
     }
 
     const admins = [
@@ -51,13 +70,13 @@ const initDbAndSeed = async () => {
           "INSERT INTO users (email, password, role, balance) VALUES ($1, $2, $3, $4)",
           [admin.email, hashedPassword, 'admin', 100000]
         );
-        console.log(`[Seed] Admin user created: ${admin.email}`);
+        logger.info(`[Seed] Admin user created: ${admin.email}`);
       } else {
         await query("UPDATE users SET role = 'admin' WHERE email = $1", [admin.email]);
       }
     }
   } catch (error) {
-    console.error("[DB] Error initializing DB or seeding admins:", error);
+    logger.error("[DB] Error initializing DB or seeding admins:", error);
   }
 };
 
@@ -70,29 +89,60 @@ async function startServer() {
 
   wss.on('connection', (ws, req) => {
     const ip = req.socket.remoteAddress;
-    console.log(`[WebSocket] New client connected from ${ip}. Total clients: ${wss.clients.size}`);
+    logger.info(`[WebSocket] New client connected from ${ip}. Total clients: ${wss.clients.size}`);
     
     ws.send(JSON.stringify({ type: 'ticker', data: stockPrices }));
 
     ws.on('close', () => {
-      console.log(`[WebSocket] Client disconnected. Remaining clients: ${wss.clients.size}`);
+      logger.info(`[WebSocket] Client disconnected. Remaining clients: ${wss.clients.size}`);
     });
 
     ws.on('error', (err) => {
-      console.error('[WebSocket] Client error:', err);
+      logger.error('[WebSocket] Client error:', err);
     });
   });
 
+  app.set('trust proxy', 1); 
+
   app.use(express.json());
-  app.use(cookieParser()); // <-- Initialized cookie parser middleware
+  app.use(cookieParser()); 
+
+  const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 5,
+    message: { error: 'Too many login attempts. Please try again in 15 minutes.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  const apiLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 100,
+    message: { error: 'Too many requests. Please slow down.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  const aiLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 10,
+    keyGenerator: (req: any) => req.user?.id || req.ip, 
+    message: { error: 'AI signal limit reached. Please wait.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  app.use('/api/auth', authLimiter);
+  app.use('/api/ai', aiLimiter);
+  app.use('/api', apiLimiter); 
 
   app.use((req, res, next) => {
-    console.log(`[HTTP] ${req.method} ${req.url}`);
+    logger.info(`[HTTP] ${req.method} ${req.url}`);
     next();
   });
 
   const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret";
-  const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || "fallback-refresh-secret"; // <-- Added Refresh Secret
+  const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || "fallback-refresh-secret";
 
   const authenticateToken = (req: any, res: any, next: any) => {
     const authHeader = req.headers['authorization'];
@@ -121,8 +171,7 @@ async function startServer() {
       }
       next();
     } catch (e) {
-      console.error("[Compliance] KYC Check failed:", e);
-      return res.status(500).json({ error: "Internal compliance check failed" });
+      next(e);
     }
   };
 
@@ -130,14 +179,14 @@ async function startServer() {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
   });
 
-  app.post("/api/auth/register", async (req, res) => {
+  app.post("/api/auth/register", validate(registerSchema), async (req, res, next) => {
     let { email, mobile, password } = req.body;
     email = email?.toLowerCase().trim();
     mobile = mobile?.trim();
     
-    console.log(`[Auth] Registration attempt for email: ${email}`);
-    const hashedPassword = await bcrypt.hash(password, 10);
+    logger.info(`[Auth] Registration attempt for email: ${email}`);
     try {
+      const hashedPassword = await bcrypt.hash(password, 10);
       const { rows: countRows } = await query("SELECT COUNT(*) as count FROM users");
       const userCount = parseInt(countRows[0].count);
       const superAdminEmail = 'bharvadvijay371@gmail.com';
@@ -148,10 +197,9 @@ async function startServer() {
         [email, mobile, hashedPassword, role]
       );
       
-      console.log(`[Auth] Registration successful for user ID: ${inserted[0].id} with role: ${role}`);
+      logger.info(`[Auth] Registration successful for user ID: ${inserted[0].id} with role: ${role}`);
       res.json({ id: inserted[0].id });
     } catch (e: any) {
-      console.error(`[Auth] Registration failed for ${email}:`, e.message);
       if (e.code === '23505') {
         if (e.constraint === 'users_email_key') {
           return res.status(400).json({ error: "Email already registered. Please login instead." });
@@ -160,14 +208,14 @@ async function startServer() {
            return res.status(400).json({ error: "Mobile number already registered. Please login instead." });
         }
       }
-      res.status(400).json({ error: "User already exists or invalid data" });
+      next(e);
     }
   });
 
-  app.post("/api/auth/login", async (req, res) => {
+  app.post("/api/auth/login", validate(loginSchema), async (req, res, next) => {
     let { login, password } = req.body;
     login = login?.toLowerCase().trim();
-    console.log(`[Auth] Login attempt for: ${login}`);
+    logger.info(`[Auth] Login attempt for: ${login}`);
     try {
       const { rows } = await query("SELECT * FROM users WHERE email = $1 OR mobile = $1", [login]);
       const user = rows[0];
@@ -184,30 +232,24 @@ async function startServer() {
       const superAdminEmail = 'bharvadvijay371@gmail.com';
       const effectiveRole = (user.email === superAdminEmail) ? 'admin' : user.role;
       
-      // 1. Generate Short-Lived Access Token (15 minutes)
       const token = jwt.sign({ id: user.id, email: user.email, role: effectiveRole }, JWT_SECRET, { expiresIn: '15m' });
-      
-      // 2. Generate Long-Lived Refresh Token (7 days)
       const refreshToken = jwt.sign({ id: user.id }, JWT_REFRESH_SECRET, { expiresIn: '7d' });
 
-      // 3. Set the HTTP-Only cookie
       res.cookie('refreshToken', refreshToken, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
         sameSite: 'strict',
-        maxAge: 7 * 24 * 60 * 60 * 1000 // 7 Days in ms
+        maxAge: 7 * 24 * 60 * 60 * 1000 
       });
 
-      console.log(`[Auth] Login successful for ${login} (ID: ${user.id}) with role: ${effectiveRole}`);
+      logger.info(`[Auth] Login successful for ${login} (ID: ${user.id}) with role: ${effectiveRole}`);
       res.json({ token, user: { id: user.id, email: user.email, role: effectiveRole, balance: parseFloat(user.balance) } });
     } catch (e: any) {
-      console.error(`[Auth] Login error for ${login}:`, e.message);
-      res.status(500).json({ error: "Internal server error during login" });
+      next(e);
     }
   });
 
-  // NEW: Refresh Token Endpoint
-  app.post("/api/auth/refresh", async (req, res) => {
+  app.post("/api/auth/refresh", async (req, res, next) => {
     const refreshToken = req.cookies.refreshToken;
     if (!refreshToken) return res.status(401).json({ error: "Refresh token required" });
 
@@ -221,16 +263,14 @@ async function startServer() {
 
         const effectiveRole = (user.email === 'bharvadvijay371@gmail.com') ? 'admin' : user.role;
         
-        // Issue new short-lived access token
         const newToken = jwt.sign({ id: user.id, email: user.email, role: effectiveRole }, JWT_SECRET, { expiresIn: '15m' });
         res.json({ token: newToken });
-      } catch (dbErr) {
-        res.status(500).json({ error: "Database error during refresh" });
+      } catch (e) {
+        next(e);
       }
     });
   });
 
-  // NEW: Logout Endpoint
   app.post("/api/auth/logout", (req, res) => {
     res.clearCookie('refreshToken', {
       httpOnly: true,
@@ -240,7 +280,7 @@ async function startServer() {
     res.json({ success: true, message: "Logged out successfully" });
   });
 
-  app.post("/api/auth/angelone/login", authenticateToken, async (req: any, res) => {
+  app.post("/api/auth/angelone/login", authenticateToken, validate(angelOneLoginSchema), async (req: any, res, next) => {
     const { clientCode, password, totp } = req.body;
     const apiKey = process.env.ANGEL_ONE_API_KEY;
 
@@ -266,9 +306,10 @@ async function startServer() {
       if (data.status && data.data && data.data.jwtToken) {
         const { jwtToken, refreshToken, feedToken } = data.data;
         
+        // ENCRYPT TOKENS BEFORE SAVING
         await query(
           "INSERT INTO user_tokens (user_id, broker, access_token, refresh_token, feed_token) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (user_id, broker) DO UPDATE SET access_token = EXCLUDED.access_token, refresh_token = EXCLUDED.refresh_token, feed_token = EXCLUDED.feed_token",
-          [req.user.id, 'angelone', jwtToken, refreshToken, feedToken]
+          [req.user.id, 'angelone', encrypt(jwtToken), encrypt(refreshToken), encrypt(feedToken)]
         );
         
         await query("UPDATE users SET is_angelone_connected = true WHERE id = $1", [req.user.id]);
@@ -277,32 +318,43 @@ async function startServer() {
         res.status(400).json({ error: data.message || "Angel One login failed" });
       }
     } catch (e) {
-      console.error("[AngelOne] Login error:", e);
-      res.status(500).json({ error: "Failed to connect to Angel One API" });
+      next(e);
     }
   });
 
-  app.get("/api/admin/users", authenticateToken, async (req: any, res) => {
+  app.get("/api/admin/users", authenticateToken, async (req: any, res, next) => {
     if (req.user.role !== 'admin') return res.sendStatus(403);
-    const { rows: users } = await query("SELECT id, email, mobile, role, balance, created_at FROM users ORDER BY created_at DESC");
-    res.json(users);
+    try {
+      const { rows: users } = await query("SELECT id, email, mobile, role, balance, created_at FROM users ORDER BY created_at DESC");
+      res.json(users);
+    } catch (e) {
+      next(e);
+    }
   });
 
-  app.post("/api/admin/users/:id/role", authenticateToken, async (req: any, res) => {
+  app.post("/api/admin/users/:id/role", authenticateToken, async (req: any, res, next) => {
     if (req.user.role !== 'admin') return res.sendStatus(403);
-    const { role } = req.body;
-    const { id } = req.params;
-    await query("UPDATE users SET role = $1 WHERE id = $2", [role, id]);
-    res.json({ success: true });
+    try {
+      const { role } = req.body;
+      const { id } = req.params;
+      await query("UPDATE users SET role = $1 WHERE id = $2", [role, id]);
+      res.json({ success: true });
+    } catch (e) {
+      next(e);
+    }
   });
 
-  app.get("/api/admin/whitelist", authenticateToken, async (req: any, res) => {
+  app.get("/api/admin/whitelist", authenticateToken, async (req: any, res, next) => {
     if (req.user.role !== 'admin') return res.sendStatus(403);
-    const { rows: list } = await query("SELECT * FROM beta_whitelist ORDER BY created_at DESC");
-    res.json(list);
+    try {
+      const { rows: list } = await query("SELECT * FROM beta_whitelist ORDER BY created_at DESC");
+      res.json(list);
+    } catch (e) {
+      next(e);
+    }
   });
 
-  app.post("/api/admin/whitelist", authenticateToken, async (req: any, res) => {
+  app.post("/api/admin/whitelist", authenticateToken, validate(whitelistSchema), async (req: any, res, next) => {
     if (req.user.role !== 'admin') return res.sendStatus(403);
     const { identifier } = req.body;
     try {
@@ -313,20 +365,24 @@ async function startServer() {
     }
   });
 
-  app.delete("/api/admin/whitelist/:id", authenticateToken, async (req: any, res) => {
+  app.delete("/api/admin/whitelist/:id", authenticateToken, async (req: any, res, next) => {
     if (req.user.role !== 'admin') return res.sendStatus(403);
-    await query("DELETE FROM beta_whitelist WHERE id = $1", [req.params.id]);
-    res.json({ success: true });
+    try {
+      await query("DELETE FROM beta_whitelist WHERE id = $1", [req.params.id]);
+      res.json({ success: true });
+    } catch (e) {
+      next(e);
+    }
   });
 
-  app.post("/api/admin/users/create", authenticateToken, async (req: any, res) => {
+  app.post("/api/admin/users/create", authenticateToken, validate(adminCreateUserSchema), async (req: any, res, next) => {
     if (req.user.role !== 'admin') return res.sendStatus(403);
     const { email, mobile, password, role } = req.body;
-    const hashedPassword = await bcrypt.hash(password, 10);
     try {
+      const hashedPassword = await bcrypt.hash(password, 10);
       const { rows } = await query(
         "INSERT INTO users (email, mobile, password, role) VALUES ($1, $2, $3, $4) RETURNING id",
-        [email, mobile, hashedPassword, role || 'user']
+        [email, mobile, hashedPassword, role]
       );
       res.json({ id: rows[0].id });
     } catch (e: any) {
@@ -334,28 +390,34 @@ async function startServer() {
     }
   });
 
-  app.get("/api/user/profile", authenticateToken, async (req: any, res) => {
-    const { rows: userRows } = await query("SELECT id, email, mobile, role, kyc_status, is_kyc_approved, balance FROM users WHERE id = $1", [req.user.id]);
-    const user = userRows[0];
-    if (!user) return res.status(404).json({ error: "User not found" });
-    
-    const { rows: tokenRows } = await query("SELECT access_token FROM user_tokens WHERE user_id = $1", [req.user.id]);
-    const userToken = tokenRows[0];
-    
-    let balance = parseFloat(user?.balance) || 0;
-    if (userToken) {
-      try {
-        const response = await fetch("https://api.upstox.com/v2/user/get-funds-and-margin", {
-          headers: { "Authorization": `Bearer ${userToken.access_token}`, "Accept": "application/json" }
-        });
-        const data = await response.json();
-        if (data.status === 'success') balance = data.data.equity.available_margin;
-      } catch (e) {
-        console.error("Failed to fetch Upstox funds", e);
+  app.get("/api/user/profile", authenticateToken, async (req: any, res, next) => {
+    try {
+      const { rows: userRows } = await query("SELECT id, email, mobile, role, kyc_status, is_kyc_approved, balance FROM users WHERE id = $1", [req.user.id]);
+      const user = userRows[0];
+      if (!user) return res.status(404).json({ error: "User not found" });
+      
+      const { rows: tokenRows } = await query("SELECT access_token FROM user_tokens WHERE user_id = $1", [req.user.id]);
+      const userToken = tokenRows[0];
+      
+      let balance = parseFloat(user?.balance) || 0;
+      if (userToken) {
+        try {
+          // DECRYPT BEFORE USE
+          const decryptedToken = decrypt(userToken.access_token);
+          const response = await fetch("https://api.upstox.com/v2/user/get-funds-and-margin", {
+            headers: { "Authorization": `Bearer ${decryptedToken}`, "Accept": "application/json" }
+          });
+          const data = await response.json();
+          if (data.status === 'success') balance = data.data.equity.available_margin;
+        } catch (e) {
+          logger.warn("Failed to fetch Upstox funds", e);
+        }
       }
-    }
 
-    res.json({ ...user, balance, is_uptox_connected: !!userToken });
+      res.json({ ...user, balance, is_uptox_connected: !!userToken });
+    } catch (e) {
+      next(e);
+    }
   });
 
   app.get("/api/auth/uptox/url", (req, res) => {
@@ -380,7 +442,7 @@ async function startServer() {
     res.json({ url });
   });
 
-  app.get("/auth/callback", async (req, res) => {
+  app.get("/auth/callback", async (req, res, next) => {
     const { code } = req.query;
     if (!code) return res.status(400).send("No code provided.");
 
@@ -428,134 +490,154 @@ async function startServer() {
         res.status(400).json(data);
       }
     } catch (e) {
-      res.status(500).send("Authentication failed");
+      next(e);
     }
   });
 
-  app.post("/api/auth/uptox/save-token", authenticateToken, async (req: any, res) => {
-    const { access_token, refresh_token } = req.body;
-    await query(
-      "INSERT INTO user_tokens (user_id, broker, access_token, refresh_token) VALUES ($1, $2, $3, $4) ON CONFLICT (user_id, broker) DO UPDATE SET access_token = EXCLUDED.access_token, refresh_token = EXCLUDED.refresh_token",
-      [req.user.id, 'upstox', access_token, refresh_token || null]
-    );
-    await query("UPDATE users SET is_uptox_connected = true WHERE id = $1", [req.user.id]);
-    fetchRealPrices();
-    res.json({ success: true });
+  app.post("/api/auth/uptox/save-token", authenticateToken, validate(upstoxSaveTokenSchema), async (req: any, res, next) => {
+    try {
+      const { access_token, refresh_token } = req.body;
+      
+      // ENCRYPT TOKENS BEFORE SAVING
+      await query(
+        "INSERT INTO user_tokens (user_id, broker, access_token, refresh_token) VALUES ($1, $2, $3, $4) ON CONFLICT (user_id, broker) DO UPDATE SET access_token = EXCLUDED.access_token, refresh_token = EXCLUDED.refresh_token",
+        [req.user.id, 'upstox', encrypt(access_token), encrypt(refresh_token)]
+      );
+      await query("UPDATE users SET is_uptox_connected = true WHERE id = $1", [req.user.id]);
+      fetchRealPrices();
+      res.json({ success: true });
+    } catch (e) {
+      next(e);
+    }
   });
 
-  app.get("/api/portfolio", authenticateToken, async (req: any, res) => {
-    const { rows: tokens } = await query("SELECT broker, access_token FROM user_tokens WHERE user_id = $1", [req.user.id]);
-    let combinedHoldings: any[] = [];
-    
-    for (const token of tokens) {
-      if (token.broker === 'upstox') {
+  app.get("/api/portfolio", authenticateToken, async (req: any, res, next) => {
+    try {
+      const { rows: tokens } = await query("SELECT broker, access_token FROM user_tokens WHERE user_id = $1", [req.user.id]);
+      let combinedHoldings: any[] = [];
+      
+      for (const token of tokens) {
+        // DECRYPT BEFORE USE
+        const decryptedToken = decrypt(token.access_token);
+        
+        if (token.broker === 'upstox') {
+          try {
+            const response = await fetch("https://api.upstox.com/v2/portfolio/long-term-holdings", {
+              headers: { "Authorization": `Bearer ${decryptedToken}`, "Accept": "application/json" }
+            });
+            const data = await response.json();
+            if (data.status === 'success') {
+              const holdings = data.data.map((h: any) => ({
+                symbol: h.trading_symbol, quantity: h.quantity, average_price: h.average_price, current_price: h.last_price, broker: 'Upstox'
+              }));
+              combinedHoldings = [...combinedHoldings, ...holdings];
+            }
+          } catch (e) { logger.warn("Upstox holdings error", e); }
+        } else if (token.broker === 'angelone') {
+          try {
+            const response = await fetch("https://apiconnect.angelone.in/rest/auth/angelone/portfolio/v1/getHolding", {
+              headers: { "X-PrivateKey": process.env.ANGEL_ONE_API_KEY!, "X-SourceID": "WEB", "Authorization": `Bearer ${decryptedToken}`, "Content-Type": "application/json", "Accept": "application/json" }
+            });
+            const data = await response.json();
+            if (data.status && data.data) {
+              const holdings = data.data.map((h: any) => ({
+                symbol: h.tradingsymbol, quantity: parseInt(h.quantity), average_price: parseFloat(h.averageprice), current_price: parseFloat(h.ltp), broker: 'Angel One'
+              }));
+              combinedHoldings = [...combinedHoldings, ...holdings];
+            }
+          } catch (e) { logger.warn("Angel One holdings error", e); }
+        }
+      }
+      
+      if (combinedHoldings.length > 0) return res.json(combinedHoldings);
+      const { rows: localHoldings } = await query("SELECT *, 'Local' as broker FROM portfolios WHERE user_id = $1", [req.user.id]);
+      res.json(localHoldings);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  app.post("/api/orders", authenticateToken, requireKyc, validate(placeOrderSchema), async (req: any, res, next) => {
+    try {
+      const { symbol, type, order_type, quantity, price, product, broker } = req.body;
+      const userId = req.user.id;
+      const { rows } = await query("SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = $2", [userId, broker]);
+      const userToken = rows[0];
+
+      if (!userToken) return res.status(400).json({ error: `Please connect your ${broker} account.` });
+      
+      // DECRYPT BEFORE USE
+      const decryptedToken = decrypt(userToken.access_token);
+
+      if (broker === 'upstox') {
         try {
-          const response = await fetch("https://api.upstox.com/v2/portfolio/long-term-holdings", {
-            headers: { "Authorization": `Bearer ${token.access_token}`, "Accept": "application/json" }
+          const response = await fetch("https://api.upstox.com/v2/order/place", {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${decryptedToken}`, "Content-Type": "application/json", "Accept": "application/json" },
+            body: JSON.stringify({
+              quantity, product: product.toUpperCase() === 'INTRADAY' ? 'I' : 'D', validity: 'DAY', price,
+              tag: 'AAPA_APP', instrument_token: symbol.includes('|') ? symbol : `NSE_EQ|${symbol}`, order_type: order_type.toUpperCase(), 
+              transaction_type: type.toUpperCase(), disclosed_quantity: 0, trigger_price: 0, is_amo: false
+            })
           });
           const data = await response.json();
           if (data.status === 'success') {
-            const holdings = data.data.map((h: any) => ({
-              symbol: h.trading_symbol, quantity: h.quantity, average_price: h.average_price, current_price: h.last_price, broker: 'Upstox'
-            }));
-            combinedHoldings = [...combinedHoldings, ...holdings];
+            await query(
+              "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, broker_order_id, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed')", 
+              [userId, symbol, type, order_type, quantity, price, broker, data.data.order_id]
+            );
+            return res.json({ success: true, order_id: data.data.order_id });
           }
-        } catch (e) { console.error("Upstox holdings error", e); }
-      } else if (token.broker === 'angelone') {
+          
+          const errorMsg = data.errors?.[0]?.message || "Upstox order failed";
+          await query(
+            "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8)", 
+            [userId, symbol, type, order_type, quantity, price, broker, errorMsg]
+          );
+          return res.status(400).json({ error: errorMsg });
+        } catch (e: any) { 
+          await query(
+            "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8)", 
+            [userId, symbol, type, order_type, quantity, price, broker, e.message]
+          );
+          throw new Error("Upstox API Error");
+        }
+      } else if (broker === 'angelone') {
         try {
-          const response = await fetch("https://apiconnect.angelone.in/rest/auth/angelone/portfolio/v1/getHolding", {
-            headers: { "X-PrivateKey": process.env.ANGEL_ONE_API_KEY!, "X-SourceID": "WEB", "Authorization": `Bearer ${token.access_token}`, "Content-Type": "application/json", "Accept": "application/json" }
+          const response = await fetch("https://apiconnect.angelone.in/rest/auth/angelone/order/v1/placeOrder", {
+            method: "POST",
+            headers: { "X-PrivateKey": process.env.ANGEL_ONE_API_KEY!, "X-SourceID": "WEB", "Authorization": `Bearer ${decryptedToken}`, "Content-Type": "application/json", "Accept": "application/json" },
+            body: JSON.stringify({
+              variety: "NORMAL", tradingsymbol: symbol, symboltoken: ANGEL_ONE_TOKENS[symbol] || "3045", transactiontype: type.toUpperCase(),
+              exchange: symbol.includes('NIFTY') || symbol.includes('BANK') ? "NFO" : "NSE", ordertype: order_type.toUpperCase(), producttype: product.toUpperCase() === 'INTRADAY' ? 'INTRADAY' : 'DELIVERY',
+              duration: "DAY", price, squareoff: "0", stoploss: "0", quantity: quantity.toString()
+            })
           });
           const data = await response.json();
-          if (data.status && data.data) {
-            const holdings = data.data.map((h: any) => ({
-              symbol: h.tradingsymbol, quantity: parseInt(h.quantity), average_price: parseFloat(h.averageprice), current_price: parseFloat(h.ltp), broker: 'Angel One'
-            }));
-            combinedHoldings = [...combinedHoldings, ...holdings];
+          if (data.status && data.data && data.data.orderid) {
+            await query(
+              "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, broker_order_id, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed')", 
+              [userId, symbol, type, order_type, quantity, price, broker, data.data.orderid]
+            );
+            return res.json({ success: true, order_id: data.data.orderid });
           }
-        } catch (e) { console.error("Angel One holdings error", e); }
-      }
-    }
-    
-    if (combinedHoldings.length > 0) return res.json(combinedHoldings);
-    const { rows: localHoldings } = await query("SELECT *, 'Local' as broker FROM portfolios WHERE user_id = $1", [req.user.id]);
-    res.json(localHoldings);
-  });
 
-  app.post("/api/orders", authenticateToken, requireKyc, async (req: any, res) => {
-    const { symbol, type, order_type, quantity, price, product = 'I', broker = 'upstox' } = req.body;
-    const userId = req.user.id;
-    const { rows } = await query("SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = $2", [userId, broker]);
-    const userToken = rows[0];
-
-    if (!userToken) return res.status(400).json({ error: `Please connect your ${broker} account.` });
-
-    if (broker === 'upstox') {
-      try {
-        const response = await fetch("https://api.upstox.com/v2/order/place", {
-          method: "POST",
-          headers: { "Authorization": `Bearer ${userToken.access_token}`, "Content-Type": "application/json", "Accept": "application/json" },
-          body: JSON.stringify({
-            quantity: parseInt(quantity), product: product.toUpperCase() === 'INTRADAY' ? 'I' : 'D', validity: 'DAY', price: parseFloat(price) || 0,
-            tag: 'AAPA_APP', instrument_token: symbol.includes('|') ? symbol : `NSE_EQ|${symbol}`, order_type: order_type.toUpperCase(), 
-            transaction_type: type.toUpperCase(), disclosed_quantity: 0, trigger_price: 0, is_amo: false
-          })
-        });
-        const data = await response.json();
-        if (data.status === 'success') {
+          const errorMsg = data.message || "Angel One order failed";
           await query(
-            "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, broker_order_id, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed')", 
-            [userId, symbol, type, order_type, quantity, price, broker, data.data.order_id]
+            "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8)", 
+            [userId, symbol, type, order_type, quantity, price, broker, errorMsg]
           );
-          return res.json({ success: true, order_id: data.data.order_id });
-        }
-        
-        const errorMsg = data.errors?.[0]?.message || "Upstox order failed";
-        await query(
-          "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8)", 
-          [userId, symbol, type, order_type, quantity, price, broker, errorMsg]
-        );
-        return res.status(400).json({ error: errorMsg });
-      } catch (e: any) { 
-        await query(
-          "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8)", 
-          [userId, symbol, type, order_type, quantity, price, broker, e.message]
-        );
-        return res.status(500).json({ error: "Upstox API Error" }); 
-      }
-    } else if (broker === 'angelone') {
-      try {
-        const response = await fetch("https://apiconnect.angelone.in/rest/auth/angelone/order/v1/placeOrder", {
-          method: "POST",
-          headers: { "X-PrivateKey": process.env.ANGEL_ONE_API_KEY!, "X-SourceID": "WEB", "Authorization": `Bearer ${userToken.access_token}`, "Content-Type": "application/json", "Accept": "application/json" },
-          body: JSON.stringify({
-            variety: "NORMAL", tradingsymbol: symbol, symboltoken: ANGEL_ONE_TOKENS[symbol] || "3045", transactiontype: type.toUpperCase(),
-            exchange: symbol.includes('NIFTY') || symbol.includes('BANK') ? "NFO" : "NSE", ordertype: order_type.toUpperCase(), producttype: product.toUpperCase() === 'INTRADAY' ? 'INTRADAY' : 'DELIVERY',
-            duration: "DAY", price: parseFloat(price) || 0, squareoff: "0", stoploss: "0", quantity: quantity.toString()
-          })
-        });
-        const data = await response.json();
-        if (data.status && data.data && data.data.orderid) {
+          return res.status(400).json({ error: errorMsg });
+        } catch (e: any) { 
           await query(
-            "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, broker_order_id, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed')", 
-            [userId, symbol, type, order_type, quantity, price, broker, data.data.orderid]
+            "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8)", 
+            [userId, symbol, type, order_type, quantity, price, broker, e.message]
           );
-          return res.json({ success: true, order_id: data.data.orderid });
+          throw new Error("Angel One API error");
         }
-
-        const errorMsg = data.message || "Angel One order failed";
-        await query(
-          "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8)", 
-          [userId, symbol, type, order_type, quantity, price, broker, errorMsg]
-        );
-        return res.status(400).json({ error: errorMsg });
-      } catch (e: any) { 
-        await query(
-          "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8)", 
-          [userId, symbol, type, order_type, quantity, price, broker, e.message]
-        );
-        return res.status(500).json({ error: "Angel One API error" }); 
       }
+    } catch (e) {
+      next(e);
     }
   });
 
@@ -579,11 +661,14 @@ async function startServer() {
       const userToken = rows[0];
       if (!userToken) return;
 
+      // DECRYPT BEFORE USE
+      const decryptedToken = decrypt(userToken.access_token);
+
       const stockKeys = stocks.map(s => `NSE_EQ|${s}`);
       const indexKeys = Object.values(indexMap).flat();
       const allKeys = [...stockKeys, ...indexKeys].join(',');
       
-      const response = await fetch(`https://api.upstox.com/v2/market-quote/quotes?instrument_key=${allKeys}`, { headers: { "Authorization": `Bearer ${userToken.access_token}`, "Accept": "application/json" }, signal: AbortSignal.timeout(4000) });
+      const response = await fetch(`https://api.upstox.com/v2/market-quote/quotes?instrument_key=${allKeys}`, { headers: { "Authorization": `Bearer ${decryptedToken}`, "Accept": "application/json" }, signal: AbortSignal.timeout(4000) });
       
       if (!response.ok) {
         if (response.status === 401) await query("DELETE FROM user_tokens WHERE broker = 'upstox'");
@@ -600,7 +685,7 @@ async function startServer() {
           else if (allSymbols.includes(key.split('|')[1])) stockPrices[key.split('|')[1]] = price;
         });
       }
-    } catch (e) { console.error("[MarketData] Error:", e); } finally { isFetchingUpstox = false; }
+    } catch (e) { logger.error("[MarketData] Error:", e); } finally { isFetchingUpstox = false; }
   };
 
   let isFetchingAngel = false;
@@ -612,8 +697,11 @@ async function startServer() {
       const userToken = rows[0];
       if (!userToken) return;
 
+      // DECRYPT BEFORE USE
+      const decryptedToken = decrypt(userToken.access_token);
+
       const response = await fetch("https://apiconnect.angelone.in/rest/auth/angelone/market/v1/quote", {
-        method: "POST", headers: { "X-PrivateKey": process.env.ANGEL_ONE_API_KEY!, "X-SourceID": "WEB", "Authorization": `Bearer ${userToken.access_token}`, "Content-Type": "application/json", "Accept": "application/json" },
+        method: "POST", headers: { "X-PrivateKey": process.env.ANGEL_ONE_API_KEY!, "X-SourceID": "WEB", "Authorization": `Bearer ${decryptedToken}`, "Content-Type": "application/json", "Accept": "application/json" },
         body: JSON.stringify({ mode: "LTP", exchangeTokens: { NSE: ["3045", "99926000", "99926009"] } }), signal: AbortSignal.timeout(4000)
       });
       const data = await response.json();
@@ -623,9 +711,13 @@ async function startServer() {
     } catch (e) { } finally { isFetchingAngel = false; }
   };
 
-  app.post("/api/market/refresh", authenticateToken, async (req: any, res: any) => {
-    await fetchRealPrices();
-    res.json({ success: true, last_prices: stockPrices });
+  app.post("/api/market/refresh", authenticateToken, async (req: any, res: any, next: any) => {
+    try {
+      await fetchRealPrices();
+      res.json({ success: true, last_prices: stockPrices });
+    } catch (e) {
+      next(e);
+    }
   });
 
   fetchRealPrices();
@@ -644,12 +736,28 @@ async function startServer() {
     wss.clients.forEach(c => { if (c.readyState === WebSocket.OPEN) c.send(payload); });
   }, 1000);
 
-  app.get("/api/market-status", async (req, res) => {
+  app.get("/api/market-status", async (req, res, next) => {
     try {
       const { rows: countRows } = await query("SELECT COUNT(*) as count FROM user_tokens");
       const { rows: tokens } = await query("SELECT user_id, updated_at FROM user_tokens");
       res.json({ is_fetching: parseInt(countRows[0].count) > 0, token_count: parseInt(countRows[0].count), tokens, last_prices: stockPrices, api_key_set: !!process.env.UPTOX_API_KEY, market_hours: { open: "09:15", close: "15:30", timezone: "Asia/Kolkata" } });
-    } catch (e) { res.status(500).json({ error: "Status fail" }); }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  app.use((err: any, req: any, res: any, next: any) => {
+    logger.error('Unhandled error', {
+      error: err.message,
+      stack: err.stack,
+      path: req.path,
+      method: req.method,
+      userId: req.user?.id,
+    });
+
+    res.status(500).json({
+      error: 'An internal server error occurred. Please try again.',
+    });
   });
 
   if (process.env.NODE_ENV !== "production") {
@@ -669,8 +777,10 @@ async function startServer() {
   }
 
   server.listen(3000, "0.0.0.0", () => {
-    console.log(`[Server] AAPA CAPITAL server running on http://0.0.0.0:3000`);
+    logger.info(`[Server] AAPA CAPITAL server running on http://0.0.0.0:3000`);
   });
 }
 
-startServer().catch(console.error);
+startServer().catch((e) => {
+  logger.error("Failed to start server", e);
+});
