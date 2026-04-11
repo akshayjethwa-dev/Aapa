@@ -1,7 +1,8 @@
+/// <reference types="vite/client" />
 import React, { useState, useEffect, useMemo } from 'react';
 import { Toaster, toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
-import { LogOut, ChevronRight, Search } from 'lucide-react';
+import { LogOut, ChevronRight, Search, AlertCircle } from 'lucide-react';
 import { useAuthStore } from './store/authStore';
 import { formatCurrency } from './lib/utils';
 import { apiClient } from './api/client';
@@ -20,6 +21,9 @@ import Portfolio from './screens/Portfolio';
 import More from './screens/More';
 import AdminPanel from './screens/admin/AdminPanel';
 import ComplianceDetail from './screens/ComplianceDetail';
+
+// --- ADDED FOR TASK-013: KYC Screen ---
+import KycVerification from './screens/KycVerification';
 
 // Modal / Overlay Components
 import IndexOverview from './screens/IndexOverview';
@@ -53,6 +57,9 @@ function App() {
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedStockFromSearch, setSelectedStockFromSearch] = useState<string | null>(null);
+
+  // --- ADDED FOR TASK-012 ---
+  const [isDemoMode, setIsDemoMode] = useState(false); 
 
   // Broker Connection Logic
   const [isConnectingAngel, setIsConnectingAngel] = useState(false);
@@ -165,6 +172,15 @@ function App() {
 
   useEffect(() => {
     const handleMessage = async (event: MessageEvent) => {
+      // --- TASK-007: Origin Security Fix ---
+      const allowedOrigin = import.meta.env.VITE_APP_URL || 'http://localhost:5173';
+      
+      // Reject messages from unknown origins (we also allow window.location.origin in case frontend and backend are served together)
+      if (event.origin !== allowedOrigin && event.origin !== window.location.origin) {
+        console.warn(`Blocked postMessage from unauthorized origin: ${event.origin}`);
+        return;
+      }
+
       if (event.data?.type === 'UPTOX_AUTH_SUCCESS') {
         const { token: uptoxToken, refresh_token: uptoxRefreshToken } = event.data;
         if (!token) return;
@@ -195,10 +211,28 @@ function App() {
     ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data);
+
+        // --- ADDED FOR TASK: API Loop Stabilization ---
+        if (message.type === 'broker_disconnected') {
+          if (message.broker === 'upstox' && user?.is_uptox_connected) {
+            toast.error('Upstox session expired. Please reconnect.');
+            // Force the UI to show the "Connect Upstox" CTA natively
+            setAuth({ ...user, is_uptox_connected: false }, token);
+          }
+        }
+        // ----------------------------------------------
+
         if (message.type === 'ticker') {
           const hasData = Object.values(message.data).some(v => (v as number) > 0);
           if (hasData) console.log('[WebSocket] Ticker received with live data');
           setStocks(message.data);
+
+          // --- ADDED FOR TASK-012 ---
+          // Update Demo Mode state from WebSocket payload
+          if (message.isSimulated !== undefined) {
+            setIsDemoMode(message.isSimulated);
+          }
+          // --------------------------
         }
       } catch (e) {
         console.error('[WebSocket] Failed to parse message', e);
@@ -207,7 +241,7 @@ function App() {
     ws.onerror = (err) => console.error('[WebSocket] Connection error', err);
     ws.onclose = () => console.log('[WebSocket] Disconnected from server');
     return () => ws.close();
-  }, [token]);
+  }, [token, user, setAuth]);
 
   if (!token) {
     return (
@@ -227,6 +261,14 @@ function App() {
         />
 
         <main className="max-w-md mx-auto pt-20">
+          {/* --- ADDED FOR TASK-012: Global Demo Mode Banner --- */}
+          {isDemoMode && (
+            <div className="bg-amber-500 text-black py-2 px-4 text-center font-bold text-[10px] uppercase tracking-widest shadow-lg shadow-amber-500/20 z-50 relative">
+              <AlertCircle size={14} className="inline mr-2 -mt-0.5" />
+              DEMO MODE - Prices are simulated. Connect broker to trade.
+            </div>
+          )}
+          
           <AnimatePresence mode="wait">
             {activeTab === 'dashboard' && (
               <Dashboard
@@ -288,6 +330,13 @@ function App() {
                 key="compliance"
                 type={complianceType}
                 onBack={() => setActiveTab('more')}
+              />
+            )}
+            {/* --- ADDED FOR TASK-013: KYC Screen --- */}
+            {activeTab === 'kyc' && (
+              <KycVerification
+                key="kyc"
+                onBack={() => setActiveTab('dashboard')}
               />
             )}
           </AnimatePresence>
@@ -443,12 +492,18 @@ function App() {
             </motion.div>
           )}
 
+          {/* --- ADDED FOR TASK-012 & 013: Pass isDemoMode and onKycRequired to OrderWindow --- */}
           {orderConfig && (
             <OrderWindow
               key="order-window"
               config={orderConfig}
               onClose={() => setOrderConfig(null)}
               onOrderPlaced={() => {}}
+              isDemoMode={isDemoMode}
+              onKycRequired={() => {
+                setOrderConfig(null);
+                setActiveTab('kyc');
+              }}
             />
           )}
           {overviewIndex && (

@@ -5,7 +5,20 @@ import { toast } from 'sonner';
 import { formatCurrency, cn } from '../lib/utils';
 import { useAuthStore } from '../store/authStore';
 
-const OrderWindow = ({ config, onClose, onOrderPlaced }: { config: any, onClose: () => void, onOrderPlaced: () => void }) => {
+// --- MODIFIED: Added onKycRequired to the props ---
+const OrderWindow = ({ 
+  config, 
+  onClose, 
+  onOrderPlaced, 
+  isDemoMode = false,
+  onKycRequired 
+}: { 
+  config: any, 
+  onClose: () => void, 
+  onOrderPlaced: () => void, 
+  isDemoMode?: boolean,
+  onKycRequired?: () => void 
+}) => {
   const { user, token } = useAuthStore();
   const [quantity, setQuantity] = useState(config.quantity || 1);
   const [orderType, setOrderType] = useState('Market');
@@ -15,6 +28,11 @@ const OrderWindow = ({ config, onClose, onOrderPlaced }: { config: any, onClose:
   const [broker, setBroker] = useState(user?.is_uptox_connected ? 'uptox' : user?.is_angelone_connected ? 'angelone' : 'uptox');
 
   const handlePlaceOrder = async () => {
+    if (isDemoMode) {
+      toast.error('Trading is disabled in Demo Mode');
+      return;
+    }
+
     setLoading(true);
     try {
       const res = await fetch('/api/orders', {
@@ -34,6 +52,16 @@ const OrderWindow = ({ config, onClose, onOrderPlaced }: { config: any, onClose:
         })
       });
       const data = await res.json();
+
+      // --- ADDED: Intercept 403 KYC Requirement ---
+      if (res.status === 403 && data.requires_kyc) {
+        onClose(); // Close the order window
+        if (onKycRequired) onKycRequired(); // Trigger UI route change
+        toast.error(data.message || 'KYC required to trade.');
+        return;
+      }
+      // --------------------------------------------
+
       if (data.success) {
         onOrderPlaced();
         onClose();
@@ -135,14 +163,15 @@ const OrderWindow = ({ config, onClose, onOrderPlaced }: { config: any, onClose:
               type="number" 
               value={quantity}
               onChange={(e) => setQuantity(e.target.value)}
-              className="w-full bg-zinc-900/30 border border-zinc-800/50 rounded-2xl py-4 px-6 text-sm font-bold focus:outline-none focus:border-emerald-500/50 transition-all" 
+              disabled={isDemoMode}
+              className="w-full bg-zinc-900/30 border border-zinc-800/50 rounded-2xl py-4 px-6 text-sm font-bold focus:outline-none focus:border-emerald-500/50 transition-all disabled:opacity-50" 
             />
           </div>
           <div className="space-y-2">
             <label className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest ml-1">Price</label>
             <input 
               type="number" 
-              disabled={orderType === 'Market'}
+              disabled={orderType === 'Market' || isDemoMode}
               value={orderType === 'Market' ? config.price : price}
               onChange={(e) => setPrice(e.target.value)}
               className="w-full bg-zinc-900/30 border border-zinc-800/50 rounded-2xl py-4 px-6 text-sm font-bold focus:outline-none focus:border-emerald-500/50 transition-all disabled:opacity-50" 
@@ -157,9 +186,11 @@ const OrderWindow = ({ config, onClose, onOrderPlaced }: { config: any, onClose:
               <button
                 key={t}
                 onClick={() => setOrderType(t)}
+                disabled={isDemoMode}
                 className={cn(
                   "flex-1 py-3 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all",
-                  orderType === t ? "bg-zinc-800 text-white shadow-lg" : "text-zinc-500"
+                  orderType === t ? "bg-zinc-800 text-white shadow-lg" : "text-zinc-500",
+                  isDemoMode && "opacity-50 cursor-not-allowed"
                 )}
               >
                 {t}
@@ -175,9 +206,11 @@ const OrderWindow = ({ config, onClose, onOrderPlaced }: { config: any, onClose:
               <button
                 key={p}
                 onClick={() => setProduct(p)}
+                disabled={isDemoMode}
                 className={cn(
                   "flex-1 py-3 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all",
-                  product === p ? "bg-zinc-800 text-white shadow-lg" : "text-zinc-500"
+                  product === p ? "bg-zinc-800 text-white shadow-lg" : "text-zinc-500",
+                  isDemoMode && "opacity-50 cursor-not-allowed"
                 )}
               >
                 {p}
@@ -201,14 +234,14 @@ const OrderWindow = ({ config, onClose, onOrderPlaced }: { config: any, onClose:
       <div className="p-6 bg-black border-t border-zinc-900">
         <button 
           onClick={handlePlaceOrder}
-          disabled={loading || connectedBrokers.length === 0}
+          disabled={loading || connectedBrokers.length === 0 || isDemoMode}
           className={cn(
             "w-full font-black py-5 rounded-2xl transition-all shadow-xl uppercase text-xs tracking-widest",
             config.side === 'BUY' ? "bg-emerald-500 text-black shadow-emerald-500/10" : "bg-rose-500 text-black shadow-rose-500/10",
-            (loading || connectedBrokers.length === 0) && "opacity-50 cursor-not-allowed"
+            (loading || connectedBrokers.length === 0 || isDemoMode) && "opacity-50 cursor-not-allowed"
           )}
         >
-          {loading ? 'Processing...' : `${config.side} ${config.symbol}`}
+          {loading ? 'Processing...' : isDemoMode ? 'Disabled in Demo Mode' : `${config.side} ${config.symbol}`}
         </button>
       </div>
     </motion.div>

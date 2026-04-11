@@ -29,8 +29,11 @@ import {
 // Logger Import
 import { logger } from "./src/utils/logger";
 
-// --- NEW ENCRYPTION IMPORT ---
+// --- ENCRYPTION IMPORT ---
 import { encrypt, decrypt } from "./src/utils/encryption";
+
+// --- ADDED FOR TASK-013: Import KYC Middleware ---
+import { requireKyc } from "./src/middleware/requireKyc";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -54,6 +57,27 @@ const initDbAndSeed = async () => {
     } catch (migErr) {
       logger.warn("[DB] Skipping Migration 002: File not found or error.", migErr);
     }
+
+    // Run Broker Audit Logging Migration
+    try {
+      const migration3Path = path.join(__dirname, "migrations", "003_add_broker_audit_logs.sql");
+      const migration3 = await fs.readFile(migration3Path, "utf8");
+      await pool.query(migration3);
+      logger.info("[DB] PostgreSQL Schema 003 (Broker Audit Logs) applied successfully.");
+    } catch (migErr) {
+      logger.warn("[DB] Skipping Migration 003: File not found or error.", migErr);
+    }
+
+    // --- ADDED FOR TASK-013: Run KYC Migration ---
+    try {
+      const migration4Path = path.join(__dirname, "migrations", "004_add_kyc_fields.sql");
+      const migration4 = await fs.readFile(migration4Path, "utf8");
+      await pool.query(migration4);
+      logger.info("[DB] PostgreSQL Schema 004 (KYC Fields) applied successfully.");
+    } catch (migErr) {
+      logger.warn("[DB] Skipping Migration 004: File not found or error.", migErr);
+    }
+    // ----------------------------------------------
 
     const admins = [
       { email: "bharvadvijay371@gmail.com", password: "Aniket@371" },
@@ -154,25 +178,6 @@ async function startServer() {
       req.user = user;
       next();
     });
-  };
-
-  const requireKyc = async (req: any, res: any, next: any) => {
-    try {
-      const { rows } = await query("SELECT kyc_status, role FROM users WHERE id = $1", [req.user.id]);
-      const user = rows[0];
-      
-      if (!user) return res.status(404).json({ error: "User not found" });
-      if (user.role === 'admin') return next();
-
-      if (user.kyc_status !== 'approved') {
-        return res.status(403).json({ 
-          error: `Trading is restricted. Your KYC status is '${user.kyc_status}'. Please complete compliance verification.` 
-        });
-      }
-      next();
-    } catch (e) {
-      next(e);
-    }
   };
 
   app.get("/api/health", (req, res) => {
@@ -306,7 +311,6 @@ async function startServer() {
       if (data.status && data.data && data.data.jwtToken) {
         const { jwtToken, refreshToken, feedToken } = data.data;
         
-        // ENCRYPT TOKENS BEFORE SAVING
         await query(
           "INSERT INTO user_tokens (user_id, broker, access_token, refresh_token, feed_token) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (user_id, broker) DO UPDATE SET access_token = EXCLUDED.access_token, refresh_token = EXCLUDED.refresh_token, feed_token = EXCLUDED.feed_token",
           [req.user.id, 'angelone', encrypt(jwtToken), encrypt(refreshToken), encrypt(feedToken)]
@@ -396,13 +400,12 @@ async function startServer() {
       const user = userRows[0];
       if (!user) return res.status(404).json({ error: "User not found" });
       
-      const { rows: tokenRows } = await query("SELECT access_token FROM user_tokens WHERE user_id = $1", [req.user.id]);
+      const { rows: tokenRows } = await query("SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = 'upstox'", [req.user.id]);
       const userToken = tokenRows[0];
       
       let balance = parseFloat(user?.balance) || 0;
       if (userToken) {
         try {
-          // DECRYPT BEFORE USE
           const decryptedToken = decrypt(userToken.access_token);
           const response = await fetch("https://api.upstox.com/v2/user/get-funds-and-margin", {
             headers: { "Authorization": `Bearer ${decryptedToken}`, "Accept": "application/json" }
@@ -471,6 +474,10 @@ async function startServer() {
 
       const data = await response.json();
       if (data.access_token) {
+        const allowedOrigin = process.env.NODE_ENV === 'production'
+          ? (process.env.VITE_APP_URL || 'https://aapacapital.com') 
+          : 'http://localhost:5173';
+
         res.send(`
           <html>
             <body style="background: #000; color: #fff; display: flex; align-items: center; justify-content: center; height: 100vh;">
@@ -478,7 +485,7 @@ async function startServer() {
                 <h2 style="color: #10b981;">Connection Successful!</h2>
                 <script>
                   if (window.opener) {
-                    window.opener.postMessage({ type: 'UPTOX_AUTH_SUCCESS', token: '${data.access_token}', refresh_token: '${data.refresh_token || ""}' }, '*');
+                    window.opener.postMessage({ type: 'UPTOX_AUTH_SUCCESS', token: '${data.access_token}', refresh_token: '${data.refresh_token || ""}' }, '${allowedOrigin}');
                     setTimeout(() => window.close(), 2000);
                   }
                 </script>
@@ -498,12 +505,16 @@ async function startServer() {
     try {
       const { access_token, refresh_token } = req.body;
       
-      // ENCRYPT TOKENS BEFORE SAVING
       await query(
         "INSERT INTO user_tokens (user_id, broker, access_token, refresh_token) VALUES ($1, $2, $3, $4) ON CONFLICT (user_id, broker) DO UPDATE SET access_token = EXCLUDED.access_token, refresh_token = EXCLUDED.refresh_token",
         [req.user.id, 'upstox', encrypt(access_token), encrypt(refresh_token)]
       );
       await query("UPDATE users SET is_uptox_connected = true WHERE id = $1", [req.user.id]);
+      
+      // Reset backoff so it starts fetching immediately
+      upstoxConsecutiveFailures = 0;
+      upstoxBackoffUntil = 0;
+      
       fetchRealPrices();
       res.json({ success: true });
     } catch (e) {
@@ -517,7 +528,6 @@ async function startServer() {
       let combinedHoldings: any[] = [];
       
       for (const token of tokens) {
-        // DECRYPT BEFORE USE
         const decryptedToken = decrypt(token.access_token);
         
         if (token.broker === 'upstox') {
@@ -566,7 +576,6 @@ async function startServer() {
 
       if (!userToken) return res.status(400).json({ error: `Please connect your ${broker} account.` });
       
-      // DECRYPT BEFORE USE
       const decryptedToken = decrypt(userToken.access_token);
 
       if (broker === 'upstox') {
@@ -581,24 +590,26 @@ async function startServer() {
             })
           });
           const data = await response.json();
+
           if (data.status === 'success') {
             await query(
-              "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, broker_order_id, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed')", 
-              [userId, symbol, type, order_type, quantity, price, broker, data.data.order_id]
+              "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, broker_order_id, status, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed', $9)", 
+              [userId, symbol, type, order_type, quantity, price, broker, data.data.order_id, JSON.stringify(data)]
             );
             return res.json({ success: true, order_id: data.data.order_id });
           }
           
           const errorMsg = data.errors?.[0]?.message || "Upstox order failed";
           await query(
-            "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8)", 
-            [userId, symbol, type, order_type, quantity, price, broker, errorMsg]
+            "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8, $9)", 
+            [userId, symbol, type, order_type, quantity, price, broker, errorMsg, JSON.stringify(data)]
           );
           return res.status(400).json({ error: errorMsg });
+
         } catch (e: any) { 
           await query(
-            "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8)", 
-            [userId, symbol, type, order_type, quantity, price, broker, e.message]
+            "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8, $9)", 
+            [userId, symbol, type, order_type, quantity, price, broker, e.message, JSON.stringify({ error: e.message })]
           );
           throw new Error("Upstox API Error");
         }
@@ -614,24 +625,26 @@ async function startServer() {
             })
           });
           const data = await response.json();
+
           if (data.status && data.data && data.data.orderid) {
             await query(
-              "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, broker_order_id, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed')", 
-              [userId, symbol, type, order_type, quantity, price, broker, data.data.orderid]
+              "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, broker_order_id, status, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed', $9)", 
+              [userId, symbol, type, order_type, quantity, price, broker, data.data.orderid, JSON.stringify(data)]
             );
             return res.json({ success: true, order_id: data.data.orderid });
           }
 
           const errorMsg = data.message || "Angel One order failed";
           await query(
-            "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8)", 
-            [userId, symbol, type, order_type, quantity, price, broker, errorMsg]
+            "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8, $9)", 
+            [userId, symbol, type, order_type, quantity, price, broker, errorMsg, JSON.stringify(data)]
           );
           return res.status(400).json({ error: errorMsg });
+          
         } catch (e: any) { 
           await query(
-            "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8)", 
-            [userId, symbol, type, order_type, quantity, price, broker, e.message]
+            "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8, $9)", 
+            [userId, symbol, type, order_type, quantity, price, broker, e.message, JSON.stringify({ error: e.message })]
           );
           throw new Error("Angel One API error");
         }
@@ -652,28 +665,55 @@ async function startServer() {
   allSymbols.forEach(s => { if (!stockPrices[s]) stockPrices[s] = Math.random() * 1000 + 100; });
   const indexMap: Record<string, string[]> = { 'NIFTY 50': ['NSE_INDEX|Nifty 50', 'NSE_INDEX|NIFTY 50'], 'BANKNIFTY': ['NSE_INDEX|Nifty Bank', 'NSE_INDEX|NIFTY BANK'], 'FINNIFTY': ['NSE_INDEX|Nifty Fin Service', 'NSE_INDEX|NIFTY FIN SERVICE'], 'MIDCAP NIFTY': ['NSE_INDEX|Nifty Midcap 100', 'NSE_INDEX|NIFTY MIDCAP 100'], 'SENSEX': ['BSE_INDEX|SENSEX', 'BSE_INDEX|Sensex'], 'SMALLCAP NIFTY': ['NSE_INDEX|Nifty Smallcap 100', 'NSE_INDEX|NIFTY SMALLCAP 100'], 'NIFTY IT': ['NSE_INDEX|Nifty IT', 'NSE_INDEX|NIFTY IT'], 'NIFTY AUTO': ['NSE_INDEX|Nifty Auto', 'NSE_INDEX|NIFTY AUTO'], 'NIFTY PHARMA': ['NSE_INDEX|Nifty Pharma', 'NSE_INDEX|NIFTY PHARMA'], 'NIFTY METAL': ['NSE_INDEX|Nifty Metal', 'NSE_INDEX|NIFTY METAL'], 'NIFTY FMCG': ['NSE_INDEX|Nifty FMCG', 'NSE_INDEX|NIFTY FMCG'], 'NIFTY REALTY': ['NSE_INDEX|Nifty Realty', 'NSE_INDEX|NIFTY REALTY'] };
 
+  // --- API Loop Stabilization ---
   let isFetchingUpstox = false;
+  let upstoxConsecutiveFailures = 0;
+  let upstoxBackoffUntil = 0;
+
   const fetchRealPrices = async () => {
     if (isFetchingUpstox) return;
+    if (Date.now() < upstoxBackoffUntil) return; 
+
     isFetchingUpstox = true;
     try {
-      const { rows } = await query("SELECT access_token FROM user_tokens WHERE broker = 'upstox' LIMIT 1");
+      const { rows } = await query("SELECT user_id, access_token FROM user_tokens WHERE broker = 'upstox' LIMIT 1");
       const userToken = rows[0];
       if (!userToken) return;
 
-      // DECRYPT BEFORE USE
       const decryptedToken = decrypt(userToken.access_token);
 
       const stockKeys = stocks.map(s => `NSE_EQ|${s}`);
       const indexKeys = Object.values(indexMap).flat();
       const allKeys = [...stockKeys, ...indexKeys].join(',');
       
-      const response = await fetch(`https://api.upstox.com/v2/market-quote/quotes?instrument_key=${allKeys}`, { headers: { "Authorization": `Bearer ${decryptedToken}`, "Accept": "application/json" }, signal: AbortSignal.timeout(4000) });
+      const response = await fetch(`https://api.upstox.com/v2/market-quote/quotes?instrument_key=${allKeys}`, { 
+        headers: { "Authorization": `Bearer ${decryptedToken}`, "Accept": "application/json" }, 
+        signal: AbortSignal.timeout(4000) 
+      });
       
       if (!response.ok) {
-        if (response.status === 401) await query("DELETE FROM user_tokens WHERE broker = 'upstox'");
+        if (response.status === 401) {
+          logger.warn("[MarketData] Upstox token expired (401). Clearing token.");
+          await query("DELETE FROM user_tokens WHERE broker = 'upstox'");
+          await query("UPDATE users SET is_uptox_connected = false WHERE id = $1", [userToken.user_id]);
+          
+          const payload = JSON.stringify({ type: 'broker_disconnected', broker: 'upstox' });
+          wss.clients.forEach(c => { if (c.readyState === WebSocket.OPEN) c.send(payload); });
+          
+          upstoxConsecutiveFailures = 0;
+          upstoxBackoffUntil = 0;
+        } else {
+          upstoxConsecutiveFailures++;
+          const backoffTime = Math.min(upstoxConsecutiveFailures * 5000, 60000); 
+          upstoxBackoffUntil = Date.now() + backoffTime;
+          logger.warn(`[MarketData] Upstox API error ${response.status}. Backing off for ${backoffTime}ms.`);
+        }
         return;
       }
+
+      upstoxConsecutiveFailures = 0;
+      upstoxBackoffUntil = 0;
+
       const data = await response.json();
       if (data.status === 'success' && data.data) {
         const reverseMap: Record<string, string> = {};
@@ -685,7 +725,14 @@ async function startServer() {
           else if (allSymbols.includes(key.split('|')[1])) stockPrices[key.split('|')[1]] = price;
         });
       }
-    } catch (e) { logger.error("[MarketData] Error:", e); } finally { isFetchingUpstox = false; }
+    } catch (e) { 
+      upstoxConsecutiveFailures++;
+      const backoffTime = Math.min(upstoxConsecutiveFailures * 5000, 60000);
+      upstoxBackoffUntil = Date.now() + backoffTime;
+      logger.error(`[MarketData] Upstox Fetch Error: ${e instanceof Error ? e.message : 'Unknown'}. Backing off for ${backoffTime}ms.`);
+    } finally { 
+      isFetchingUpstox = false; 
+    }
   };
 
   let isFetchingAngel = false;
@@ -697,7 +744,6 @@ async function startServer() {
       const userToken = rows[0];
       if (!userToken) return;
 
-      // DECRYPT BEFORE USE
       const decryptedToken = decrypt(userToken.access_token);
 
       const response = await fetch("https://apiconnect.angelone.in/rest/auth/angelone/market/v1/quote", {
@@ -725,14 +771,16 @@ async function startServer() {
   setInterval(fetchAngelOnePrices, 5000);
 
   setInterval(async () => {
+    let isSimulated = false;
     try {
       const { rows } = await query("SELECT COUNT(*) as count FROM user_tokens");
       if (parseInt(rows[0].count) === 0) {
+        isSimulated = true;
         allSymbols.forEach(symbol => { stockPrices[symbol] += stockPrices[symbol] * (Math.random() * 0.0002 - 0.0001); });
       }
     } catch (e) {}
 
-    const payload = JSON.stringify({ type: 'ticker', data: stockPrices });
+    const payload = JSON.stringify({ type: 'ticker', data: stockPrices, isSimulated });
     wss.clients.forEach(c => { if (c.readyState === WebSocket.OPEN) c.send(payload); });
   }, 1000);
 
