@@ -10,11 +10,12 @@ RUN npm install
 
 COPY . .
 
-# Build the React frontend
+# Build the React frontend (Outputs to /app/dist)
 RUN npm run build
 
-# Compile the Express server with modern Node/ESM flags
-RUN npx tsc server.ts --outDir dist-server --target es2022 --module es2022 --moduleResolution node --esModuleInterop --skipLibCheck
+# Bundle the Express backend using esbuild
+# This automatically resolves all local file paths without needing .js extensions!
+RUN npx esbuild server.ts --bundle --platform=node --format=esm --packages=external --outfile=dist-server/server.js
 
 # Production stage
 FROM node:20-alpine AS production
@@ -26,10 +27,14 @@ COPY package*.json ./
 # Install only production dependencies
 RUN npm install --omit=dev
 
-# Copy built assets from the builder stage
-COPY --from=builder /app/dist ./dist
+# Copy the bundled server
 COPY --from=builder /app/dist-server ./dist-server
-COPY migrations ./migrations
+
+# Copy the frontend 'dist' INSIDE 'dist-server' so the backend can find it
+COPY --from=builder /app/dist ./dist-server/dist
+
+# Copy migrations INSIDE 'dist-server' so the backend can run the SQL files
+COPY migrations ./dist-server/migrations
 
 # Expose port 3000 to match server.ts
 EXPOSE 3000
