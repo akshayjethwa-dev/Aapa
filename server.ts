@@ -79,6 +79,17 @@ const initDbAndSeed = async () => {
     }
     // ----------------------------------------------
 
+    // --- ADDED FOR TASK-014: Run Terms Accepted Migration ---
+    try {
+      const migration5Path = path.join(__dirname, "migrations", "005_add_terms_accepted_field.sql");
+      const migration5 = await fs.readFile(migration5Path, "utf8");
+      await pool.query(migration5);
+      logger.info("[DB] PostgreSQL Schema 005 (Terms Accepted) applied successfully.");
+    } catch (migErr) {
+      logger.warn("[DB] Skipping Migration 005: File not found or error.", migErr);
+    }
+    // ----------------------------------------------
+
     const admins = [
       { email: "bharvadvijay371@gmail.com", password: "Aniket@371" },
       { email: "dwarkeshtrading7@gmail.com", password: "Aniket@371" }

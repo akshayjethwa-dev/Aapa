@@ -4,6 +4,7 @@ import { ShieldCheck, ArrowRight, AlertCircle, User as UserIcon } from 'lucide-r
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
 import { useAuthStore } from '../store/authStore';
+import { apiClient } from '../api/client';
 
 const Auth = () => {
   const [isLogin, setIsLogin] = useState(true);
@@ -11,42 +12,49 @@ const Auth = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [mobile, setMobile] = useState('');
+  const [termsAccepted, setTermsAccepted] = useState(false);
+  const [isLoading, setIsLoading] = useState(false); // NEW: Loading state
   const { setAuth } = useAuthStore();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    
+    if (!isLogin && !termsAccepted) {
+      toast.error('You must accept the Terms, Privacy Policy, and Risk Disclosure to create an account.');
+      return;
+    }
+
+    setIsLoading(true); // Disable button and show spinner
     console.log(`[Auth] Submitting ${isLogin ? 'login' : 'registration'} form...`);
     const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
     const body = isLogin ? { login: email, password } : { email, mobile, password };
 
     try {
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      });
+      // Use apiClient instead of fetch
+      const res = await apiClient.post(endpoint, body);
+      const data = res.data;
       
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({ error: 'Server returned an error' }));
-        console.error('[Auth] Request failed:', errorData);
-        toast.error(errorData.error || 'Something went wrong');
-        return;
-      }
-
-      const data = await res.json();
       console.log('[Auth] Response received:', data);
       
       if (data.token) {
+        localStorage.setItem('token', data.token); // Sync with client.ts logic
         setAuth(data.user, data.token);
+        toast.success('Welcome back!');
       } else if (!isLogin && data.id) {
         setIsLogin(true);
+        setTermsAccepted(false); // Reset on success
         toast.success('Account created! Please sign in.');
-      } else {
-        toast.error(data.error || 'Something went wrong');
       }
     } catch (err: any) {
       console.error('[Auth] Network or parsing error:', err);
-      toast.error('Failed to connect to server. Please check your connection.');
+      // Specific error handling for invalid credentials
+      if (err.response?.status === 401 && isLogin) {
+        toast.error('Invalid credentials');
+      }
+      // Note: All other errors (like 400 Bad Request or Network Errors) 
+      // are now automatically toasted by the apiClient response interceptor!
+    } finally {
+      setIsLoading(false); // Re-enable button
     }
   };
 
@@ -138,11 +146,37 @@ const Auth = () => {
               </div>
             </div>
 
+            {!isLogin && (
+              <div className="flex items-start gap-3 mt-4 bg-black/30 p-4 rounded-2xl border border-zinc-800/50">
+                <input
+                  type="checkbox"
+                  id="terms"
+                  checked={termsAccepted}
+                  onChange={(e) => setTermsAccepted(e.target.checked)}
+                  className="mt-1 w-4 h-4 rounded border-zinc-800 bg-black/50 accent-emerald-500 shrink-0 cursor-pointer"
+                  required
+                />
+                <label htmlFor="terms" className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest leading-relaxed cursor-pointer">
+                  I agree to the{' '}
+                  <a href="/terms" target="_blank" className="text-emerald-500 hover:underline">Terms of Service</a>,{' '}
+                  <a href="/privacy" target="_blank" className="text-emerald-500 hover:underline">Privacy Policy</a>, and{' '}
+                  <a href="/risk-disclosure" target="_blank" className="text-emerald-500 hover:underline">Risk Disclosure</a>
+                </label>
+              </div>
+            )}
+
             <button
               type="submit"
-              className="w-full bg-emerald-500 hover:bg-emerald-600 text-black font-black py-5 rounded-2xl transition-all shadow-xl shadow-emerald-500/20 tracking-widest uppercase text-[11px] mt-4"
+              disabled={isLoading}
+              className="w-full bg-emerald-500 hover:bg-emerald-600 text-black font-black py-5 rounded-2xl transition-all shadow-xl shadow-emerald-500/20 tracking-widest uppercase text-[11px] mt-4 disabled:opacity-50 flex items-center justify-center gap-2"
             >
-              {isLogin ? 'Sign In' : 'Create Account'}
+              {isLoading && (
+                 <svg className="animate-spin h-4 w-4 text-black shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                 </svg>
+              )}
+              {isLoading ? 'Processing...' : (isLogin ? 'Sign In' : 'Create Account')}
             </button>
           </form>
 
@@ -162,8 +196,8 @@ const Auth = () => {
 
         <div className="text-center mt-4">
           <p className="text-[8px] text-zinc-700 font-bold uppercase tracking-widest leading-relaxed">
-            By continuing, you agree to Aapa Capital's<br />
-            <span className="text-zinc-500">Terms of Service</span> and <span className="text-zinc-500">Privacy Policy</span>
+            Aapa Capital is a technology platform.<br />
+            Not a SEBI registered investment advisor.
           </p>
         </div>
       </motion.div>

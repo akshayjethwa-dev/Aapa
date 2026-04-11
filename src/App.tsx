@@ -8,7 +8,6 @@ import { formatCurrency } from './lib/utils';
 import { apiClient } from './api/client';
 
 // Layout Components
-import ErrorBoundary from './components/ErrorBoundary';
 import Navbar from './components/Navbar';
 import Header from './components/Header';
 
@@ -24,6 +23,11 @@ import ComplianceDetail from './screens/ComplianceDetail';
 
 // --- ADDED FOR TASK-013: KYC Screen ---
 import KycVerification from './screens/KycVerification';
+
+// --- ADDED FOR TASK-014: Legal Pages ---
+import TermsOfService from './pages/TermsOfService';
+import PrivacyPolicy from './pages/PrivacyPolicy';
+import RiskDisclosure from './pages/RiskDisclosure';
 
 // Modal / Overlay Components
 import IndexOverview from './screens/IndexOverview';
@@ -243,295 +247,295 @@ function App() {
     return () => ws.close();
   }, [token, user, setAuth]);
 
+  // --- ADDED FOR TASK-014: Check for legal routes before Auth ---
+  const pathname = window.location.pathname;
+  if (pathname === '/terms') return <TermsOfService />;
+  if (pathname === '/privacy') return <PrivacyPolicy />;
+  if (pathname === '/risk-disclosure') return <RiskDisclosure />;
+
   if (!token) {
-    return (
-      <ErrorBoundary>
-        <Auth />
-      </ErrorBoundary>
-    );
+    return <Auth />;
   }
 
   return (
-    <ErrorBoundary>
-      <div className="min-h-screen bg-black text-zinc-100 font-sans selection:bg-emerald-500/30">
-        <Toaster position="top-center" richColors />
-        <Header
-          onProfileClick={() => setActiveTab('more')}
-          onSearchClick={() => setIsSearchOpen(true)}
-        />
+    <div className="min-h-screen bg-black text-zinc-100 font-sans selection:bg-emerald-500/30">
+      <Toaster position="top-center" richColors />
+      <Header
+        onProfileClick={() => setActiveTab('more')}
+        onSearchClick={() => setIsSearchOpen(true)}
+      />
 
-        <main className="max-w-md mx-auto pt-20">
-          {/* --- ADDED FOR TASK-012: Global Demo Mode Banner --- */}
-          {isDemoMode && (
-            <div className="bg-amber-500 text-black py-2 px-4 text-center font-bold text-[10px] uppercase tracking-widest shadow-lg shadow-amber-500/20 z-50 relative">
-              <AlertCircle size={14} className="inline mr-2 -mt-0.5" />
-              DEMO MODE - Prices are simulated. Connect broker to trade.
-            </div>
+      <main className="max-w-md mx-auto pt-20">
+        {/* --- ADDED FOR TASK-012: Global Demo Mode Banner --- */}
+        {isDemoMode && (
+          <div className="bg-amber-500 text-black py-2 px-4 text-center font-bold text-[10px] uppercase tracking-widest shadow-lg shadow-amber-500/20 z-50 relative">
+            <AlertCircle size={14} className="inline mr-2 -mt-0.5" />
+            DEMO MODE - Prices are simulated. Connect broker to trade.
+          </div>
+        )}
+        
+        <AnimatePresence mode="wait">
+          {activeTab === 'dashboard' && (
+            <Dashboard
+              key="dashboard"
+              stocks={stocks}
+              onMarketClick={() => setActiveTab('market')}
+              onIndexClick={setSelectedIndex}
+              onProfileClick={() => setActiveTab('more')}
+            />
           )}
-          
-          <AnimatePresence mode="wait">
-            {activeTab === 'dashboard' && (
-              <Dashboard
-                key="dashboard"
+          {activeTab === 'market' && (
+            <Market
+              key="market"
+              stocks={stocks}
+              onIndexClick={setOverviewIndex}
+              onPlaceOrder={setOrderConfig}
+              initialSelectedStock={selectedStockFromSearch}
+            />
+          )}
+          {activeTab === 'fo' && (
+            <div className="space-y-6">
+              <OptionChain onPlaceOrder={setOrderConfig} stocks={stocks} fullChain={false} />
+              <FOTradingCenter
+                key="fo"
                 stocks={stocks}
-                onMarketClick={() => setActiveTab('market')}
-                onIndexClick={setSelectedIndex}
-                onProfileClick={() => setActiveTab('more')}
-              />
-            )}
-            {activeTab === 'market' && (
-              <Market
-                key="market"
-                stocks={stocks}
-                onIndexClick={setOverviewIndex}
-                onPlaceOrder={setOrderConfig}
-                initialSelectedStock={selectedStockFromSearch}
-              />
-            )}
-            {activeTab === 'fo' && (
-              <div className="space-y-6">
-                <OptionChain onPlaceOrder={setOrderConfig} stocks={stocks} fullChain={false} />
-                <FOTradingCenter
-                  key="fo"
-                  stocks={stocks}
-                  onOpenOptionChain={() => openOptionChain()}
-                  onConnectAngel={() => setShowAngelLogin(true)}
-                  onConnectUptox={handleConnectUptox}
-                  isConnectingAngel={isConnectingAngel}
-                  isConnectingUptox={isConnectingUptox}
-                />
-              </div>
-            )}
-            {activeTab === 'portfolio' && <Portfolio key="portfolio" stocks={stocks} />}
-            {activeTab === 'onboarding' && (
-              <Onboarding key="onboarding" onComplete={() => setActiveTab('dashboard')} />
-            )}
-            {activeTab === 'admin' && (
-              <AdminPanel key="admin" onBack={() => setActiveTab('dashboard')} />
-            )}
-            {activeTab === 'more' && (
-              <More
-                key="more"
-                activeTab={activeTab}
-                setActiveTab={setActiveTab}
-                setComplianceType={setComplianceType}
-                setStocks={setStocks}
+                onOpenOptionChain={() => openOptionChain()}
                 onConnectAngel={() => setShowAngelLogin(true)}
                 onConnectUptox={handleConnectUptox}
                 isConnectingAngel={isConnectingAngel}
                 isConnectingUptox={isConnectingUptox}
-                debugInfo={debugInfo}
-                isRefreshing={isRefreshing}
-                onForceRefresh={handleForceRefresh}
               />
-            )}
-            {activeTab === 'compliance' && (
-              <ComplianceDetail
-                key="compliance"
-                type={complianceType}
-                onBack={() => setActiveTab('more')}
-              />
-            )}
-            {/* --- ADDED FOR TASK-013: KYC Screen --- */}
-            {activeTab === 'kyc' && (
-              <KycVerification
-                key="kyc"
-                onBack={() => setActiveTab('dashboard')}
-              />
-            )}
-          </AnimatePresence>
-        </main>
-
-        {/* Angel One Login Modal */}
-        <AnimatePresence>
-          {showAngelLogin && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 z-200 bg-black/90 backdrop-blur-md flex items-center justify-center p-6"
-            >
-              <motion.div
-                initial={{ scale: 0.9, y: 20 }}
-                animate={{ scale: 1, y: 0 }}
-                className="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-[2.5rem] p-8 space-y-6"
-              >
-                <div className="flex justify-between items-center">
-                  <h3 className="text-xl font-black text-white uppercase tracking-tighter">Angel One Login</h3>
-                  <button onClick={() => setShowAngelLogin(false)} className="p-2 text-zinc-500 hover:text-white">
-                    <LogOut size={20} className="rotate-90" />
-                  </button>
-                </div>
-                <form onSubmit={handleConnectAngel} className="space-y-4">
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest ml-1">Client Code</label>
-                    <input
-                      type="text"
-                      required
-                      value={angelForm.clientCode}
-                      onChange={(e) => setAngelForm({ ...angelForm, clientCode: e.target.value })}
-                      className="w-full bg-black border border-zinc-800 rounded-2xl px-5 py-4 text-sm text-white focus:border-emerald-500 transition-colors"
-                      placeholder="e.g. V123456"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest ml-1">Password</label>
-                    <input
-                      type="password"
-                      required
-                      value={angelForm.password}
-                      onChange={(e) => setAngelForm({ ...angelForm, password: e.target.value })}
-                      className="w-full bg-black border border-zinc-800 rounded-2xl px-5 py-4 text-sm text-white focus:border-emerald-500 transition-colors"
-                      placeholder="••••••••"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest ml-1">TOTP / OTP</label>
-                    <input
-                      type="text"
-                      required
-                      value={angelForm.totp}
-                      onChange={(e) => setAngelForm({ ...angelForm, totp: e.target.value })}
-                      className="w-full bg-black border border-zinc-800 rounded-2xl px-5 py-4 text-sm text-white focus:border-emerald-500 transition-colors"
-                      placeholder="6-digit code"
-                    />
-                  </div>
-                  <button
-                    type="submit"
-                    disabled={isConnectingAngel}
-                    className="w-full bg-emerald-500 text-black font-black py-4 rounded-2xl text-xs uppercase tracking-widest hover:bg-emerald-600 transition-all shadow-xl shadow-emerald-500/20 disabled:opacity-50"
-                  >
-                    {isConnectingAngel ? 'Connecting...' : 'Link Account'}
-                  </button>
-                </form>
-              </motion.div>
-            </motion.div>
+            </div>
+          )}
+          {activeTab === 'portfolio' && <Portfolio key="portfolio" stocks={stocks} />}
+          {activeTab === 'onboarding' && (
+            <Onboarding key="onboarding" onComplete={() => setActiveTab('dashboard')} />
+          )}
+          {activeTab === 'admin' && (
+            <AdminPanel key="admin" onBack={() => setActiveTab('dashboard')} />
+          )}
+          {activeTab === 'more' && (
+            <More
+              key="more"
+              activeTab={activeTab}
+              setActiveTab={setActiveTab}
+              setComplianceType={setComplianceType}
+              setStocks={setStocks}
+              onConnectAngel={() => setShowAngelLogin(true)}
+              onConnectUptox={handleConnectUptox}
+              isConnectingAngel={isConnectingAngel}
+              isConnectingUptox={isConnectingUptox}
+              debugInfo={debugInfo}
+              isRefreshing={isRefreshing}
+              onForceRefresh={handleForceRefresh}
+            />
+          )}
+          {activeTab === 'compliance' && (
+            <ComplianceDetail
+              key="compliance"
+              type={complianceType}
+              onBack={() => setActiveTab('more')}
+            />
+          )}
+          {/* --- ADDED FOR TASK-013: KYC Screen --- */}
+          {activeTab === 'kyc' && (
+            <KycVerification
+              key="kyc"
+              onBack={() => setActiveTab('dashboard')}
+            />
           )}
         </AnimatePresence>
+      </main>
 
-        {/* Search Overlay */}
-        <AnimatePresence mode="wait">
-          {isSearchOpen && (
+      {/* Angel One Login Modal */}
+      <AnimatePresence>
+        {showAngelLogin && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-200 bg-black/90 backdrop-blur-md flex items-center justify-center p-6"
+          >
             <motion.div
-              key="search-overlay"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 z-150 bg-black/95 backdrop-blur-xl p-6 flex flex-col"
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              className="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-[2.5rem] p-8 space-y-6"
             >
-              <div className="flex items-center gap-4 mb-8">
-                <button
-                  onClick={() => setIsSearchOpen(false)}
-                  className="p-2 -ml-2 rounded-full hover:bg-zinc-900 text-zinc-400"
-                >
-                  <ChevronRight className="rotate-180" size={24} />
+              <div className="flex justify-between items-center">
+                <h3 className="text-xl font-black text-white uppercase tracking-tighter">Angel One Login</h3>
+                <button onClick={() => setShowAngelLogin(false)} className="p-2 text-zinc-500 hover:text-white">
+                  <LogOut size={20} className="rotate-90" />
                 </button>
-                <div className="flex-1 relative">
-                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-600" size={18} />
+              </div>
+              <form onSubmit={handleConnectAngel} className="space-y-4">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest ml-1">Client Code</label>
                   <input
-                    autoFocus
                     type="text"
-                    placeholder="Search Stocks, Indices, F&O..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full bg-zinc-900 border border-zinc-800 rounded-2xl py-4 pl-12 pr-6 text-sm font-bold focus:border-emerald-500/50 outline-none transition-all"
+                    required
+                    value={angelForm.clientCode}
+                    onChange={(e) => setAngelForm({ ...angelForm, clientCode: e.target.value })}
+                    className="w-full bg-black border border-zinc-800 rounded-2xl px-5 py-4 text-sm text-white focus:border-emerald-500 transition-colors"
+                    placeholder="e.g. V123456"
                   />
                 </div>
-              </div>
-
-              <div className="flex-1 overflow-y-auto space-y-4">
-                {filteredStocks.length > 0 ? (
-                  filteredStocks.map((symbol: string) => (
-                    <div
-                      key={symbol}
-                      onClick={() => {
-                        setIsSearchOpen(false);
-                        setSelectedStockFromSearch(symbol);
-                        setActiveTab('market');
-                      }}
-                      className="bg-zinc-900/40 border border-zinc-800/50 rounded-2xl p-4 flex justify-between items-center cursor-pointer hover:bg-zinc-900 transition-colors"
-                    >
-                      <div className="flex items-center gap-4">
-                        <div className="w-10 h-10 rounded-xl bg-zinc-900 flex items-center justify-center font-bold text-xs text-zinc-500">
-                          {symbol.substring(0, 2)}
-                        </div>
-                        <div>
-                          <p className="text-sm font-bold text-white tracking-tight">{symbol}</p>
-                          <p className="text-[10px] font-bold text-zinc-600 uppercase">NSE • Equity</p>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-sm font-bold text-white">{formatCurrency(stocks[symbol] || 0)}</p>
-                        <p className="text-[10px] font-bold text-emerald-500">+1.24%</p>
-                      </div>
-                    </div>
-                  ))
-                ) : searchQuery ? (
-                  <div className="text-center py-20">
-                    <p className="text-sm font-bold text-zinc-600 uppercase tracking-widest">No results found</p>
-                  </div>
-                ) : (
-                  <div className="space-y-6">
-                    <h3 className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest ml-1">
-                      Recent Searches
-                    </h3>
-                    <div className="flex flex-wrap gap-2">
-                      {['RELIANCE', 'NIFTY 50', 'TCS', 'ZOMATO'].map(s => (
-                        <button
-                          key={s}
-                          onClick={() => setSearchQuery(s)}
-                          className="px-4 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs font-bold text-zinc-400 hover:text-white transition-colors"
-                        >
-                          {s}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest ml-1">Password</label>
+                  <input
+                    type="password"
+                    required
+                    value={angelForm.password}
+                    onChange={(e) => setAngelForm({ ...angelForm, password: e.target.value })}
+                    className="w-full bg-black border border-zinc-800 rounded-2xl px-5 py-4 text-sm text-white focus:border-emerald-500 transition-colors"
+                    placeholder="••••••••"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest ml-1">TOTP / OTP</label>
+                  <input
+                    type="text"
+                    required
+                    value={angelForm.totp}
+                    onChange={(e) => setAngelForm({ ...angelForm, totp: e.target.value })}
+                    className="w-full bg-black border border-zinc-800 rounded-2xl px-5 py-4 text-sm text-white focus:border-emerald-500 transition-colors"
+                    placeholder="6-digit code"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={isConnectingAngel}
+                  className="w-full bg-emerald-500 text-black font-black py-4 rounded-2xl text-xs uppercase tracking-widest hover:bg-emerald-600 transition-all shadow-xl shadow-emerald-500/20 disabled:opacity-50"
+                >
+                  {isConnectingAngel ? 'Connecting...' : 'Link Account'}
+                </button>
+              </form>
             </motion.div>
-          )}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-          {/* --- ADDED FOR TASK-012 & 013: Pass isDemoMode and onKycRequired to OrderWindow --- */}
-          {orderConfig && (
-            <OrderWindow
-              key="order-window"
-              config={orderConfig}
-              onClose={() => setOrderConfig(null)}
-              onOrderPlaced={() => {}}
-              isDemoMode={isDemoMode}
-              onKycRequired={() => {
-                setOrderConfig(null);
-                setActiveTab('kyc');
-              }}
-            />
-          )}
-          {overviewIndex && (
-            <IndexOverview
-              key="index-overview"
-              indexName={overviewIndex}
-              stocks={stocks}
-              onClose={() => setOverviewIndex(null)}
-              onOpenOptionChain={() => {
-                setSelectedIndex(overviewIndex);
-                setOverviewIndex(null);
-              }}
-            />
-          )}
-          {selectedIndex && (
-            <IndexDetail
-              key="index-detail"
-              indexName={selectedIndex}
-              stocks={stocks}
-              onClose={() => setSelectedIndex(null)}
-              onPlaceOrder={setOrderConfig}
-            />
-          )}
-        </AnimatePresence>
+      {/* Search Overlay */}
+      <AnimatePresence mode="wait">
+        {isSearchOpen && (
+          <motion.div
+            key="search-overlay"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-150 bg-black/95 backdrop-blur-xl p-6 flex flex-col"
+          >
+            <div className="flex items-center gap-4 mb-8">
+              <button
+                onClick={() => setIsSearchOpen(false)}
+                className="p-2 -ml-2 rounded-full hover:bg-zinc-900 text-zinc-400"
+              >
+                <ChevronRight className="rotate-180" size={24} />
+              </button>
+              <div className="flex-1 relative">
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-600" size={18} />
+                <input
+                  autoFocus
+                  type="text"
+                  placeholder="Search Stocks, Indices, F&O..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-2xl py-4 pl-12 pr-6 text-sm font-bold focus:border-emerald-500/50 outline-none transition-all"
+                />
+              </div>
+            </div>
 
-        <Navbar activeTab={activeTab} setActiveTab={setActiveTab} />
-      </div>
-    </ErrorBoundary>
+            <div className="flex-1 overflow-y-auto space-y-4">
+              {filteredStocks.length > 0 ? (
+                filteredStocks.map((symbol: string) => (
+                  <div
+                    key={symbol}
+                    onClick={() => {
+                      setIsSearchOpen(false);
+                      setSelectedStockFromSearch(symbol);
+                      setActiveTab('market');
+                    }}
+                    className="bg-zinc-900/40 border border-zinc-800/50 rounded-2xl p-4 flex justify-between items-center cursor-pointer hover:bg-zinc-900 transition-colors"
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className="w-10 h-10 rounded-xl bg-zinc-900 flex items-center justify-center font-bold text-xs text-zinc-500">
+                        {symbol.substring(0, 2)}
+                      </div>
+                      <div>
+                        <p className="text-sm font-bold text-white tracking-tight">{symbol}</p>
+                        <p className="text-[10px] font-bold text-zinc-600 uppercase">NSE • Equity</p>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-sm font-bold text-white">{formatCurrency(stocks[symbol] || 0)}</p>
+                      <p className="text-[10px] font-bold text-emerald-500">+1.24%</p>
+                    </div>
+                  </div>
+                ))
+              ) : searchQuery ? (
+                <div className="text-center py-20">
+                  <p className="text-sm font-bold text-zinc-600 uppercase tracking-widest">No results found</p>
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  <h3 className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest ml-1">
+                    Recent Searches
+                  </h3>
+                  <div className="flex flex-wrap gap-2">
+                    {['RELIANCE', 'NIFTY 50', 'TCS', 'ZOMATO'].map(s => (
+                      <button
+                        key={s}
+                        onClick={() => setSearchQuery(s)}
+                        className="px-4 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs font-bold text-zinc-400 hover:text-white transition-colors"
+                      >
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+
+        {/* --- ADDED FOR TASK-012 & 013: Pass isDemoMode and onKycRequired to OrderWindow --- */}
+        {orderConfig && (
+          <OrderWindow
+            key="order-window"
+            config={orderConfig}
+            onClose={() => setOrderConfig(null)}
+            onOrderPlaced={() => {}}
+            isDemoMode={isDemoMode}
+            onKycRequired={() => {
+              setOrderConfig(null);
+              setActiveTab('kyc');
+            }}
+          />
+        )}
+        {overviewIndex && (
+          <IndexOverview
+            key="index-overview"
+            indexName={overviewIndex}
+            stocks={stocks}
+            onClose={() => setOverviewIndex(null)}
+            onOpenOptionChain={() => {
+              setSelectedIndex(overviewIndex);
+              setOverviewIndex(null);
+            }}
+          />
+        )}
+        {selectedIndex && (
+          <IndexDetail
+            key="index-detail"
+            indexName={selectedIndex}
+            stocks={stocks}
+            onClose={() => setSelectedIndex(null)}
+            onPlaceOrder={setOrderConfig}
+          />
+        )}
+      </AnimatePresence>
+
+      <Navbar activeTab={activeTab} setActiveTab={setActiveTab} />
+    </div>
   );
 }
 
