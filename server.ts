@@ -90,26 +90,6 @@ const initDbAndSeed = async () => {
     }
     // ----------------------------------------------
 
-    const admins = [
-      { email: "bharvadvijay371@gmail.com", password: "Aniket@371" },
-      { email: "dwarkeshtrading7@gmail.com", password: "Aniket@371" }
-    ];
-
-    for (const admin of admins) {
-      const { rows } = await query("SELECT * FROM users WHERE email = $1", [admin.email]);
-      const existing = rows[0];
-
-      if (!existing) {
-        const hashedPassword = await bcrypt.hash(admin.password, 10);
-        await query(
-          "INSERT INTO users (email, password, role, balance) VALUES ($1, $2, $3, $4)",
-          [admin.email, hashedPassword, 'admin', 100000]
-        );
-        logger.info(`[Seed] Admin user created: ${admin.email}`);
-      } else {
-        await query("UPDATE users SET role = 'admin' WHERE email = $1", [admin.email]);
-      }
-    }
   } catch (error) {
     logger.error("[DB] Error initializing DB or seeding admins:", error);
   }
