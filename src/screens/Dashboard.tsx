@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
-import { TrendingUp, ArrowUpRight, ArrowDownRight, Newspaper, Calendar, Activity, Bell, Zap, ChevronRight, ZapOff, BarChart3 } from 'lucide-react';
+import { TrendingUp, ArrowUpRight, ArrowDownRight, Newspaper, Calendar, Activity, Bell, Zap, ChevronRight, ZapOff, BarChart3, Link2, RefreshCw } from 'lucide-react';
 import { formatCurrency, cn } from '../lib/utils';
 import Sparkline from '../components/Sparkline';
 import TradingViewWidget from '../components/TradingViewWidget';
@@ -15,6 +15,9 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
   const [gainerLoserTab, setGainerLoserTab] = useState<'Gainers' | 'Losers'>('Gainers');
   const [eventFilter, setEventFilter] = useState('Upcoming');
   const [confirmExit, setConfirmExit] = useState<number | null>(null);
+  
+  // NEW: State for Upstox OAuth popup flow
+  const [isConnecting, setIsConnecting] = useState(false);
 
   useEffect(() => {
     const fetchPortfolio = async () => {
@@ -46,6 +49,86 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
     const interval = setInterval(fetchPortfolio, 5000);
     return () => clearInterval(interval);
   }, []);
+
+  // NEW: Handle the Upstox OAuth Popup Flow
+  const handleUpstoxConnect = async () => {
+    setIsConnecting(true);
+    try {
+      const token = localStorage.getItem('token');
+      
+      // 1. Get the Upstox Login URL from the backend
+      const res = await fetch('/api/auth/uptox/url', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json();
+
+      // 2. Open the URL in a popup window
+      const width = 500;
+      const height = 700;
+      const left = window.screen.width / 2 - width / 2;
+      const top = window.screen.height / 2 - height / 2;
+      const popup = window.open(
+        data.url,
+        'UpstoxAuth',
+        `width=${width},height=${height},top=${top},left=${left},toolbar=no,menubar=no`
+      );
+
+      // 3. Listen for the success message from the popup (sent by server.ts /auth/callback)
+      const messageListener = async (event: MessageEvent) => {
+        // Ensure the message comes from your own app's origin for security
+        const allowedOrigin = import.meta.env.VITE_APP_URL || window.location.origin;
+        if (event.origin !== allowedOrigin) return;
+
+        if (event.data?.type === 'UPTOX_AUTH_SUCCESS') {
+          window.removeEventListener('message', messageListener);
+          popup?.close();
+          
+          try {
+            // 4. Save the tokens securely to the backend
+            const saveRes = await fetch('/api/auth/uptox/save-token', {
+              method: 'POST',
+              headers: { 
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}` 
+              },
+              body: JSON.stringify({
+                access_token: event.data.token,
+                refresh_token: event.data.refresh_token || '',
+              })
+            });
+            
+            if (saveRes.ok) {
+              toast.success('Upstox account linked successfully!');
+              // Reload page to refresh AuthStore and fetch real portfolio/funds
+              window.location.reload(); 
+            } else {
+              const errData = await saveRes.json();
+              toast.error(errData.error || 'Failed to save Upstox token');
+            }
+          } catch (err: any) {
+            toast.error('Failed to save Upstox token');
+          } finally {
+            setIsConnecting(false);
+          }
+        }
+      };
+
+      window.addEventListener('message', messageListener);
+
+      // Fallback: Check if user closed the popup prematurely
+      const checkPopupInterval = setInterval(() => {
+        if (popup?.closed) {
+          clearInterval(checkPopupInterval);
+          window.removeEventListener('message', messageListener);
+          setIsConnecting(false);
+        }
+      }, 1000);
+
+    } catch (err: any) {
+      toast.error('Failed to initialize Upstox connection.');
+      setIsConnecting(false);
+    }
+  };
 
   const handleExit = async (index: number) => {
     const pos = positions[index];
@@ -152,24 +235,44 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
         </div>
       </div>
 
-      {/* Portfolio Snapshot */}
+      {/* Portfolio Snapshot & Upstox Connection */}
       <div className="px-5">
-        {(!user?.is_uptox_connected && user?.role !== 'user') ? (
-          <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-2xl p-6 text-center space-y-4">
-            <div className="w-12 h-12 bg-emerald-500/20 rounded-full flex items-center justify-center mx-auto">
-              <Zap className="text-emerald-500" size={24} fill="currentColor" />
+        {!user?.is_uptox_connected ? (
+          <motion.div 
+            initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
+            className="bg-linear-to-r from-[#5228D3]/20 to-[#111827] border border-[#5228D3]/50 rounded-2xl p-6 relative overflow-hidden"
+          >
+            <div className="absolute top-0 right-0 p-4 opacity-10 pointer-events-none">
+              <Link2 className="w-32 h-32 text-[#5228D3]" />
             </div>
-            <div className="space-y-1">
-              <h4 className="text-sm font-bold text-white uppercase tracking-widest">Connect Upstox for Real Data</h4>
-              <p className="text-[10px] text-zinc-500 font-medium">Link your broker account to see live prices, option chains, and your real portfolio.</p>
+            
+            <div className="relative z-10 flex flex-col md:flex-row items-center justify-between gap-6">
+              <div className="text-left w-full">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="bg-[#5228D3] text-white text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded">
+                    Action Required
+                  </span>
+                </div>
+                <h2 className="text-xl font-bold text-white mb-2">Step 2: Connect Your Broker</h2>
+                <p className="text-zinc-400 text-[11px] max-w-xl leading-relaxed">
+                  To view your portfolio, available funds, and execute trades on Aapa Capital, you must link your newly created Upstox account.
+                </p>
+              </div>
+              
+              <button
+                onClick={handleUpstoxConnect}
+                disabled={isConnecting}
+                className="w-full md:w-auto whitespace-nowrap bg-[#5228D3] hover:bg-[#431db3] text-white font-black py-3 px-6 rounded-xl transition-all shadow-lg shadow-[#5228D3]/20 tracking-widest uppercase text-[10px] flex items-center justify-center gap-2 disabled:opacity-70"
+              >
+                {isConnecting ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Link2 className="w-4 h-4" />
+                )}
+                {isConnecting ? 'Connecting...' : 'Connect Upstox'}
+              </button>
             </div>
-            <button 
-              onClick={onProfileClick}
-              className="w-full bg-emerald-500 text-black font-black py-3 rounded-xl text-[10px] uppercase tracking-widest hover:bg-emerald-600 transition-all"
-            >
-              Connect Now
-            </button>
-          </div>
+          </motion.div>
         ) : (
           <div className="bg-zinc-900/30 border border-zinc-800/50 rounded-2xl p-4 space-y-4">
             <div className="flex justify-between items-center">

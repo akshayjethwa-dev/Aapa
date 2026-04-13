@@ -1,4 +1,4 @@
-import express from "express";
+import express, { Request, Response, NextFunction } from "express";
 import { createServer as createViteServer } from "vite";
 import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
@@ -34,6 +34,9 @@ import { encrypt, decrypt } from "./src/utils/encryption";
 
 // --- ADDED FOR TASK-013: Import KYC Middleware ---
 import { requireKyc } from "./src/middleware/requireKyc";
+
+// --- BROKER ABSTRACTION IMPORT ---
+import { getBrokerService, OrderRequest } from "./src/lib/brokers/index";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -77,7 +80,6 @@ const initDbAndSeed = async () => {
     } catch (migErr) {
       logger.warn("[DB] Skipping Migration 004: File not found or error.", migErr);
     }
-    // ----------------------------------------------
 
     // --- ADDED FOR TASK-014: Run Terms Accepted Migration ---
     try {
@@ -88,7 +90,6 @@ const initDbAndSeed = async () => {
     } catch (migErr) {
       logger.warn("[DB] Skipping Migration 005: File not found or error.", migErr);
     }
-    // ----------------------------------------------
 
   } catch (error) {
     logger.error("[DB] Error initializing DB or seeding admins:", error);
@@ -164,7 +165,7 @@ async function startServer() {
     const token = authHeader && authHeader.split(' ')[1];
     if (!token) return res.sendStatus(401);
 
-    jwt.verify(token, JWT_SECRET, (err: any, user: any) => {
+    jwt.verify(String(token), JWT_SECRET, (err: any, user: any) => {
       if (err) return res.sendStatus(403);
       req.user = user;
       next();
@@ -182,7 +183,7 @@ async function startServer() {
     
     logger.info(`[Auth] Registration attempt for email: ${email}`);
     try {
-      const hashedPassword = await bcrypt.hash(password, 10);
+      const hashedPassword = await bcrypt.hash(String(password), 10);
       const { rows: countRows } = await query("SELECT COUNT(*) as count FROM users");
       const userCount = parseInt(countRows[0].count);
       const superAdminEmail = 'bharvadvijay371@gmail.com';
@@ -220,7 +221,7 @@ async function startServer() {
         return res.status(401).json({ error: "Invalid credentials" });
       }
 
-      const isMatch = await bcrypt.compare(password, user.password);
+      const isMatch = await bcrypt.compare(String(password), String(user.password));
       if (!isMatch) {
         return res.status(401).json({ error: "Invalid credentials" });
       }
@@ -249,7 +250,7 @@ async function startServer() {
     const refreshToken = req.cookies.refreshToken;
     if (!refreshToken) return res.status(401).json({ error: "Refresh token required" });
 
-    jwt.verify(refreshToken, JWT_REFRESH_SECRET, async (err: any, decoded: any) => {
+    jwt.verify(String(refreshToken), JWT_REFRESH_SECRET, async (err: any, decoded: any) => {
       if (err) return res.status(403).json({ error: "Invalid or expired refresh token" });
       
       try {
@@ -304,7 +305,7 @@ async function startServer() {
         
         await query(
           "INSERT INTO user_tokens (user_id, broker, access_token, refresh_token, feed_token) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (user_id, broker) DO UPDATE SET access_token = EXCLUDED.access_token, refresh_token = EXCLUDED.refresh_token, feed_token = EXCLUDED.feed_token",
-          [req.user.id, 'angelone', encrypt(jwtToken), encrypt(refreshToken), encrypt(feedToken)]
+          [req.user.id, 'angelone', encrypt(String(jwtToken)), encrypt(String(refreshToken)), encrypt(String(feedToken))]
         );
         
         await query("UPDATE users SET is_angelone_connected = true WHERE id = $1", [req.user.id]);
@@ -374,7 +375,7 @@ async function startServer() {
     if (req.user.role !== 'admin') return res.sendStatus(403);
     const { email, mobile, password, role } = req.body;
     try {
-      const hashedPassword = await bcrypt.hash(password, 10);
+      const hashedPassword = await bcrypt.hash(String(password), 10);
       const { rows } = await query(
         "INSERT INTO users (email, mobile, password, role) VALUES ($1, $2, $3, $4) RETURNING id",
         [email, mobile, hashedPassword, role]
@@ -391,18 +392,16 @@ async function startServer() {
       const user = userRows[0];
       if (!user) return res.status(404).json({ error: "User not found" });
       
-      const { rows: tokenRows } = await query("SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = 'upstox'", [req.user.id]);
+      const { rows: tokenRows } = await query("SELECT access_token, broker FROM user_tokens WHERE user_id = $1 AND broker = 'upstox'", [req.user.id]);
       const userToken = tokenRows[0];
       
       let balance = parseFloat(user?.balance) || 0;
-      if (userToken) {
+      
+      if (userToken && userToken.access_token) {
         try {
-          const decryptedToken = decrypt(userToken.access_token);
-          const response = await fetch("https://api.upstox.com/v2/user/get-funds-and-margin", {
-            headers: { "Authorization": `Bearer ${decryptedToken}`, "Accept": "application/json" }
-          });
-          const data = await response.json();
-          if (data.status === 'success') balance = data.data.equity.available_margin;
+          const decryptedToken = decrypt(String(userToken.access_token));
+          const brokerService = getBrokerService('upstox');
+          balance = await brokerService.getFunds(decryptedToken);
         } catch (e) {
           logger.warn("Failed to fetch Upstox funds", e);
         }
@@ -416,7 +415,7 @@ async function startServer() {
 
   app.get("/api/auth/uptox/url", (req, res) => {
     const apiKey = process.env.UPTOX_API_KEY;
-    let redirectUri = process.env.UPTOX_REDIRECT_URI;
+    let redirectUri = process.env.UPTOX_REDIRECT_URI || "";
     
     const host = req.get('host') || "";
     const protocol = req.get('x-forwarded-proto') || req.protocol;
@@ -432,7 +431,7 @@ async function startServer() {
     
     if (!apiKey) return res.status(500).json({ error: "UPTOX_API_KEY is missing." });
 
-    const url = `https://api.upstox.com/v2/login/authorization/dialog?response_type=code&client_id=${apiKey}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+    const url = `https://api.upstox.com/v2/login/authorization/dialog?response_type=code&client_id=${apiKey}&redirect_uri=${encodeURIComponent(String(redirectUri))}`;
     res.json({ url });
   });
 
@@ -440,10 +439,10 @@ async function startServer() {
     const { code } = req.query;
     if (!code) return res.status(400).send("No code provided.");
 
-    const apiKey = process.env.UPTOX_API_KEY;
-    const apiSecret = process.env.UPTOX_API_SECRET;
+    const apiKey = process.env.UPTOX_API_KEY || "";
+    const apiSecret = process.env.UPTOX_API_SECRET || "";
     
-    let redirectUri = process.env.UPTOX_REDIRECT_URI;
+    let redirectUri = process.env.UPTOX_REDIRECT_URI || "";
     if (!redirectUri || redirectUri.includes('ais-pre-') || redirectUri.includes('ais-dev-') || !redirectUri.startsWith('http')) {
       const host = req.get('host');
       const protocol = req.get('x-forwarded-proto') || req.protocol;
@@ -455,10 +454,10 @@ async function startServer() {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json" },
         body: new URLSearchParams({
-          code: code as string,
-          client_id: apiKey!,
-          client_secret: apiSecret!,
-          redirect_uri: redirectUri!,
+          code: String(code),
+          client_id: String(apiKey),
+          client_secret: String(apiSecret),
+          redirect_uri: String(redirectUri),
           grant_type: "authorization_code",
         }),
       });
@@ -498,7 +497,7 @@ async function startServer() {
       
       await query(
         "INSERT INTO user_tokens (user_id, broker, access_token, refresh_token) VALUES ($1, $2, $3, $4) ON CONFLICT (user_id, broker) DO UPDATE SET access_token = EXCLUDED.access_token, refresh_token = EXCLUDED.refresh_token",
-        [req.user.id, 'upstox', encrypt(access_token), encrypt(refresh_token)]
+        [req.user.id, 'upstox', encrypt(String(access_token)), encrypt(String(refresh_token))]
       );
       await query("UPDATE users SET is_uptox_connected = true WHERE id = $1", [req.user.id]);
       
@@ -519,34 +518,15 @@ async function startServer() {
       let combinedHoldings: any[] = [];
       
       for (const token of tokens) {
-        const decryptedToken = decrypt(token.access_token);
+        if (!token.access_token) continue;
+        const decryptedToken = decrypt(String(token.access_token));
         
-        if (token.broker === 'upstox') {
-          try {
-            const response = await fetch("https://api.upstox.com/v2/portfolio/long-term-holdings", {
-              headers: { "Authorization": `Bearer ${decryptedToken}`, "Accept": "application/json" }
-            });
-            const data = await response.json();
-            if (data.status === 'success') {
-              const holdings = data.data.map((h: any) => ({
-                symbol: h.trading_symbol, quantity: h.quantity, average_price: h.average_price, current_price: h.last_price, broker: 'Upstox'
-              }));
-              combinedHoldings = [...combinedHoldings, ...holdings];
-            }
-          } catch (e) { logger.warn("Upstox holdings error", e); }
-        } else if (token.broker === 'angelone') {
-          try {
-            const response = await fetch("https://apiconnect.angelone.in/rest/auth/angelone/portfolio/v1/getHolding", {
-              headers: { "X-PrivateKey": process.env.ANGEL_ONE_API_KEY!, "X-SourceID": "WEB", "Authorization": `Bearer ${decryptedToken}`, "Content-Type": "application/json", "Accept": "application/json" }
-            });
-            const data = await response.json();
-            if (data.status && data.data) {
-              const holdings = data.data.map((h: any) => ({
-                symbol: h.tradingsymbol, quantity: parseInt(h.quantity), average_price: parseFloat(h.averageprice), current_price: parseFloat(h.ltp), broker: 'Angel One'
-              }));
-              combinedHoldings = [...combinedHoldings, ...holdings];
-            }
-          } catch (e) { logger.warn("Angel One holdings error", e); }
+        try {
+          const brokerService = getBrokerService(String(token.broker));
+          const holdings = await brokerService.getHoldings(decryptedToken);
+          combinedHoldings = [...combinedHoldings, ...holdings];
+        } catch (e) { 
+          logger.warn(`${token.broker} holdings error`, e); 
         }
       }
       
@@ -562,83 +542,41 @@ async function startServer() {
     try {
       const { symbol, type, order_type, quantity, price, product, broker } = req.body;
       const userId = req.user.id;
+      
       const { rows } = await query("SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = $2", [userId, broker]);
       const userToken = rows[0];
 
-      if (!userToken) return res.status(400).json({ error: `Please connect your ${broker} account.` });
+      if (!userToken || !userToken.access_token) {
+        return res.status(400).json({ error: `Please connect your ${broker} account.` });
+      }
       
-      const decryptedToken = decrypt(userToken.access_token);
+      const decryptedToken = decrypt(String(userToken.access_token));
+      
+      try {
+        const brokerService = getBrokerService(String(broker));
+        const orderRequest: OrderRequest = { symbol, type, order_type, quantity, price, product };
+        const orderRes = await brokerService.placeOrder(decryptedToken, orderRequest);
 
-      if (broker === 'upstox') {
-        try {
-          const response = await fetch("https://api.upstox.com/v2/order/place", {
-            method: "POST",
-            headers: { "Authorization": `Bearer ${decryptedToken}`, "Content-Type": "application/json", "Accept": "application/json" },
-            body: JSON.stringify({
-              quantity, product: product.toUpperCase() === 'INTRADAY' ? 'I' : 'D', validity: 'DAY', price,
-              tag: 'AAPA_APP', instrument_token: symbol.includes('|') ? symbol : `NSE_EQ|${symbol}`, order_type: order_type.toUpperCase(), 
-              transaction_type: type.toUpperCase(), disclosed_quantity: 0, trigger_price: 0, is_amo: false
-            })
-          });
-          const data = await response.json();
-
-          if (data.status === 'success') {
-            await query(
-              "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, broker_order_id, status, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed', $9)", 
-              [userId, symbol, type, order_type, quantity, price, broker, data.data.order_id, JSON.stringify(data)]
-            );
-            return res.json({ success: true, order_id: data.data.order_id });
-          }
-          
-          const errorMsg = data.errors?.[0]?.message || "Upstox order failed";
+        if (orderRes.success) {
+          await query(
+            "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, broker_order_id, status, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed', $9)", 
+            [userId, symbol, type, order_type, quantity, price, broker, orderRes.order_id, JSON.stringify(orderRes.raw_response)]
+          );
+          return res.json({ success: true, order_id: orderRes.order_id });
+        } else {
+          const errorMsg = orderRes.error || "Order failed";
           await query(
             "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8, $9)", 
-            [userId, symbol, type, order_type, quantity, price, broker, errorMsg, JSON.stringify(data)]
+            [userId, symbol, type, order_type, quantity, price, broker, errorMsg, JSON.stringify(orderRes.raw_response)]
           );
           return res.status(400).json({ error: errorMsg });
-
-        } catch (e: any) { 
-          await query(
-            "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8, $9)", 
-            [userId, symbol, type, order_type, quantity, price, broker, e.message, JSON.stringify({ error: e.message })]
-          );
-          throw new Error("Upstox API Error");
         }
-      } else if (broker === 'angelone') {
-        try {
-          const response = await fetch("https://apiconnect.angelone.in/rest/auth/angelone/order/v1/placeOrder", {
-            method: "POST",
-            headers: { "X-PrivateKey": process.env.ANGEL_ONE_API_KEY!, "X-SourceID": "WEB", "Authorization": `Bearer ${decryptedToken}`, "Content-Type": "application/json", "Accept": "application/json" },
-            body: JSON.stringify({
-              variety: "NORMAL", tradingsymbol: symbol, symboltoken: ANGEL_ONE_TOKENS[symbol] || "3045", transactiontype: type.toUpperCase(),
-              exchange: symbol.includes('NIFTY') || symbol.includes('BANK') ? "NFO" : "NSE", ordertype: order_type.toUpperCase(), producttype: product.toUpperCase() === 'INTRADAY' ? 'INTRADAY' : 'DELIVERY',
-              duration: "DAY", price, squareoff: "0", stoploss: "0", quantity: quantity.toString()
-            })
-          });
-          const data = await response.json();
-
-          if (data.status && data.data && data.data.orderid) {
-            await query(
-              "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, broker_order_id, status, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed', $9)", 
-              [userId, symbol, type, order_type, quantity, price, broker, data.data.orderid, JSON.stringify(data)]
-            );
-            return res.json({ success: true, order_id: data.data.orderid });
-          }
-
-          const errorMsg = data.message || "Angel One order failed";
-          await query(
-            "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8, $9)", 
-            [userId, symbol, type, order_type, quantity, price, broker, errorMsg, JSON.stringify(data)]
-          );
-          return res.status(400).json({ error: errorMsg });
-          
-        } catch (e: any) { 
-          await query(
-            "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8, $9)", 
-            [userId, symbol, type, order_type, quantity, price, broker, e.message, JSON.stringify({ error: e.message })]
-          );
-          throw new Error("Angel One API error");
-        }
+      } catch (e: any) {
+        await query(
+          "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8, $9)", 
+          [userId, symbol, type, order_type, quantity, price, broker, e.message, JSON.stringify({ error: e.message })]
+        );
+        throw new Error(`${broker} API Error`);
       }
     } catch (e) {
       next(e);
@@ -669,9 +607,9 @@ async function startServer() {
     try {
       const { rows } = await query("SELECT user_id, access_token FROM user_tokens WHERE broker = 'upstox' LIMIT 1");
       const userToken = rows[0];
-      if (!userToken) return;
+      if (!userToken || !userToken.access_token) return;
 
-      const decryptedToken = decrypt(userToken.access_token);
+      const decryptedToken = decrypt(String(userToken.access_token));
 
       const stockKeys = stocks.map(s => `NSE_EQ|${s}`);
       const indexKeys = Object.values(indexMap).flat();
@@ -733,9 +671,9 @@ async function startServer() {
     try {
       const { rows } = await query("SELECT access_token FROM user_tokens WHERE broker = 'angelone' LIMIT 1");
       const userToken = rows[0];
-      if (!userToken) return;
+      if (!userToken || !userToken.access_token) return;
 
-      const decryptedToken = decrypt(userToken.access_token);
+      const decryptedToken = decrypt(String(userToken.access_token));
 
       const response = await fetch("https://apiconnect.angelone.in/rest/auth/angelone/market/v1/quote", {
         method: "POST", headers: { "X-PrivateKey": process.env.ANGEL_ONE_API_KEY!, "X-SourceID": "WEB", "Authorization": `Bearer ${decryptedToken}`, "Content-Type": "application/json", "Accept": "application/json" },
@@ -745,10 +683,14 @@ async function startServer() {
       if (data.status && data.data?.fetched) {
         data.data.fetched.forEach((item: any) => { if (allSymbols.includes(item.tradingSymbol)) stockPrices[item.tradingSymbol] = item.ltp; });
       }
-    } catch (e) { } finally { isFetchingAngel = false; }
+    } catch (e) {
+      logger.error("[MarketData] Angel One Fetch Error", e);
+    } finally { 
+      isFetchingAngel = false; 
+    }
   };
 
-  app.post("/api/market/refresh", authenticateToken, async (req: any, res: any, next: any) => {
+  app.post("/api/market/refresh", authenticateToken, async (req: any, res: any, next: NextFunction) => {
     try {
       await fetchRealPrices();
       res.json({ success: true, last_prices: stockPrices });
@@ -769,7 +711,9 @@ async function startServer() {
         isSimulated = true;
         allSymbols.forEach(symbol => { stockPrices[symbol] += stockPrices[symbol] * (Math.random() * 0.0002 - 0.0001); });
       }
-    } catch (e) {}
+    } catch (e) {
+      logger.error("[MarketData] Error calculating simulated token count", e);
+    }
 
     const payload = JSON.stringify({ type: 'ticker', data: stockPrices, isSimulated });
     wss.clients.forEach(c => { if (c.readyState === WebSocket.OPEN) c.send(payload); });
@@ -783,20 +727,6 @@ async function startServer() {
     } catch (e) {
       next(e);
     }
-  });
-
-  app.use((err: any, req: any, res: any, next: any) => {
-    logger.error('Unhandled error', {
-      error: err.message,
-      stack: err.stack,
-      path: req.path,
-      method: req.method,
-      userId: req.user?.id,
-    });
-
-    res.status(500).json({
-      error: 'An internal server error occurred. Please try again.',
-    });
   });
 
   if (process.env.NODE_ENV !== "production") {
@@ -814,6 +744,21 @@ async function startServer() {
     app.use(express.static(distPath));
     app.get("*", (req, res) => res.sendFile(path.join(distPath, "index.html")));
   }
+
+  // GLOBAL ERROR HANDLER - Must be placed after ALL routes
+  app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
+    logger.error('Unhandled error', {
+      error: err.message,
+      stack: err.stack,
+      path: req.path,
+      method: req.method,
+      userId: (req as any).user?.id,
+    });
+
+    res.status(500).json({
+      error: 'An internal server error occurred. Please try again.',
+    });
+  });
 
   server.listen(3000, "0.0.0.0", () => {
     logger.info(`[Server] AAPA CAPITAL server running on http://0.0.0.0:3000`);

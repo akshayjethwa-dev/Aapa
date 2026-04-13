@@ -1,34 +1,32 @@
-import bcrypt from 'bcrypt';
-import { query } from './src/db';
+import bcrypt from 'bcryptjs';
+import { pool } from './src/db/index'; 
+import { logger } from './src/utils/logger'; // Import the new logger
 
-async function seedAdmin() {
-  // 1. Move the variables inside the function scope
-  const adminEmail = process.env.ADMIN_EMAIL;
-  const adminPassword = process.env.ADMIN_PASSWORD;
+const adminEmail = process.env.ADMIN_EMAIL;
+const adminPassword = process.env.ADMIN_PASSWORD;
 
-  // 2. TypeScript now sees this check directly before the variables are used
+async function seed() {
   if (!adminEmail || !adminPassword) {
-    console.error('ADMIN_EMAIL and ADMIN_PASSWORD env vars are required');
+    logger.error('ADMIN_EMAIL and ADMIN_PASSWORD env vars are required');
     process.exit(1);
   }
 
   try {
-    // TypeScript now knows 100% that adminPassword is a string
     const passwordHash = await bcrypt.hash(adminPassword, 12);
-
-    await query(
-      `INSERT INTO users (email, password_hash, role, is_approved) 
-       VALUES ($1, $2, 'admin', true)
+    
+    await pool.query(
+      `INSERT INTO users (email, password, role) 
+       VALUES ($1, $2, 'admin') 
        ON CONFLICT (email) DO NOTHING`,
       [adminEmail, passwordHash]
     );
 
-    console.log(`Admin user created: ${adminEmail}`);
-    process.exit(0);
+    logger.info(`Admin user created/verified: ${adminEmail}`);
   } catch (error) {
-    console.error("Failed to seed admin:", error);
-    process.exit(1);
+    logger.error('Error seeding admin user', error);
+  } finally {
+    process.exit(0);
   }
 }
 
-seedAdmin();
+seed();
