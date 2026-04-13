@@ -9,7 +9,7 @@ import fs from "fs/promises";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 
 // Import PostgreSQL Database setup
 import { pool, query } from "./src/db/index";
@@ -142,7 +142,7 @@ async function startServer() {
   const aiLimiter = rateLimit({
     windowMs: 60 * 1000,
     max: 10,
-    keyGenerator: (req: any) => req.user?.id || req.ip,
+    keyGenerator: (req: any, res: any) => req.user?.id || ipKeyGenerator(req, res),
     message: { error: "AI signal limit reached. Please wait." },
     standardHeaders: true,
     legacyHeaders: false,

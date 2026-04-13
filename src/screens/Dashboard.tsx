@@ -25,26 +25,25 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
       if (!token) return;
       
       try {
-        const hRes = await fetch('/api/portfolio/holdings', {
+        // Corrected API endpoint to match server.ts
+        const res = await fetch('/api/portfolio', {
           headers: { 'Authorization': `Bearer ${token}` }
         });
-        if (hRes.ok) {
-          const hData = await hRes.json();
-          if (hData.status === 'success') setHoldings(hData.data);
-        }
-
-        const pRes = await fetch('/api/portfolio/positions', {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        if (pRes.ok) {
-          const pData = await pRes.json();
-          const posArray = Array.isArray(pData) ? pData : (pData.status === 'success' ? pData.data : []);
-          setPositions(posArray);
+        
+        if (res.ok) {
+          const data = await res.json();
+          // The backend returns the array directly, so we check if it's an array
+          const portfolioArray = Array.isArray(data) ? data : [];
+          
+          // Set both holdings and positions from the single portfolio endpoint
+          setHoldings(portfolioArray);
+          setPositions(portfolioArray); 
         }
       } catch (e) {
         console.error("Failed to fetch portfolio", e);
       }
     };
+    
     fetchPortfolio();
     const interval = setInterval(fetchPortfolio, 5000);
     return () => clearInterval(interval);
