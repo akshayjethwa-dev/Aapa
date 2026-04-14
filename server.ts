@@ -218,16 +218,21 @@ async function startServer() {
 
   const makeStore = (prefix: string) => redisConnected
     ? new RedisStore({ 
-        sendCommand: (...args: string[]) => redisClient.sendCommand(args),
+        sendCommand: (...args: string[]) => {
+          if (!redisClient.isReady) throw new Error('Redis not ready');
+          return redisClient.sendCommand(args);
+        },
         prefix: prefix 
       })
     : undefined;
 
+  // 🚀 FIX: Added `passOnStoreError: true` so the app doesn't throw 500 if Redis dies.
   const authStore = makeStore("rl:auth:");
   const authLimiter = rateLimit({
     ...(authStore ? { store: authStore } : {}),
     windowMs: 5 * 60 * 1000,
     max: 20,
+    passOnStoreError: true, 
     message: { error: "Too many login attempts. Please try again in 5 minutes." },
     standardHeaders: true,
     legacyHeaders: false,
@@ -238,6 +243,7 @@ async function startServer() {
     ...(apiStore ? { store: apiStore } : {}),
     windowMs: 60 * 1000,
     max: 300,
+    passOnStoreError: true,
     message: { error: "Too many requests. Please slow down." },
     standardHeaders: true,
     legacyHeaders: false,
@@ -248,6 +254,7 @@ async function startServer() {
     ...(aiStore ? { store: aiStore } : {}),
     windowMs: 60 * 1000,
     max: 10,
+    passOnStoreError: true,
     keyGenerator: (req: any, res: any) => req.user?.id || ipKeyGenerator(req, res),
     message: { error: "AI signal limit reached. Please wait." },
     standardHeaders: true,
@@ -296,7 +303,7 @@ async function startServer() {
 
   app.post("/api/auth/register", validate(registerSchema), async (req, res, next) => {
       try {
-        let { email, mobile, password } = req.body;
+        let { email, mobile, password } = req.body || {};
         email = email?.toString().toLowerCase().trim();
         mobile = mobile?.toString().trim();
 
@@ -330,8 +337,13 @@ async function startServer() {
     }
   );
 
+  // 🚀 FIX: Made the login endpoint hyper-resilient to empty bodies and DB disconnections
   app.post("/api/auth/login", validate(loginSchema), async (req, res, next) => {
       try {
+        if (!req.body) {
+           return res.status(400).json({ error: "Empty request payload" });
+        }
+        
         let { login, password } = req.body;
         
         if (!login || !password) {
@@ -341,10 +353,18 @@ async function startServer() {
         login = login.toString().toLowerCase().trim();
         logger.info(`[Auth] Login attempt for: ${login}`);
 
-        const { rows } = await query(
-          "SELECT * FROM users WHERE email = $1 OR mobile = $1",
-          [login]
-        );
+        let rows;
+        try {
+          const result = await query(
+            "SELECT * FROM users WHERE email = $1 OR mobile = $1",
+            [login]
+          );
+          rows = result.rows;
+        } catch (dbErr: any) {
+          logger.error(`[Auth DB Error] DB query failed during login: ${dbErr.message}`);
+          return res.status(500).json({ error: "Database error during login. Please try again." });
+        }
+        
         const user = rows[0];
 
         if (!user || !user.password) {
@@ -388,9 +408,9 @@ async function startServer() {
           },
         });
       } catch (e: any) {
-        logger.error("[Auth Error]", e);
+        logger.error("[Auth Error] Unexpected failure:", e);
         return res.status(500).json({ 
-          error: "Server Error during login.", 
+          error: "An unexpected error occurred during login.", 
           details: e.message || String(e) 
         });
       }
@@ -593,7 +613,6 @@ async function startServer() {
       redirectUri = `${protocol}://${host}/auth/callback`;
     }
 
-    // 🚀 FIX: Using wildcard or explicitly trusted frontend URL to avoid cross-origin postMessage dropping.
     const frontendTargetOrigin = process.env.VITE_APP_URL || "*";
 
     const renderHtmlResponse = (isSuccess: boolean, message: string, payload: any) => {
@@ -606,7 +625,6 @@ async function startServer() {
               <p id="msg" style="color:#a1a1aa;font-size:14px;">Redirecting back to app...</p>
               <script>
                 if (window.opener) {
-                  // Post message strictly to the configured frontend origin or any (*) if decouple fallback
                   window.opener.postMessage(${JSON.stringify(payload)}, "${frontendTargetOrigin}");
                   setTimeout(() => window.close(), 1500);
                 } else {
