@@ -203,12 +203,20 @@ async function startServer() {
   }, 5 * 60 * 1000); // Check every 5 minutes
   // ========================================================
 
-  // --- FIX: Trust Railway's proxy chain so IPs don't overlap ---
-  app.set("trust proxy", true);
+  
+  app.set("trust proxy", 1);
 
   app.use(
     helmet({
-      contentSecurityPolicy: process.env.NODE_ENV === "production" ? undefined : false,
+      contentSecurityPolicy: process.env.NODE_ENV === "production" 
+        ? {
+            directives: {
+              ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+              "script-src": ["'self'", "'unsafe-inline'"],
+              "style-src": ["'self'", "'unsafe-inline'"],
+            },
+          }
+        : false,
       crossOriginEmbedderPolicy: false,
     })
   );
@@ -676,21 +684,19 @@ async function startServer() {
       );
 
       const data = await response.json();
-      if (data.access_token) {
-        // --- FIX: Using wildcard target origin '*' for the postMessage ---
-        res.send(`
+
+      // Helper function to render a UI that always closes itself
+      const renderHtmlResponse = (isSuccess: boolean, message: string, payload: any) => {
+        return `
           <html>
+            <head><title>Upstox Authentication</title></head>
             <body style="background: #000; color: #fff; display: flex; align-items: center; justify-content: center; height: 100vh; font-family: sans-serif;">
               <div style="text-align: center;">
-                <h2 style="color: #10b981;">Connection Successful!</h2>
+                <h2 style="color: ${isSuccess ? '#10b981' : '#ef4444'};">${message}</h2>
                 <p id="fallback-msg" style="color: #a1a1aa; font-size: 14px;">Redirecting back to app...</p>
                 <script>
                   if (window.opener) {
-                    window.opener.postMessage({ 
-                      type: 'UPTOX_AUTH_SUCCESS', 
-                      token: '${data.access_token}', 
-                      refresh_token: '${data.refresh_token || ""}' 
-                    }, '*');
+                    window.opener.postMessage(${JSON.stringify(payload)}, '*');
                     setTimeout(() => window.close(), 2000);
                   } else {
                     document.getElementById('fallback-msg').innerText = "Please safely close this tab and return to the application.";
@@ -699,9 +705,20 @@ async function startServer() {
               </div>
             </body>
           </html>
-        `);
+        `;
+      };
+
+      if (data.access_token) {
+        res.send(renderHtmlResponse(true, "Connection Successful!", {
+          type: 'UPTOX_AUTH_SUCCESS', 
+          token: data.access_token, 
+          refresh_token: data.refresh_token || "" 
+        }));
       } else {
-        res.status(400).json(data);
+        res.status(400).send(renderHtmlResponse(false, "Connection Failed or Expired!", {
+          type: 'UPTOX_AUTH_ERROR',
+          error: data
+        }));
       }
     } catch (e) {
       next(e);
