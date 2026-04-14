@@ -210,7 +210,6 @@ async function startServer() {
   }, 5 * 60 * 1000); // Check every 5 minutes
   // ========================================================
 
-  
   app.set("trust proxy", 1);
 
   app.use(
@@ -244,7 +243,8 @@ async function startServer() {
           return callback(null, true);
         } else {
           logger.warn(`[CORS] Blocked request from unauthorized origin: ${origin}`);
-          return callback(new Error("Not allowed by CORS"));
+          // Returning an Error here causes a 500 error. Changed to standard false rejection.
+          return callback(null, false);
         }
       },
       credentials: true, 
@@ -261,8 +261,10 @@ async function startServer() {
     ? new RedisStore({ sendCommand: (...args: string[]) => redisClient.sendCommand(args) })
     : undefined;
 
+  const rStore = makeStore();
+
   const authLimiter = rateLimit({
-    store: makeStore(),
+    ...(rStore ? { store: rStore } : {}), // Conditionally pass store so MemoryStore acts as fallback
     windowMs: 5 * 60 * 1000,
     max: 20,
     message: { error: "Too many login attempts. Please try again in 5 minutes." },
@@ -271,7 +273,7 @@ async function startServer() {
   });
 
   const apiLimiter = rateLimit({
-    store: makeStore(),
+    ...(rStore ? { store: rStore } : {}),
     windowMs: 60 * 1000,
     max: 300,
     message: { error: "Too many requests. Please slow down." },
@@ -280,7 +282,7 @@ async function startServer() {
   });
 
   const aiLimiter = rateLimit({
-    store: makeStore(),
+    ...(rStore ? { store: rStore } : {}),
     windowMs: 60 * 1000,
     max: 10,
     keyGenerator: (req: any, res: any) => req.user?.id || ipKeyGenerator(req, res),
@@ -316,7 +318,6 @@ async function startServer() {
   // ========================================================
   app.get("/api/health", async (req, res) => {
     try {
-      // Verify database connection is alive before reporting as healthy
       await query("SELECT 1");
       res.status(200).json({ 
         status: "ok", 
@@ -338,12 +339,12 @@ async function startServer() {
     "/api/auth/register",
     validate(registerSchema),
     async (req, res, next) => {
-      let { email, mobile, password } = req.body;
-      email = email?.toLowerCase().trim();
-      mobile = mobile?.trim();
-
-      logger.info(`[Auth] Registration attempt for email: ${email}`);
       try {
+        let { email, mobile, password } = req.body;
+        email = email?.toString().toLowerCase().trim();
+        mobile = mobile?.toString().trim();
+
+        logger.info(`[Auth] Registration attempt for email: ${email}`);
         const hashedPassword = await bcrypt.hash(String(password), 10);
         const { rows: countRows } = await query("SELECT COUNT(*) as count FROM users");
         const userCount = parseInt(countRows[0].count);
@@ -381,17 +382,24 @@ async function startServer() {
     "/api/auth/login",
     validate(loginSchema),
     async (req, res, next) => {
-      let { login, password } = req.body;
-      login = login?.toLowerCase().trim();
-      logger.info(`[Auth] Login attempt for: ${login}`);
       try {
+        let { login, password } = req.body;
+        
+        if (!login || !password) {
+            return res.status(400).json({ error: "Missing login credentials" });
+        }
+
+        // Safe conversion placed inside try-catch to avoid uncaught TypeError
+        login = login.toString().toLowerCase().trim();
+        logger.info(`[Auth] Login attempt for: ${login}`);
+
         const { rows } = await query(
           "SELECT * FROM users WHERE email = $1 OR mobile = $1",
           [login]
         );
         const user = rows[0];
 
-        if (!user) {
+        if (!user || !user.password) {
           return res.status(401).json({ error: "Invalid credentials" });
         }
 
@@ -428,7 +436,7 @@ async function startServer() {
             id: user.id,
             email: user.email,
             role: effectiveRole,
-            balance: parseFloat(user.balance),
+            balance: parseFloat(user.balance || "0"),
           },
         });
       } catch (e: any) {
@@ -619,137 +627,134 @@ async function startServer() {
     }
   });
 
-  // In server.ts — replace the /api/auth/uptox/url route
-app.get("/api/auth/uptox/url", authenticateToken, (req: any, res) => {
-  const apiKey = process.env.UPTOX_API_KEY ?? "";
-  let redirectUri = process.env.UPTOX_REDIRECT_URI ?? "";
+  app.get("/api/auth/uptox/url", authenticateToken, (req: any, res) => {
+    const apiKey = process.env.UPTOX_API_KEY ?? "";
+    let redirectUri = process.env.UPTOX_REDIRECT_URI ?? "";
 
-  const host = req.get("host") ?? "";
-  const protocol = (req.get("x-forwarded-proto") as string | undefined) ?? req.protocol;
-  const detectedUri = `${protocol}://${host}/auth/callback`;
-
-  if (!redirectUri || !redirectUri.startsWith("http")) {
-    redirectUri = detectedUri;
-  }
-
-  if (host.includes("ais-dev-kmtq2mfzcdgtjnm6loanhz")) {
-    redirectUri = "https://ais-dev-kmtq2mfzcdgtjnm6loanhz-448575883234.asia-southeast1.run.app/auth/callback";
-  }
-
-  if (!apiKey) {
-    return res.status(500).json({ error: "UPTOX_API_KEY is missing." });
-  }
-
-  // Embed the user's JWT as 'state' so callback can identify who is connecting
-  const state = req.headers.authorization?.split(" ")[1] || "";
-
-  const url = `https://api.upstox.com/v2/login/authorization/dialog?response_type=code&client_id=${apiKey}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}`;
-  res.json({ url });
-});
-
-  app.get("/auth/callback", async (req, res, next) => {
-  const { code, state } = req.query;
-  if (!code) return res.status(400).send("No code provided.");
-
-  const apiKey = process.env.UPTOX_API_KEY ?? "";
-  const apiSecret = process.env.UPTOX_API_SECRET ?? "";
-
-  let redirectUri = process.env.UPTOX_REDIRECT_URI ?? "";
-  if (!redirectUri || redirectUri.includes("ais-pre-") || redirectUri.includes("ais-dev-") || !redirectUri.startsWith("http")) {
     const host = req.get("host") ?? "";
     const protocol = (req.get("x-forwarded-proto") as string | undefined) ?? req.protocol;
-    redirectUri = `${protocol}://${host}/auth/callback`;
-  }
+    const detectedUri = `${protocol}://${host}/auth/callback`;
 
-  const renderHtmlResponse = (isSuccess: boolean, message: string, payload: any) => {
-    return `
-      <html>
-        <head><title>Upstox Authentication</title></head>
-        <body style="background:#000;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;">
-          <div style="text-align:center;">
-            <h2 style="color:${isSuccess ? '#10b981' : '#ef4444'};">${message}</h2>
-            <p id="msg" style="color:#a1a1aa;font-size:14px;">Redirecting back to app...</p>
-            <script>
-              if (window.opener) {
-                window.opener.postMessage(${JSON.stringify(payload)}, window.location.origin);
-                setTimeout(() => window.close(), 1500);
-              } else {
-                document.getElementById('msg').innerText = "Please close this tab and return to the application.";
-              }
-            </script>
-          </div>
-        </body>
-      </html>
-    `;
-  };
-
-  try {
-    const params = new URLSearchParams({
-      code: String(code),
-      client_id: apiKey,
-      client_secret: apiSecret,
-      redirect_uri: redirectUri,
-      grant_type: "authorization_code",
-    });
-
-    const response = await fetch("https://api.upstox.com/v2/login/authorization/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-      body: params,
-    });
-
-    const data = await response.json();
-
-    if (!data.access_token) {
-      return res.status(400).send(renderHtmlResponse(false, "Connection Failed!", { type: 'UPTOX_AUTH_ERROR', error: data }));
+    if (!redirectUri || !redirectUri.startsWith("http")) {
+      redirectUri = detectedUri;
     }
 
-    // ---- NEW: Save token server-side using the JWT from 'state' ----
-    const userJwt = state ? String(state) : null;
-    if (userJwt) {
-      try {
-        const decoded: any = jwt.verify(userJwt, JWT_SECRET);
-        const userId = decoded.id;
+    if (host.includes("ais-dev-kmtq2mfzcdgtjnm6loanhz")) {
+      redirectUri = "https://ais-dev-kmtq2mfzcdgtjnm6loanhz-448575883234.asia-southeast1.run.app/auth/callback";
+    }
 
-        await query(
-          `INSERT INTO user_tokens (user_id, broker, access_token, refresh_token, expires_at)
-           VALUES ($1, 'upstox', $2, $3, NOW() + INTERVAL '24 hours')
-           ON CONFLICT (user_id, broker)
-           DO UPDATE SET
-             access_token = EXCLUDED.access_token,
-             refresh_token = EXCLUDED.refresh_token,
-             expires_at = EXCLUDED.expires_at`,
-          [userId, encrypt(String(data.access_token)), encrypt(String(data.refresh_token || ""))]
-        );
+    if (!apiKey) {
+      return res.status(500).json({ error: "UPTOX_API_KEY is missing." });
+    }
 
-        await query("UPDATE users SET is_uptox_connected = true WHERE id = $1", [userId]);
+    // Embed the user's JWT as 'state' so callback can identify who is connecting
+    const state = req.headers.authorization?.split(" ")[1] || "";
 
-        upstoxConsecutiveFailures = 0;
-        upstoxBackoffUntil = 0;
-        fetchRealPrices();
+    const url = `https://api.upstox.com/v2/login/authorization/dialog?response_type=code&client_id=${apiKey}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}`;
+    res.json({ url });
+  });
 
-        // Notify only: no tokens sent to frontend
-        return res.send(renderHtmlResponse(true, "Connection Successful! ✓", {
-          type: 'UPTOX_AUTH_SUCCESS'
-          // No tokens in postMessage — already saved server-side
-        }));
-      } catch (jwtErr) {
-        logger.warn("[OAuth Callback] Invalid state JWT, falling back to client-side save");
-        // Fall through to old behavior below
+  app.get("/auth/callback", async (req, res, next) => {
+    const { code, state } = req.query;
+    if (!code) return res.status(400).send("No code provided.");
+
+    const apiKey = process.env.UPTOX_API_KEY ?? "";
+    const apiSecret = process.env.UPTOX_API_SECRET ?? "";
+
+    let redirectUri = process.env.UPTOX_REDIRECT_URI ?? "";
+    if (!redirectUri || redirectUri.includes("ais-pre-") || redirectUri.includes("ais-dev-") || !redirectUri.startsWith("http")) {
+      const host = req.get("host") ?? "";
+      const protocol = (req.get("x-forwarded-proto") as string | undefined) ?? req.protocol;
+      redirectUri = `${protocol}://${host}/auth/callback`;
+    }
+
+    const renderHtmlResponse = (isSuccess: boolean, message: string, payload: any) => {
+      return `
+        <html>
+          <head><title>Upstox Authentication</title></head>
+          <body style="background:#000;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;">
+            <div style="text-align:center;">
+              <h2 style="color:${isSuccess ? '#10b981' : '#ef4444'};">${message}</h2>
+              <p id="msg" style="color:#a1a1aa;font-size:14px;">Redirecting back to app...</p>
+              <script>
+                if (window.opener) {
+                  window.opener.postMessage(${JSON.stringify(payload)}, window.location.origin);
+                  setTimeout(() => window.close(), 1500);
+                } else {
+                  document.getElementById('msg').innerText = "Please close this tab and return to the application.";
+                }
+              </script>
+            </div>
+          </body>
+        </html>
+      `;
+    };
+
+    try {
+      const params = new URLSearchParams({
+        code: String(code),
+        client_id: apiKey,
+        client_secret: apiSecret,
+        redirect_uri: redirectUri,
+        grant_type: "authorization_code",
+      });
+
+      const response = await fetch("https://api.upstox.com/v2/login/authorization/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+        body: params,
+      });
+
+      const data = await response.json();
+
+      if (!data.access_token) {
+        return res.status(400).send(renderHtmlResponse(false, "Connection Failed!", { type: 'UPTOX_AUTH_ERROR', error: data }));
       }
+
+      // ---- NEW: Save token server-side using the JWT from 'state' ----
+      const userJwt = state ? String(state) : null;
+      if (userJwt) {
+        try {
+          const decoded: any = jwt.verify(userJwt, JWT_SECRET);
+          const userId = decoded.id;
+
+          await query(
+            `INSERT INTO user_tokens (user_id, broker, access_token, refresh_token, expires_at)
+             VALUES ($1, 'upstox', $2, $3, NOW() + INTERVAL '24 hours')
+             ON CONFLICT (user_id, broker)
+             DO UPDATE SET
+               access_token = EXCLUDED.access_token,
+               refresh_token = EXCLUDED.refresh_token,
+               expires_at = EXCLUDED.expires_at`,
+            [userId, encrypt(String(data.access_token)), encrypt(String(data.refresh_token || ""))]
+          );
+
+          await query("UPDATE users SET is_uptox_connected = true WHERE id = $1", [userId]);
+
+          upstoxConsecutiveFailures = 0;
+          upstoxBackoffUntil = 0;
+          fetchRealPrices();
+
+          // Notify only: no tokens sent to frontend
+          return res.send(renderHtmlResponse(true, "Connection Successful! ✓", {
+            type: 'UPTOX_AUTH_SUCCESS'
+          }));
+        } catch (jwtErr) {
+          logger.warn("[OAuth Callback] Invalid state JWT, falling back to client-side save");
+        }
+      }
+
+      // Fallback (no state): send token to frontend for client-side save
+      res.send(renderHtmlResponse(true, "Connection Successful!", {
+        type: 'UPTOX_AUTH_SUCCESS',
+        token: data.access_token,
+        refresh_token: data.refresh_token || ""
+      }));
+
+    } catch (e) {
+      next(e);
     }
-
-    // Fallback (no state): send token to frontend for client-side save
-    res.send(renderHtmlResponse(true, "Connection Successful!", {
-      type: 'UPTOX_AUTH_SUCCESS',
-      token: data.access_token,
-      refresh_token: data.refresh_token || ""
-    }));
-
-  } catch (e) {
-    next(e);
-  }
-});
+  });
 
   app.post(
     "/api/auth/uptox/save-token",
@@ -1121,7 +1126,6 @@ app.get("/api/auth/uptox/url", authenticateToken, (req: any, res) => {
   fetchRealPrices();
   setInterval(fetchRealPrices, 5000);
 
-  // --- FIX: Cache the token count to prevent DB connection pool exhaustion ---
   let cachedTokenCount = 0;
   let lastTokenCountCheck = 0;
 
@@ -1130,7 +1134,6 @@ app.get("/api/auth/uptox/url", authenticateToken, (req: any, res) => {
     const now = Date.now();
     
     try {
-      // Only hit the database once every 10 seconds, NOT every 1 second
       if (now - lastTokenCountCheck > 10000) {
         const { rows } = await query("SELECT COUNT(*) as count FROM user_tokens");
         cachedTokenCount = parseInt(rows[0].count);
@@ -1261,9 +1264,6 @@ app.get("/api/auth/uptox/url", authenticateToken, (req: any, res) => {
       logger.error("[DB] Error closing PostgreSQL pool:", err);
     }
 
-    // ========================================================
-    // --- ADDED FOR TASK 3.1: Close Redis Connection       ---
-    // ========================================================
     try {
       if (redisConnected) {
         await redisClient.quit();
@@ -1272,7 +1272,6 @@ app.get("/api/auth/uptox/url", authenticateToken, (req: any, res) => {
     } catch (err) {
       logger.error("[Redis] Shutdown error:", err);
     }
-    // ========================================================
 
     logger.info("[Server] Graceful shutdown complete. Exiting process.");
     process.exit(0);
