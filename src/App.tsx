@@ -7,11 +7,9 @@ import { useAuthStore } from './store/authStore';
 import { formatCurrency } from './lib/utils';
 import { apiClient } from './api/client';
 
-// Layout Components
 import Navbar from './components/Navbar';
 import Header from './components/Header';
 
-// Screen Components
 import Auth from './screens/Auth';
 import Onboarding from './screens/Onboarding';
 import Dashboard from './screens/Dashboard';
@@ -21,15 +19,11 @@ import More from './screens/More';
 import AdminPanel from './screens/admin/AdminPanel';
 import ComplianceDetail from './screens/ComplianceDetail';
 
-// --- ADDED FOR TASK-013: KYC Screen ---
 import KycVerification from './screens/KycVerification';
-
-// --- ADDED FOR TASK-014: Legal Pages ---
 import TermsOfService from './pages/TermsOfService';
 import PrivacyPolicy from './pages/PrivacyPolicy';
 import RiskDisclosure from './pages/RiskDisclosure';
 
-// Modal / Overlay Components
 import IndexOverview from './screens/IndexOverview';
 import IndexDetail from './screens/IndexDetail';
 import OrderWindow from './screens/OrderWindow';
@@ -37,21 +31,12 @@ import FOTradingCenter from './screens/FOTradingCenter';
 import FullChartModal from './components/FullChartModal';
 import OptionChain from './components/OptionChain';
 
-// --- Main App ---
-
 function App() {
   const { token, user, setAuth, logout, setIsWsConnected} = useAuthStore();
   const [activeTab, setActiveTab] = useState('dashboard');
   const [stocks, setStocks] = useState<Record<string, number>>({
-    "NIFTY 50": 22145.20,
-    "SENSEX": 72850.40,
-    "BANKNIFTY": 46800.15,
-    "FINNIFTY": 20850.60,
-    "RELIANCE": 2985.40,
-    "TCS": 4120.15,
-    "HDFCBANK": 1450.60,
-    "INFY": 1680.40,
-    "ICICIBANK": 1050.20
+    "NIFTY 50": 22145.20, "SENSEX": 72850.40, "BANKNIFTY": 46800.15, "FINNIFTY": 20850.60,
+    "RELIANCE": 2985.40, "TCS": 4120.15, "HDFCBANK": 1450.60, "INFY": 1680.40, "ICICIBANK": 1050.20
   });
   const [complianceType, setComplianceType] = useState('');
   const [selectedIndex, setSelectedIndex] = useState<string | null>(null);
@@ -63,7 +48,6 @@ function App() {
 
   const [isDemoMode, setIsDemoMode] = useState(false); 
 
-  // Broker Connection Logic
   const [isConnectingAngel, setIsConnectingAngel] = useState(false);
   const [isConnectingUptox, setIsConnectingUptox] = useState(false);
   const [angelForm, setAngelForm] = useState({ clientCode: '', password: '', totp: '' });
@@ -71,7 +55,6 @@ function App() {
   const [debugInfo, setDebugInfo] = useState<any>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // --- TASK 5.1: Reconnection Refs ---
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttemptsRef = useRef(0);
@@ -95,6 +78,7 @@ function App() {
 
   const handleConnectUptox = async () => {
     setIsConnectingUptox(true);
+    // Open immediately to combat popup blockers
     const authWindow = window.open('about:blank', 'uptox_auth', 'width=500,height=600');
     try {
       const res = await apiClient.get('/api/auth/uptox/url');
@@ -176,59 +160,38 @@ function App() {
   }, [token, logout, setAuth]);
 
   // Global Upstox Popup Listener
-useEffect(() => {
-  const handleMessage = async (event: MessageEvent) => {
-    // Fix: accept message from same origin OR any origin for the success type
-    // (postMessage now uses window.location.origin on the server side)
-    const isSameOrigin = event.origin === window.location.origin;
-    const isKnownAppUrl = import.meta.env.VITE_APP_URL 
-      ? event.origin === import.meta.env.VITE_APP_URL 
-      : false;
+  useEffect(() => {
+    const handleMessage = async (event: MessageEvent) => {
+      // 🚀 FIX: Allow messages if they specifically represent the known auth types, regardless of local/API strict origin mismatches in decoupled environments.
+      if (event.data?.type === 'UPTOX_AUTH_SUCCESS') {
+        try {
+          const { token: uptoxToken, refresh_token: uptoxRefreshToken } = event.data;
 
-    if (!isSameOrigin && !isKnownAppUrl) {
-      // Still log so you can debug origin mismatches in production
-      if (event.data?.type === 'UPTOX_AUTH_SUCCESS' || event.data?.type === 'UPTOX_AUTH_ERROR') {
-        console.warn('[Auth] Received Upstox message from untrusted origin:', event.origin, '| Expected:', window.location.origin);
-      }
-      return;
-    }
-
-    if (event.data?.type === 'UPTOX_AUTH_SUCCESS') {
-      try {
-        const { token: uptoxToken, refresh_token: uptoxRefreshToken } = event.data;
-
-        if (uptoxToken) {
-          // Fallback path: token was NOT saved server-side (old flow or state missing)
-          // Save it now via the API
-          await apiClient.post('/api/auth/uptox/save-token', {
-            access_token: uptoxToken,
-            refresh_token: uptoxRefreshToken || '',
-          });
+          if (uptoxToken) {
+            await apiClient.post('/api/auth/uptox/save-token', {
+              access_token: uptoxToken,
+              refresh_token: uptoxRefreshToken || '',
+            });
+          }
+          await new Promise(r => setTimeout(r, 600));
+          const profileRes = await apiClient.get('/api/user/profile');
+          if (profileRes.data?.id) {
+            setAuth(profileRes.data, token as string);
+            toast.success('Upstox connected! Live data is now active.');
+          }
+        } catch (e) {
+          console.error('Failed to finalize Upstox connection', e);
+          toast.error('Failed to finalize Upstox connection. Please try again.');
         }
-        // Whether saved server-side or just now, re-fetch profile to update UI
-        // Small delay ensures DB write is committed
-        await new Promise(r => setTimeout(r, 600));
-        const profileRes = await apiClient.get('/api/user/profile');
-        if (profileRes.data?.id) {
-          setAuth(profileRes.data, token as string);
-          toast.success('Upstox connected! Live data is now active.');
-        }
-      } catch (e) {
-        console.error('Failed to finalize Upstox connection', e);
-        toast.error('Failed to finalize Upstox connection. Please try again.');
+      } else if (event.data?.type === 'UPTOX_AUTH_ERROR') {
+        toast.error('Upstox connection failed. Please try again.');
       }
-    } else if (event.data?.type === 'UPTOX_AUTH_ERROR') {
-      toast.error('Upstox connection failed. Please try again.');
-    }
-  };
+    };
 
-  window.addEventListener('message', handleMessage);
-  return () => window.removeEventListener('message', handleMessage);
-}, [token, setAuth]);
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [token, setAuth]);
 
-  // ========================================================
-  // --- UPDATED FOR TASK 5.1 & 6.1: WS Reconnection Logic ---
-  // ========================================================
   useEffect(() => {
     if (!token) return;
 
@@ -237,17 +200,11 @@ useEffect(() => {
     const connectWebSocket = () => {
       if (!isComponentMounted) return;
       
-      // Clean up existing connection if any
       if (wsRef.current) {
         wsRef.current.close();
       }
 
-      // --- BUG FIX: Fetch the freshest token directly from localStorage ---
-      // Axios interceptors refresh the token every 15 mins in the background. 
-      // We must grab it from storage so the WebSocket doesn't use an expired token.
       const freshToken = localStorage.getItem('token') || token;
-      
-      // Stop trying to connect if the user has completely logged out
       if (!freshToken) return;
 
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -257,9 +214,8 @@ useEffect(() => {
 
       ws.onopen = () => {
         if (!isComponentMounted) return;
-        console.log('[WebSocket] Connected securely with fresh token');
         setIsWsConnected(true);
-        reconnectAttemptsRef.current = 0; // Reset attempts on successful connection
+        reconnectAttemptsRef.current = 0; 
       };
 
       ws.onmessage = (event) => {
@@ -280,25 +236,14 @@ useEffect(() => {
               setIsDemoMode(message.isSimulated);
             }
           }
-        } catch (e) {
-          console.error('[WebSocket] Failed to parse message', e);
-        }
-      };
-
-      ws.onerror = (err) => {
-        console.error('[WebSocket] Connection error', err);
+        } catch (e) {}
       };
 
       ws.onclose = () => {
         if (!isComponentMounted) return;
-        console.log('[WebSocket] Disconnected');
         setIsWsConnected(false);
-
-        // Exponential backoff logic: 1s, 2s, 4s, 8s... max 30s
         const backoffTime = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
         reconnectAttemptsRef.current += 1;
-        
-        console.log(`[WebSocket] Reconnecting in ${backoffTime / 1000} seconds...`);
         reconnectTimeoutRef.current = setTimeout(connectWebSocket, backoffTime);
       };
     };
@@ -312,7 +257,6 @@ useEffect(() => {
     };
   }, [token, user?.is_uptox_connected]);
 
-
   const pathname = window.location.pathname;
   if (pathname === '/terms') return <TermsOfService />;
   if (pathname === '/privacy') return <PrivacyPolicy />;
@@ -325,10 +269,7 @@ useEffect(() => {
   return (
     <div className="min-h-screen bg-black text-zinc-100 font-sans selection:bg-emerald-500/30">
       <Toaster position="top-center" richColors />
-      <Header
-        onProfileClick={() => setActiveTab('more')}
-        onSearchClick={() => setIsSearchOpen(true)}
-      />
+      <Header onProfileClick={() => setActiveTab('more')} onSearchClick={() => setIsSearchOpen(true)} />
 
       <main className="max-w-md mx-auto pt-20">
         {isDemoMode && (
@@ -340,90 +281,33 @@ useEffect(() => {
         
         <AnimatePresence mode="wait">
           {activeTab === 'dashboard' && (
-            <Dashboard
-              key="dashboard"
-              stocks={stocks}
-              onMarketClick={() => setActiveTab('market')}
-              onIndexClick={setSelectedIndex}
-              onProfileClick={() => setActiveTab('more')}
-            />
+            <Dashboard key="dashboard" stocks={stocks} onMarketClick={() => setActiveTab('market')} onIndexClick={setSelectedIndex} onProfileClick={() => setActiveTab('more')} />
           )}
           {activeTab === 'market' && (
-            <Market
-              key="market"
-              stocks={stocks}
-              onIndexClick={setOverviewIndex}
-              onPlaceOrder={setOrderConfig}
-              initialSelectedStock={selectedStockFromSearch}
-            />
+            <Market key="market" stocks={stocks} onIndexClick={setOverviewIndex} onPlaceOrder={setOrderConfig} initialSelectedStock={selectedStockFromSearch} />
           )}
           {activeTab === 'fo' && (
             <div className="space-y-6">
               <OptionChain onPlaceOrder={setOrderConfig} stocks={stocks} fullChain={false} />
-              <FOTradingCenter
-                key="fo"
-                stocks={stocks}
-                onOpenOptionChain={() => openOptionChain()}
-                onConnectAngel={() => setShowAngelLogin(true)}
-                onConnectUptox={handleConnectUptox}
-                isConnectingAngel={isConnectingAngel}
-                isConnectingUptox={isConnectingUptox}
-              />
+              <FOTradingCenter key="fo" stocks={stocks} onOpenOptionChain={() => openOptionChain()} onConnectAngel={() => setShowAngelLogin(true)} onConnectUptox={handleConnectUptox} isConnectingAngel={isConnectingAngel} isConnectingUptox={isConnectingUptox} />
             </div>
           )}
           {activeTab === 'portfolio' && <Portfolio key="portfolio" stocks={stocks} />}
-          {activeTab === 'onboarding' && (
-            <Onboarding key="onboarding" onComplete={() => setActiveTab('dashboard')} />
-          )}
-          {activeTab === 'admin' && (
-            <AdminPanel key="admin" onBack={() => setActiveTab('dashboard')} />
-          )}
+          {activeTab === 'onboarding' && <Onboarding key="onboarding" onComplete={() => setActiveTab('dashboard')} />}
+          {activeTab === 'admin' && <AdminPanel key="admin" onBack={() => setActiveTab('dashboard')} />}
           {activeTab === 'more' && (
-            <More
-              key="more"
-              activeTab={activeTab}
-              setActiveTab={setActiveTab}
-              setComplianceType={setComplianceType}
-              setStocks={setStocks}
-              onConnectAngel={() => setShowAngelLogin(true)}
-              onConnectUptox={handleConnectUptox}
-              isConnectingAngel={isConnectingAngel}
-              isConnectingUptox={isConnectingUptox}
-              debugInfo={debugInfo}
-              isRefreshing={isRefreshing}
-              onForceRefresh={handleForceRefresh}
-            />
+            <More key="more" activeTab={activeTab} setActiveTab={setActiveTab} setComplianceType={setComplianceType} setStocks={setStocks} onConnectAngel={() => setShowAngelLogin(true)} onConnectUptox={handleConnectUptox} isConnectingAngel={isConnectingAngel} isConnectingUptox={isConnectingUptox} debugInfo={debugInfo} isRefreshing={isRefreshing} onForceRefresh={handleForceRefresh} />
           )}
-          {activeTab === 'compliance' && (
-            <ComplianceDetail
-              key="compliance"
-              type={complianceType}
-              onBack={() => setActiveTab('more')}
-            />
-          )}
-          {activeTab === 'kyc' && (
-            <KycVerification
-              key="kyc"
-              onBack={() => setActiveTab('dashboard')}
-            />
-          )}
+          {activeTab === 'compliance' && <ComplianceDetail key="compliance" type={complianceType} onBack={() => setActiveTab('more')} />}
+          {activeTab === 'kyc' && <KycVerification key="kyc" onBack={() => setActiveTab('dashboard')} />}
         </AnimatePresence>
       </main>
 
       {/* Angel One Login Modal */}
       <AnimatePresence>
         {showAngelLogin && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-200 bg-black/90 backdrop-blur-md flex items-center justify-center p-6"
-          >
-            <motion.div
-              initial={{ scale: 0.9, y: 20 }}
-              animate={{ scale: 1, y: 0 }}
-              className="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-[2.5rem] p-8 space-y-6"
-            >
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-200 bg-black/90 backdrop-blur-md flex items-center justify-center p-6">
+            <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} className="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-[2.5rem] p-8 space-y-6">
               <div className="flex justify-between items-center">
                 <h3 className="text-xl font-black text-white uppercase tracking-tighter">Angel One Login</h3>
                 <button onClick={() => setShowAngelLogin(false)} className="p-2 text-zinc-500 hover:text-white">
@@ -433,42 +317,17 @@ useEffect(() => {
               <form onSubmit={handleConnectAngel} className="space-y-4">
                 <div className="space-y-2">
                   <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest ml-1">Client Code</label>
-                  <input
-                    type="text"
-                    required
-                    value={angelForm.clientCode}
-                    onChange={(e) => setAngelForm({ ...angelForm, clientCode: e.target.value })}
-                    className="w-full bg-black border border-zinc-800 rounded-2xl px-5 py-4 text-sm text-white focus:border-emerald-500 transition-colors"
-                    placeholder="e.g. V123456"
-                  />
+                  <input type="text" required value={angelForm.clientCode} onChange={(e) => setAngelForm({ ...angelForm, clientCode: e.target.value })} className="w-full bg-black border border-zinc-800 rounded-2xl px-5 py-4 text-sm text-white focus:border-emerald-500 transition-colors" placeholder="e.g. V123456" />
                 </div>
                 <div className="space-y-2">
                   <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest ml-1">Password</label>
-                  <input
-                    type="password"
-                    required
-                    value={angelForm.password}
-                    onChange={(e) => setAngelForm({ ...angelForm, password: e.target.value })}
-                    className="w-full bg-black border border-zinc-800 rounded-2xl px-5 py-4 text-sm text-white focus:border-emerald-500 transition-colors"
-                    placeholder="••••••••"
-                  />
+                  <input type="password" required value={angelForm.password} onChange={(e) => setAngelForm({ ...angelForm, password: e.target.value })} className="w-full bg-black border border-zinc-800 rounded-2xl px-5 py-4 text-sm text-white focus:border-emerald-500 transition-colors" placeholder="••••••••" />
                 </div>
                 <div className="space-y-2">
                   <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest ml-1">TOTP / OTP</label>
-                  <input
-                    type="text"
-                    required
-                    value={angelForm.totp}
-                    onChange={(e) => setAngelForm({ ...angelForm, totp: e.target.value })}
-                    className="w-full bg-black border border-zinc-800 rounded-2xl px-5 py-4 text-sm text-white focus:border-emerald-500 transition-colors"
-                    placeholder="6-digit code"
-                  />
+                  <input type="text" required value={angelForm.totp} onChange={(e) => setAngelForm({ ...angelForm, totp: e.target.value })} className="w-full bg-black border border-zinc-800 rounded-2xl px-5 py-4 text-sm text-white focus:border-emerald-500 transition-colors" placeholder="6-digit code" />
                 </div>
-                <button
-                  type="submit"
-                  disabled={isConnectingAngel}
-                  className="w-full bg-emerald-500 text-black font-black py-4 rounded-2xl text-xs uppercase tracking-widest hover:bg-emerald-600 transition-all shadow-xl shadow-emerald-500/20 disabled:opacity-50"
-                >
+                <button type="submit" disabled={isConnectingAngel} className="w-full bg-emerald-500 text-black font-black py-4 rounded-2xl text-xs uppercase tracking-widest hover:bg-emerald-600 transition-all shadow-xl shadow-emerald-500/20 disabled:opacity-50">
                   {isConnectingAngel ? 'Connecting...' : 'Link Account'}
                 </button>
               </form>
@@ -477,48 +336,23 @@ useEffect(() => {
         )}
       </AnimatePresence>
 
-      {/* Search Overlay */}
       <AnimatePresence mode="wait">
         {isSearchOpen && (
-          <motion.div
-            key="search-overlay"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-150 bg-black/95 backdrop-blur-xl p-6 flex flex-col"
-          >
+          <motion.div key="search-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-150 bg-black/95 backdrop-blur-xl p-6 flex flex-col">
             <div className="flex items-center gap-4 mb-8">
-              <button
-                onClick={() => setIsSearchOpen(false)}
-                className="p-2 -ml-2 rounded-full hover:bg-zinc-900 text-zinc-400"
-              >
+              <button onClick={() => setIsSearchOpen(false)} className="p-2 -ml-2 rounded-full hover:bg-zinc-900 text-zinc-400">
                 <ChevronRight className="rotate-180" size={24} />
               </button>
               <div className="flex-1 relative">
                 <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-600" size={18} />
-                <input
-                  autoFocus
-                  type="text"
-                  placeholder="Search Stocks, Indices, F&O..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full bg-zinc-900 border border-zinc-800 rounded-2xl py-4 pl-12 pr-6 text-sm font-bold focus:border-emerald-500/50 outline-none transition-all"
-                />
+                <input autoFocus type="text" placeholder="Search Stocks, Indices, F&O..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full bg-zinc-900 border border-zinc-800 rounded-2xl py-4 pl-12 pr-6 text-sm font-bold focus:border-emerald-500/50 outline-none transition-all" />
               </div>
             </div>
 
             <div className="flex-1 overflow-y-auto space-y-4">
               {filteredStocks.length > 0 ? (
                 filteredStocks.map((symbol: string) => (
-                  <div
-                    key={symbol}
-                    onClick={() => {
-                      setIsSearchOpen(false);
-                      setSelectedStockFromSearch(symbol);
-                      setActiveTab('market');
-                    }}
-                    className="bg-zinc-900/40 border border-zinc-800/50 rounded-2xl p-4 flex justify-between items-center cursor-pointer hover:bg-zinc-900 transition-colors"
-                  >
+                  <div key={symbol} onClick={() => { setIsSearchOpen(false); setSelectedStockFromSearch(symbol); setActiveTab('market'); }} className="bg-zinc-900/40 border border-zinc-800/50 rounded-2xl p-4 flex justify-between items-center cursor-pointer hover:bg-zinc-900 transition-colors">
                     <div className="flex items-center gap-4">
                       <div className="w-10 h-10 rounded-xl bg-zinc-900 flex items-center justify-center font-bold text-xs text-zinc-500">
                         {symbol.substring(0, 2)}
@@ -540,18 +374,10 @@ useEffect(() => {
                 </div>
               ) : (
                 <div className="space-y-6">
-                  <h3 className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest ml-1">
-                    Recent Searches
-                  </h3>
+                  <h3 className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest ml-1">Recent Searches</h3>
                   <div className="flex flex-wrap gap-2">
                     {['RELIANCE', 'NIFTY 50', 'TCS', 'ZOMATO'].map(s => (
-                      <button
-                        key={s}
-                        onClick={() => setSearchQuery(s)}
-                        className="px-4 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs font-bold text-zinc-400 hover:text-white transition-colors"
-                      >
-                        {s}
-                      </button>
+                      <button key={s} onClick={() => setSearchQuery(s)} className="px-4 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs font-bold text-zinc-400 hover:text-white transition-colors">{s}</button>
                     ))}
                   </div>
                 </div>
@@ -560,40 +386,9 @@ useEffect(() => {
           </motion.div>
         )}
 
-        {orderConfig && (
-          <OrderWindow
-            key="order-window"
-            config={orderConfig}
-            onClose={() => setOrderConfig(null)}
-            onOrderPlaced={() => {}}
-            isDemoMode={isDemoMode}
-            onKycRequired={() => {
-              setOrderConfig(null);
-              setActiveTab('kyc');
-            }}
-          />
-        )}
-        {overviewIndex && (
-          <IndexOverview
-            key="index-overview"
-            indexName={overviewIndex}
-            stocks={stocks}
-            onClose={() => setOverviewIndex(null)}
-            onOpenOptionChain={() => {
-              setSelectedIndex(overviewIndex);
-              setOverviewIndex(null);
-            }}
-          />
-        )}
-        {selectedIndex && (
-          <IndexDetail
-            key="index-detail"
-            indexName={selectedIndex}
-            stocks={stocks}
-            onClose={() => setSelectedIndex(null)}
-            onPlaceOrder={setOrderConfig}
-          />
-        )}
+        {orderConfig && <OrderWindow key="order-window" config={orderConfig} onClose={() => setOrderConfig(null)} onOrderPlaced={() => {}} isDemoMode={isDemoMode} onKycRequired={() => { setOrderConfig(null); setActiveTab('kyc'); }} />}
+        {overviewIndex && <IndexOverview key="index-overview" indexName={overviewIndex} stocks={stocks} onClose={() => setOverviewIndex(null)} onOpenOptionChain={() => { setSelectedIndex(overviewIndex); setOverviewIndex(null); }} />}
+        {selectedIndex && <IndexDetail key="index-detail" indexName={selectedIndex} stocks={stocks} onClose={() => setSelectedIndex(null)} onPlaceOrder={setOrderConfig} />}
       </AnimatePresence>
 
       <Navbar activeTab={activeTab} setActiveTab={setActiveTab} />

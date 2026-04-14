@@ -10,20 +10,16 @@ import AISignals from './admin/AISignals';
 import { apiClient } from '../api/client';
 
 const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { stocks: Record<string, number>, onMarketClick: () => void, onIndexClick: (index: string) => void, onProfileClick: () => void }) => {
-  // ✅ FIX: Destructure refreshUser to update global state after login
   const { user, refreshUser } = useAuthStore();
   const [holdings, setHoldings] = useState<any[]>([]);
   const [positions, setPositions] = useState<any[]>([]);
   
-  // ✅ FIX: State to capture live Upstox funds
   const [availableFunds, setAvailableFunds] = useState<number | null>(null);
-  
   const [gainerLoserTab, setGainerLoserTab] = useState<'Gainers' | 'Losers'>('Gainers');
   const [eventFilter, setEventFilter] = useState('Upcoming');
   const [confirmExit, setConfirmExit] = useState<number | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
 
-  // ✅ FIX: Robust payload handling for Portfolio + Funds
   const fetchPortfolio = useCallback(async () => {
     try {
       const res = await apiClient.get('/api/portfolio');
@@ -48,31 +44,28 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
 
   const handleUpstoxConnect = async () => {
     setIsConnecting(true);
+    
+    // 🚀 FIX: Open popup immediately to bypass Safari/Chrome popup blockers
+    const width = 500, height = 700;
+    const left = window.screen.width / 2 - width / 2;
+    const top = window.screen.height / 2 - height / 2;
+    const authWindow = window.open('about:blank', 'UpstoxAuth', `width=${width},height=${height},top=${top},left=${left},toolbar=no,menubar=no`);
+
     try {
       const res = await apiClient.get('/api/auth/uptox/url');
-      const { url } = res.data;
-      const width = 500, height = 700;
-      const left = window.screen.width / 2 - width / 2;
-      const top = window.screen.height / 2 - height / 2;
-      const popup = window.open(url, 'UpstoxAuth', `width=${width},height=${height},top=${top},left=${left},toolbar=no,menubar=no`);
-      
-      const timer = setInterval(async () => {
-        if (popup?.closed) { 
-          clearInterval(timer); 
-          setIsConnecting(false); 
-          
-          // ✅ FIX: Update global user state & force socket reconnect
-          toast.success("Broker Connected! Booting up live market data...");
-          await refreshUser(); 
-          
-          // Soft reload to trigger App.tsx WebSocket reconnection with new token
-          setTimeout(() => {
-            window.location.reload();
-          }, 1500);
-        }
-      }, 500);
+      const { url, error } = res.data;
+      if (url && authWindow) {
+        authWindow.location.href = url;
+      } else {
+        authWindow?.close();
+        toast.error(error || 'Upstox configuration missing on server');
+      }
+      // Note: We intentionally removed the polling logic. 
+      // App.tsx handles the 'UPTOX_AUTH_SUCCESS' message, refreshes state, and toasts.
     } catch (err: any) {
+      authWindow?.close();
       toast.error('Failed to initialize Upstox connection.');
+    } finally {
       setIsConnecting(false);
     }
   };
@@ -89,18 +82,12 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
     }
   };
 
-  // ✅ FIX: Determine correct funds to display
   const displayFunds = availableFunds !== null ? availableFunds : (user?.balance || 0);
 
-  const totalInvested = holdings.reduce(
-    (acc, curr) => acc + curr.quantity * curr.average_price, 0
-  );
+  const totalInvested = holdings.reduce((acc, curr) => acc + curr.quantity * curr.average_price, 0);
 
   const currentValue = holdings.reduce((acc, curr) => {
-    const ltp =
-      stocks[curr.symbol] ||     // live WebSocket price (best)
-      curr.current_price ||      // Upstox API snapshot (fallback)
-      curr.average_price;        // safe fallback — P&L = ₹0 for this holding
+    const ltp = stocks[curr.symbol] || curr.current_price || curr.average_price;
     return acc + curr.quantity * ltp;
   }, 0);
 
@@ -246,7 +233,6 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
               </div>
               <div>
                 <p className="text-[9px] font-bold text-zinc-600 uppercase tracking-widest mb-1">Available Funds</p>
-                {/* ✅ FIX: Correctly maps Upstox live funds here */}
                 <p className="text-[13px] font-bold text-zinc-300">{formatCurrency(displayFunds)}</p>
               </div>
             </div>
@@ -285,7 +271,6 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
         )}
       </div>
 
-      {/* ── Live F&O Positions (only shown when positions exist) ── */}
       {user?.role === 'user' && positions.length > 0 && (
         <div className="px-5 space-y-3">
           <div className="flex justify-between items-center">
@@ -351,7 +336,6 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
         </div>
       </div>
 
-      {/* ── Top Gainers & Losers ── */}
       <div className="px-5 space-y-2.5">
         <div className="flex bg-zinc-900/50 p-1 rounded-xl border border-zinc-800/50">
           {['Gainers', 'Losers'].map(tab => (
@@ -390,10 +374,8 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
         </div>
       </div>
 
-      {/* ── AI Trading Signals ── */}
       <div className="px-5"><AISignals /></div>
 
-      {/* ── Stocks in News ── */}
       <div className="px-5 space-y-2.5">
         <div className="flex justify-between items-center">
           <h3 className="text-[11px] font-bold uppercase tracking-widest text-zinc-500">Stocks in News</h3>
@@ -422,7 +404,6 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
         </div>
       </div>
 
-      {/* ── Volume Rockers ── */}
       <div className="px-5 space-y-2.5">
         <div className="flex justify-between items-center">
           <h3 className="text-[11px] font-bold uppercase tracking-widest text-zinc-500">Volume Rockers</h3>
@@ -453,7 +434,6 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
         </div>
       </div>
 
-      {/* ── Market News ── */}
       <div className="space-y-2.5">
         <div className="px-5 flex justify-between items-center">
           <h3 className="text-[11px] font-bold uppercase tracking-widest text-zinc-500">Market News</h3>
@@ -475,7 +455,6 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
         </div>
       </div>
 
-      {/* ── Market Events ── */}
       <div className="space-y-2.5">
         <div className="px-5 flex justify-between items-center">
           <h3 className="text-[11px] font-bold uppercase tracking-widest text-zinc-500">Market Events</h3>

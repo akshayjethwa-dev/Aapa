@@ -10,7 +10,6 @@ import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
 
-// --- TASK 3.1 IMPORTS ---
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import RedisStore from "rate-limit-redis";
 import { createClient } from "redis";
@@ -18,10 +17,7 @@ import { createClient } from "redis";
 import helmet from "helmet";
 import cors from "cors";
 
-// Import PostgreSQL Database setup
 import { pool, query } from "./src/db/index";
-
-// Zod Validation Imports
 import { validate } from "./src/middleware/validate";
 import {
   registerSchema,
@@ -32,15 +28,9 @@ import {
   whitelistSchema
 } from "./src/validation/schemas";
 
-// Logger Import
 import { logger } from "./src/utils/logger";
-
-// --- ENCRYPTION IMPORT ---
 import { encrypt, decrypt } from "./src/utils/encryption";
-
 import { requireKyc } from "./src/middleware/requireKyc";
-
-// --- BROKER ABSTRACTION IMPORT ---
 import { getBrokerService, OrderRequest } from "./src/lib/brokers/index";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -48,12 +38,9 @@ const __dirname = path.dirname(__filename);
 
 dotenv.config();
 
-// ========================================================
-// --- ADDED FOR TASK 2.2 & 6.1: Extended WebSocket Interface ---
-// ========================================================
 interface ExtWebSocket extends WebSocket {
   isAlive: boolean;
-  userId?: number; // TASK 6.1: Store authenticated user ID
+  userId?: number; 
 }
 
 async function startServer() {
@@ -61,15 +48,9 @@ async function startServer() {
   const server = http.createServer(app);
   const wss = new WebSocketServer({ server });
 
-  // ========================================================
-  // --- MOVED UP FOR TASK 6.1: JWT Secrets required for WS
-  // ========================================================
   const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret";
   const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || "fallback-refresh-secret";
 
-  // ========================================================
-  // --- UPDATED FOR TASK 3.1: Redis Client Setup with fallback ---
-  // ========================================================
   const redisClient = createClient({
     url: process.env.REDIS_URL || 'redis://localhost:6379',
   });
@@ -84,18 +65,12 @@ async function startServer() {
   } catch (e) {
     logger.warn('[Redis] Connection failed — using in-memory rate limiting fallback.');
   }
-  // ========================================================
 
-  // ========================================================
-  // --- UPDATED FOR TASK 6.1: Secure WebSocket Auth      ---
-  // ========================================================
   wss.on("connection", (socket, req) => {
     const ws = socket as ExtWebSocket;
     ws.isAlive = true;
 
     const ip = req.socket.remoteAddress;
-
-    // Extract token from the query parameters (e.g. ws://.../?token=xyz)
     const url = new URL(req.url || "", `http://${req.headers.host || "localhost"}`);
     const token = url.searchParams.get("token");
 
@@ -105,7 +80,6 @@ async function startServer() {
       return;
     }
 
-    // Verify the JWT Token
     jwt.verify(token, JWT_SECRET, (err: any, decoded: any) => {
       if (err) {
         logger.warn(`[WebSocket] Connection rejected: Invalid token from ${ip}`);
@@ -113,16 +87,13 @@ async function startServer() {
         return;
       }
 
-      // Successful Authentication
       ws.userId = decoded.id;
       logger.info(`[WebSocket] Authenticated User ID: ${ws.userId} connected from ${ip}. Total clients: ${wss.clients.size}`);
 
-      // Listen for pong response to keep connection alive
       ws.on("pong", () => {
         ws.isAlive = true;
       });
 
-      // Send initial data once securely connected
       ws.send(JSON.stringify({ type: "ticker", data: stockPrices }));
 
       ws.on("close", () => {
@@ -135,9 +106,6 @@ async function startServer() {
     });
   });
 
-  // ========================================================
-  // --- ADDED FOR TASK 2.2: Heartbeat Interval Checker ---
-  // ========================================================
   const pingInterval = setInterval(() => {
     wss.clients.forEach((client) => {
       const ws = client as ExtWebSocket;
@@ -149,14 +117,10 @@ async function startServer() {
       ws.isAlive = false;
       ws.ping();
     });
-  }, 30000); // Run every 30 seconds
+  }, 30000); 
 
-  // ========================================================
-  // --- ADDED FOR TASK 2.3: Proactive Token Refresh Job  ---
-  // ========================================================
   const tokenRefreshInterval = setInterval(async () => {
     try {
-      // Find tokens expiring within the next 15 minutes
       const { rows: expiringTokens } = await query(
         "SELECT user_id, refresh_token FROM user_tokens WHERE broker = 'upstox' AND expires_at <= NOW() + INTERVAL '15 minutes'"
       );
@@ -182,7 +146,6 @@ async function startServer() {
           const decryptedRefreshToken = decrypt(String(tokenRow.refresh_token));
           if (!decryptedRefreshToken) continue;
 
-          // Call the newly created refreshAccessToken function
           const refreshData = await brokerService.refreshAccessToken(apiKey, apiSecret, decryptedRefreshToken);
           
           if (refreshData && refreshData.access_token) {
@@ -207,12 +170,10 @@ async function startServer() {
     } catch (e) {
        logger.error("[TokenRefresh] Job error:", e);
     }
-  }, 5 * 60 * 1000); // Check every 5 minutes
-  // ========================================================
+  }, 5 * 60 * 1000); 
 
   app.set("trust proxy", 1);
 
-  // ✅ FIX: Added TradingView domains to CSP directives
   app.use(
     helmet({
       contentSecurityPolicy: process.env.NODE_ENV === "production" 
@@ -255,13 +216,10 @@ async function startServer() {
   app.use(express.json());
   app.use(cookieParser());
 
-  // ========================================================
-  // --- UPDATED FIX: Prevent Store Reuse by passing prefix ---
-  // ========================================================
   const makeStore = (prefix: string) => redisConnected
     ? new RedisStore({ 
         sendCommand: (...args: string[]) => redisClient.sendCommand(args),
-        prefix: prefix // Isolate Redis keys for each limiter
+        prefix: prefix 
       })
     : undefined;
 
@@ -295,7 +253,6 @@ async function startServer() {
     standardHeaders: true,
     legacyHeaders: false,
   });
-  // ========================================================
 
   app.use("/api/auth", authLimiter);
   app.use("/api/ai", aiLimiter);
@@ -337,10 +294,7 @@ async function startServer() {
     }
   });
 
-  app.post(
-    "/api/auth/register",
-    validate(registerSchema),
-    async (req, res, next) => {
+  app.post("/api/auth/register", validate(registerSchema), async (req, res, next) => {
       try {
         let { email, mobile, password } = req.body;
         email = email?.toString().toLowerCase().trim();
@@ -365,14 +319,10 @@ async function startServer() {
       } catch (e: any) {
         if (e.code === "23505") {
           if (e.constraint === "users_email_key") {
-            return res
-              .status(400)
-              .json({ error: "Email already registered. Please login instead." });
+            return res.status(400).json({ error: "Email already registered. Please login instead." });
           }
           if (e.constraint === "users_mobile_key") {
-            return res.status(400).json({
-              error: "Mobile number already registered. Please login instead.",
-            });
+            return res.status(400).json({ error: "Mobile number already registered. Please login instead." });
           }
         }
         next(e);
@@ -380,10 +330,7 @@ async function startServer() {
     }
   );
 
-  app.post(
-    "/api/auth/login",
-    validate(loginSchema),
-    async (req, res, next) => {
+  app.post("/api/auth/login", validate(loginSchema), async (req, res, next) => {
       try {
         let { login, password } = req.body;
         
@@ -461,9 +408,7 @@ async function startServer() {
       JWT_REFRESH_SECRET,
       async (err: any, decoded: any) => {
         if (err) {
-          return res
-            .status(403)
-            .json({ error: "Invalid or expired refresh token" });
+          return res.status(403).json({ error: "Invalid or expired refresh token" });
         }
 
         try {
@@ -476,8 +421,7 @@ async function startServer() {
             return res.status(403).json({ error: "User no longer exists" });
           }
 
-          const effectiveRole =
-            user.email === "bharvadvijay371@gmail.com" ? "admin" : user.role;
+          const effectiveRole = user.email === "bharvadvijay371@gmail.com" ? "admin" : user.role;
 
           const newToken = jwt.sign(
             { id: user.id, email: user.email, role: effectiveRole },
@@ -513,10 +457,7 @@ async function startServer() {
     }
   });
 
-  app.post(
-    "/api/admin/users/:id/role",
-    authenticateToken,
-    async (req: any, res, next) => {
+  app.post("/api/admin/users/:id/role", authenticateToken, async (req: any, res, next) => {
       if (req.user.role !== "admin") return res.sendStatus(403);
       try {
         const { role } = req.body;
@@ -529,10 +470,7 @@ async function startServer() {
     }
   );
 
-  app.get(
-    "/api/admin/whitelist",
-    authenticateToken,
-    async (req: any, res, next) => {
+  app.get("/api/admin/whitelist", authenticateToken, async (req: any, res, next) => {
       if (req.user.role !== "admin") return res.sendStatus(403);
       try {
         const { rows: list } = await query(
@@ -545,17 +483,11 @@ async function startServer() {
     }
   );
 
-  app.post(
-    "/api/admin/whitelist",
-    authenticateToken,
-    validate(whitelistSchema),
-    async (req: any, res, next) => {
+  app.post("/api/admin/whitelist", authenticateToken, validate(whitelistSchema), async (req: any, res, next) => {
       if (req.user.role !== "admin") return res.sendStatus(403);
       const { identifier } = req.body;
       try {
-        await query("INSERT INTO beta_whitelist (identifier) VALUES ($1)", [
-          identifier,
-        ]);
+        await query("INSERT INTO beta_whitelist (identifier) VALUES ($1)", [identifier]);
         res.json({ success: true });
       } catch (e) {
         res.status(400).json({ error: "Already whitelisted" });
@@ -563,10 +495,7 @@ async function startServer() {
     }
   );
 
-  app.delete(
-    "/api/admin/whitelist/:id",
-    authenticateToken,
-    async (req: any, res, next) => {
+  app.delete("/api/admin/whitelist/:id", authenticateToken, async (req: any, res, next) => {
       if (req.user.role !== "admin") return res.sendStatus(403);
       try {
         await query("DELETE FROM beta_whitelist WHERE id = $1", [req.params.id]);
@@ -577,11 +506,7 @@ async function startServer() {
     }
   );
 
-  app.post(
-    "/api/admin/users/create",
-    authenticateToken,
-    validate(adminCreateUserSchema),
-    async (req: any, res, next) => {
+  app.post("/api/admin/users/create", authenticateToken, validate(adminCreateUserSchema), async (req: any, res, next) => {
       if (req.user.role !== "admin") return res.sendStatus(403);
       const { email, mobile, password, role } = req.body;
       try {
@@ -644,10 +569,6 @@ async function startServer() {
       redirectUri = detectedUri;
     }
 
-    if (host.includes("ais-dev-kmtq2mfzcdgtjnm6loanhz")) {
-      redirectUri = "https://ais-dev-kmtq2mfzcdgtjnm6loanhz-448575883234.asia-southeast1.run.app/auth/callback";
-    }
-
     if (!apiKey) {
       return res.status(500).json({ error: "UPTOX_API_KEY is missing." });
     }
@@ -672,6 +593,9 @@ async function startServer() {
       redirectUri = `${protocol}://${host}/auth/callback`;
     }
 
+    // 🚀 FIX: Using wildcard or explicitly trusted frontend URL to avoid cross-origin postMessage dropping.
+    const frontendTargetOrigin = process.env.VITE_APP_URL || "*";
+
     const renderHtmlResponse = (isSuccess: boolean, message: string, payload: any) => {
       return `
         <html>
@@ -682,7 +606,8 @@ async function startServer() {
               <p id="msg" style="color:#a1a1aa;font-size:14px;">Redirecting back to app...</p>
               <script>
                 if (window.opener) {
-                  window.opener.postMessage(${JSON.stringify(payload)}, window.location.origin);
+                  // Post message strictly to the configured frontend origin or any (*) if decouple fallback
+                  window.opener.postMessage(${JSON.stringify(payload)}, "${frontendTargetOrigin}");
                   setTimeout(() => window.close(), 1500);
                 } else {
                   document.getElementById('msg').innerText = "Please close this tab and return to the application.";
@@ -757,11 +682,7 @@ async function startServer() {
     }
   });
 
-  app.post(
-    "/api/auth/uptox/save-token",
-    authenticateToken,
-    validate(upstoxSaveTokenSchema),
-    async (req: any, res, next) => {
+  app.post("/api/auth/uptox/save-token", authenticateToken, validate(upstoxSaveTokenSchema), async (req: any, res, next) => {
       try {
         const { access_token, refresh_token } = req.body;
 
@@ -781,9 +702,7 @@ async function startServer() {
           ]
         );
         
-        await query("UPDATE users SET is_uptox_connected = true WHERE id = $1", [
-          req.user.id,
-        ]);
+        await query("UPDATE users SET is_uptox_connected = true WHERE id = $1", [req.user.id]);
 
         upstoxConsecutiveFailures = 0;
         upstoxBackoffUntil = 0;
@@ -845,15 +764,9 @@ async function startServer() {
     }
   });
 
-  app.post(
-    "/api/orders",
-    authenticateToken,
-    requireKyc,
-    validate(placeOrderSchema),
-    async (req: any, res, next) => {
+  app.post("/api/orders", authenticateToken, requireKyc, validate(placeOrderSchema), async (req: any, res, next) => {
       try {
-        const { symbol, type, order_type, quantity, price, product, broker } =
-          req.body;
+        const { symbol, type, order_type, quantity, price, product, broker } = req.body;
         const userId = req.user.id;
 
         const { rows } = await query(
@@ -863,9 +776,7 @@ async function startServer() {
         const userToken = rows[0];
 
         if (!userToken || !userToken.access_token) {
-          return res
-            .status(400)
-            .json({ error: `Please connect your ${broker} account.` });
+          return res.status(400).json({ error: `Please connect your ${broker} account.` });
         }
 
         const decryptedToken = decrypt(String(userToken.access_token));
@@ -875,67 +786,27 @@ async function startServer() {
 
         try {
           const brokerService = getBrokerService(String(broker));
-          const orderRequest: OrderRequest = {
-            symbol,
-            type,
-            order_type,
-            quantity,
-            price,
-            product,
-          };
-          const orderRes = await brokerService.placeOrder(
-            decryptedToken,
-            orderRequest
-          );
+          const orderRequest: OrderRequest = { symbol, type, order_type, quantity, price, product };
+          const orderRes = await brokerService.placeOrder(decryptedToken, orderRequest);
 
           if (orderRes.success) {
             await query(
               "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, broker_order_id, status, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed', $9)",
-              [
-                userId,
-                symbol,
-                type,
-                order_type,
-                quantity,
-                price,
-                broker,
-                orderRes.order_id,
-                JSON.stringify(orderRes.raw_response),
-              ]
+              [userId, symbol, type, order_type, quantity, price, broker, orderRes.order_id, JSON.stringify(orderRes.raw_response)]
             );
             return res.json({ success: true, order_id: orderRes.order_id });
           } else {
             const errorMsg = orderRes.error || "Order failed";
             await query(
               "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8, $9)",
-              [
-                userId,
-                symbol,
-                type,
-                order_type,
-                quantity,
-                price,
-                broker,
-                errorMsg,
-                JSON.stringify(orderRes.raw_response),
-              ]
+              [userId, symbol, type, order_type, quantity, price, broker, errorMsg, JSON.stringify(orderRes.raw_response)]
             );
             return res.status(400).json({ error: errorMsg });
           }
         } catch (e: any) {
           await query(
             "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8, $9)",
-            [
-              userId,
-              symbol,
-              type,
-              order_type,
-              quantity,
-              price,
-              broker,
-              e.message,
-              JSON.stringify({ error: e.message }),
-            ]
+            [userId, symbol, type, order_type, quantity, price, broker, e.message, JSON.stringify({ error: e.message })]
           );
           throw new Error(`${broker} API Error`);
         }
@@ -945,59 +816,15 @@ async function startServer() {
     }
   );
 
-  const primaryIndices = [
-    "NIFTY 50",
-    "SENSEX",
-    "BANKNIFTY",
-    "FINNIFTY",
-    "MIDCAP NIFTY",
-    "SMALLCAP NIFTY",
-  ];
-  const secondaryIndices = [
-    "NIFTY IT",
-    "NIFTY AUTO",
-    "NIFTY PHARMA",
-    "NIFTY METAL",
-    "NIFTY FMCG",
-    "NIFTY REALTY",
-  ];
-  const stocks = [
-    "RELIANCE",
-    "TCS",
-    "HDFCBANK",
-    "INFY",
-    "ICICIBANK",
-    "BHARTIARTL",
-    "SBIN",
-    "LICI",
-    "ITC",
-    "HINDUNILVR",
-  ];
+  const primaryIndices = ["NIFTY 50", "SENSEX", "BANKNIFTY", "FINNIFTY", "MIDCAP NIFTY", "SMALLCAP NIFTY"];
+  const secondaryIndices = ["NIFTY IT", "NIFTY AUTO", "NIFTY PHARMA", "NIFTY METAL", "NIFTY FMCG", "NIFTY REALTY"];
+  const stocks = ["RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "BHARTIARTL", "SBIN", "LICI", "ITC", "HINDUNILVR"];
   const allSymbols = [...primaryIndices, ...secondaryIndices, ...stocks];
 
   const stockPrices: Record<string, number> = {
-    "NIFTY 50": 22145.2,
-    SENSEX: 72850.4,
-    BANKNIFTY: 46800.15,
-    FINNIFTY: 20850.6,
-    "MIDCAP NIFTY": 10920.45,
-    "SMALLCAP NIFTY": 16150.3,
-    "NIFTY IT": 37850.2,
-    "NIFTY AUTO": 20150.4,
-    "NIFTY PHARMA": 18920.15,
-    "NIFTY METAL": 7950.6,
-    "NIFTY FMCG": 54120.3,
-    "NIFTY REALTY": 890.45,
-    RELIANCE: 2985.4,
-    TCS: 4120.15,
-    HDFCBANK: 1450.6,
-    INFY: 1680.4,
-    ICICIBANK: 1050.2,
-    BHARTIARTL: 1120.3,
-    SBIN: 750.45,
-    LICI: 940.2,
-    ITC: 410.15,
-    HINDUNILVR: 2380.6,
+    "NIFTY 50": 22145.2, SENSEX: 72850.4, BANKNIFTY: 46800.15, FINNIFTY: 20850.6, "MIDCAP NIFTY": 10920.45, "SMALLCAP NIFTY": 16150.3,
+    "NIFTY IT": 37850.2, "NIFTY AUTO": 20150.4, "NIFTY PHARMA": 18920.15, "NIFTY METAL": 7950.6, "NIFTY FMCG": 54120.3, "NIFTY REALTY": 890.45,
+    RELIANCE: 2985.4, TCS: 4120.15, HDFCBANK: 1450.6, INFY: 1680.4, ICICIBANK: 1050.2, BHARTIARTL: 1120.3, SBIN: 750.45, LICI: 940.2, ITC: 410.15, HINDUNILVR: 2380.6,
   };
   allSymbols.forEach((s) => {
     if (!stockPrices[s]) stockPrices[s] = Math.random() * 1000 + 100;
@@ -1009,10 +836,7 @@ async function startServer() {
     FINNIFTY: ["NSE_INDEX|Nifty Fin Service", "NSE_INDEX|NIFTY FIN SERVICE"],
     "MIDCAP NIFTY": ["NSE_INDEX|Nifty Midcap 100", "NSE_INDEX|NIFTY MIDCAP 100"],
     SENSEX: ["BSE_INDEX|SENSEX", "BSE_INDEX|Sensex"],
-    "SMALLCAP NIFTY": [
-      "NSE_INDEX|Nifty Smallcap 100",
-      "NSE_INDEX|NIFTY SMALLCAP 100",
-    ],
+    "SMALLCAP NIFTY": ["NSE_INDEX|Nifty Smallcap 100", "NSE_INDEX|NIFTY SMALLCAP 100"],
     "NIFTY IT": ["NSE_INDEX|Nifty IT", "NSE_INDEX|NIFTY IT"],
     "NIFTY AUTO": ["NSE_INDEX|Nifty Auto", "NSE_INDEX|NIFTY AUTO"],
     "NIFTY PHARMA": ["NSE_INDEX|Nifty Pharma", "NSE_INDEX|NIFTY PHARMA"],
@@ -1039,7 +863,7 @@ async function startServer() {
       
       if (!userToken || !userToken.access_token) {
         const now = Date.now();
-        if (now - lastLogTime > 300000) { // 300000 ms = 5 minutes
+        if (now - lastLogTime > 300000) { 
           logger.warn("[MarketData] No Upstox token found. Live data fetching is paused.");
           lastLogTime = now;
         }
@@ -1050,8 +874,6 @@ async function startServer() {
 
       const stockKeys = stocks.map((s) => `NSE_EQ|${s}`);
       const indexKeys = Object.values(indexMap).flat();
-      
-      // ✅ FIX: Encode the keys properly for the URL 
       const allKeys = [...stockKeys, ...indexKeys].join(",");
       const encodedKeys = encodeURIComponent(allKeys);
 
@@ -1068,22 +890,12 @@ async function startServer() {
 
       if (!response.ok) {
         if (response.status === 401) {
-          logger.warn(
-            "[MarketData] Upstox token expired (401). Clearing token."
-          );
+          logger.warn("[MarketData] Upstox token expired (401). Clearing token.");
           await query("DELETE FROM user_tokens WHERE broker = 'upstox'");
-          await query(
-            "UPDATE users SET is_uptox_connected = false WHERE id = $1",
-            [userToken.user_id]
-          );
+          await query("UPDATE users SET is_uptox_connected = false WHERE id = $1", [userToken.user_id]);
 
-          const payload = JSON.stringify({
-            type: "broker_disconnected",
-            broker: "upstox",
-          });
-          wss.clients.forEach((c) => {
-            if (c.readyState === WebSocket.OPEN) c.send(payload);
-          });
+          const payload = JSON.stringify({ type: "broker_disconnected", broker: "upstox" });
+          wss.clients.forEach((c) => { if (c.readyState === WebSocket.OPEN) c.send(payload); });
 
           upstoxConsecutiveFailures = 0;
           upstoxBackoffUntil = 0;
@@ -1091,9 +903,7 @@ async function startServer() {
           upstoxConsecutiveFailures++;
           const backoffTime = Math.min(upstoxConsecutiveFailures * 5000, 60000);
           upstoxBackoffUntil = Date.now() + backoffTime;
-          logger.warn(
-            `[MarketData] Upstox API error ${response.status}. Backing off for ${backoffTime}ms.`
-          );
+          logger.warn(`[MarketData] Upstox API error ${response.status}. Backing off for ${backoffTime}ms.`);
         }
         return;
       }
@@ -1120,20 +930,13 @@ async function startServer() {
       upstoxConsecutiveFailures++;
       const backoffTime = Math.min(upstoxConsecutiveFailures * 5000, 60000);
       upstoxBackoffUntil = Date.now() + backoffTime;
-      logger.error(
-        `[MarketData] Upstox Fetch Error: ${
-          e instanceof Error ? e.message : "Unknown"
-        }. Backing off for ${backoffTime}ms.`
-      );
+      logger.error(`[MarketData] Upstox Fetch Error: ${e instanceof Error ? e.message : "Unknown"}. Backing off for ${backoffTime}ms.`);
     } finally {
       isFetchingUpstox = false;
     }
   };
 
-  app.post(
-    "/api/market/refresh",
-    authenticateToken,
-    async (req: any, res: any, next: NextFunction) => {
+  app.post("/api/market/refresh", authenticateToken, async (req: any, res: any, next: NextFunction) => {
       try {
         await fetchRealPrices();
         res.json({ success: true, last_prices: stockPrices });
@@ -1163,19 +966,14 @@ async function startServer() {
       if (cachedTokenCount === 0) {
         isSimulated = true;
         allSymbols.forEach((symbol) => {
-          stockPrices[symbol] +=
-            stockPrices[symbol] * (Math.random() * 0.0002 - 0.0001);
+          stockPrices[symbol] += stockPrices[symbol] * (Math.random() * 0.0002 - 0.0001);
         });
       }
     } catch (e) {
       logger.error("[MarketData] Error calculating simulated token count", e);
     }
 
-    const payload = JSON.stringify({
-      type: "ticker",
-      data: stockPrices,
-      isSimulated,
-    });
+    const payload = JSON.stringify({ type: "ticker", data: stockPrices, isSimulated });
     
     wss.clients.forEach((c) => {
       if (c.readyState === WebSocket.OPEN) c.send(payload);
@@ -1184,23 +982,15 @@ async function startServer() {
 
   app.get("/api/market-status", async (req, res, next) => {
     try {
-      const { rows: countRows } = await query(
-        "SELECT COUNT(*) as count FROM user_tokens"
-      );
-      const { rows: tokens } = await query(
-        "SELECT user_id, updated_at FROM user_tokens"
-      );
+      const { rows: countRows } = await query("SELECT COUNT(*) as count FROM user_tokens");
+      const { rows: tokens } = await query("SELECT user_id, updated_at FROM user_tokens");
       res.json({
         is_fetching: parseInt(countRows[0].count) > 0,
         token_count: parseInt(countRows[0].count),
         tokens,
         last_prices: stockPrices,
         api_key_set: !!process.env.UPTOX_API_KEY,
-        market_hours: {
-          open: "09:15",
-          close: "15:30",
-          timezone: "Asia/Kolkata",
-        },
+        market_hours: { open: "09:15", close: "15:30", timezone: "Asia/Kolkata" },
       });
     } catch (e) {
       next(e);
@@ -1208,10 +998,7 @@ async function startServer() {
   });
 
   if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
+    const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
     app.use(vite.middlewares);
     app.get("*", async (req, res, next) => {
       if (req.url.startsWith("/api")) return next();
@@ -1220,10 +1007,7 @@ async function startServer() {
           req.originalUrl,
           await fs.readFile(path.join(__dirname, "index.html"), "utf-8")
         );
-        res
-          .status(200)
-          .set({ "Content-Type": "text/html" })
-          .end(html);
+        res.status(200).set({ "Content-Type": "text/html" }).end(html);
       } catch (e) {
         vite.ssrFixStacktrace(e as Error);
         next(e);
@@ -1232,32 +1016,16 @@ async function startServer() {
   } else {
     const distPath = path.join(__dirname, "dist");
     app.use(express.static(distPath));
-    app.get("*", (req, res) =>
-      res.sendFile(path.join(distPath, "index.html"))
-    );
+    app.get("*", (req, res) => res.sendFile(path.join(distPath, "index.html")));
   }
 
-  app.use(
-    (err: Error, req: Request, res: Response, next: NextFunction) => {
-      logger.error("Unhandled error", {
-        error: err.message,
-        stack: err.stack,
-        path: req.path,
-        method: req.method,
-        userId: (req as any).user?.id,
-      });
-
-      res.status(500).json({
-        error: "An internal server error occurred.",
-        details: err.message || String(err)
-      });
-    }
-  );
+  app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
+      logger.error("Unhandled error", { error: err.message, stack: err.stack, path: req.path, method: req.method, userId: (req as any).user?.id });
+      res.status(500).json({ error: "An internal server error occurred.", details: err.message || String(err) });
+  });
 
   server.listen(3000, "0.0.0.0", () => {
-    logger.info(
-      `[Server] AAPA CAPITAL server running on http://0.0.0.0:3000`
-    );
+    logger.info(`[Server] AAPA CAPITAL server running on http://0.0.0.0:3000`);
   });
 
   const gracefulShutdown = async (signal: string) => {
@@ -1266,9 +1034,7 @@ async function startServer() {
     clearInterval(pingInterval);
     clearInterval(tokenRefreshInterval);
 
-    server.close(() => {
-      logger.info("[Server] HTTP server stopped accepting new requests.");
-    });
+    server.close(() => { logger.info("[Server] HTTP server stopped accepting new requests."); });
 
     wss.clients.forEach((client) => {
       if (client.readyState === WebSocket.OPEN) {
@@ -1276,25 +1042,10 @@ async function startServer() {
         client.close(1000, "Server shutting down gracefully");
       }
     });
-    logger.info("[WebSocket] All active client connections closed.");
 
-    try {
-      await pool.end();
-      logger.info("[DB] PostgreSQL connection pool closed successfully.");
-    } catch (err) {
-      logger.error("[DB] Error closing PostgreSQL pool:", err);
-    }
+    try { await pool.end(); } catch (err) {}
+    try { if (redisConnected) await redisClient.quit(); } catch (err) {}
 
-    try {
-      if (redisConnected) {
-        await redisClient.quit();
-        logger.info("[Redis] Connection closed safely.");
-      }
-    } catch (err) {
-      logger.error("[Redis] Shutdown error:", err);
-    }
-
-    logger.info("[Server] Graceful shutdown complete. Exiting process.");
     process.exit(0);
   };
 
