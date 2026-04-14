@@ -74,41 +74,23 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
 
       // 3. Listen for the success message from the popup (sent by server.ts /auth/callback)
       const messageListener = async (event: MessageEvent) => {
-        // Ensure the message comes from your own app's origin for security
-        const allowedOrigin = import.meta.env.VITE_APP_URL || window.location.origin;
-        if (event.origin !== allowedOrigin) return;
+        // Trust messages from localhost (ignoring ports for dev) or the exact APP URL
+        const isTrustedOrigin = event.origin.includes(window.location.hostname) || event.origin === import.meta.env.VITE_APP_URL;
+        
+        if (!isTrustedOrigin) return;
 
         if (event.data?.type === 'UPTOX_AUTH_SUCCESS') {
           window.removeEventListener('message', messageListener);
           popup?.close();
-          
-          try {
-            // 4. Save the tokens securely to the backend
-            const saveRes = await fetch('/api/auth/uptox/save-token', {
-              method: 'POST',
-              headers: { 
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${token}` 
-              },
-              body: JSON.stringify({
-                access_token: event.data.token,
-                refresh_token: event.data.refresh_token || '',
-              })
-            });
-            
-            if (saveRes.ok) {
-              toast.success('Upstox account linked successfully!');
-              // Reload page to refresh AuthStore and fetch real portfolio/funds
-              window.location.reload(); 
-            } else {
-              const errData = await saveRes.json();
-              toast.error(errData.error || 'Failed to save Upstox token');
-            }
-          } catch (err: any) {
-            toast.error('Failed to save Upstox token');
-          } finally {
-            setIsConnecting(false);
-          }
+          setIsConnecting(false);
+          toast.info('Finalizing connection...');
+          // Notice: App.tsx's global listener handles the actual API request to save-token
+          // so we don't duplicate logic or cause race conditions here.
+        } else if (event.data?.type === 'UPTOX_AUTH_ERROR') {
+          window.removeEventListener('message', messageListener);
+          popup?.close();
+          setIsConnecting(false);
+          toast.error('Failed to link Upstox account');
         }
       };
 

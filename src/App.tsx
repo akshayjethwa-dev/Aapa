@@ -175,11 +175,13 @@ function App() {
     verifyToken();
   }, [token, logout, setAuth]);
 
+  // Global Upstox Popup Listener
   useEffect(() => {
     const handleMessage = async (event: MessageEvent) => {
-      const allowedOrigin = import.meta.env.VITE_APP_URL || 'http://localhost:5173';
+      // Allow messages from the same hostname (ignoring port differences for local dev) or the configured App URL
+      const isTrustedOrigin = event.origin.includes(window.location.hostname) || event.origin === import.meta.env.VITE_APP_URL;
       
-      if (event.origin !== allowedOrigin && event.origin !== window.location.origin) {
+      if (!isTrustedOrigin) {
         return;
       }
 
@@ -187,17 +189,21 @@ function App() {
         const { token: uptoxToken, refresh_token: uptoxRefreshToken } = event.data;
         if (!token) return;
         try {
+          // Save the token securely
           await apiClient.post('/api/auth/uptox/save-token', {
             access_token: uptoxToken,
             refresh_token: uptoxRefreshToken
           });
           
+          // Fetch updated profile to re-trigger dashboard render naturally
           const profileRes = await apiClient.get('/api/user/profile');
           if (profileRes.data.id) {
             setAuth(profileRes.data, token);
+            toast.success("Upstox account connected successfully!");
           }
         } catch (e) {
           console.error('Failed to save Uptox token', e);
+          toast.error("Failed to finalize Upstox connection.");
         }
       }
     };
@@ -205,9 +211,6 @@ function App() {
     return () => window.removeEventListener('message', handleMessage);
   }, [token, setAuth]);
 
-  // ========================================================
-  // --- UPDATED FOR TASK 5.1 & 6.1: WS Reconnection Logic ---
-  // ========================================================
   // ========================================================
   // --- UPDATED FOR TASK 5.1 & 6.1: WS Reconnection Logic ---
   // ========================================================
