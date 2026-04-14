@@ -7,7 +7,7 @@ import Sparkline from '../components/Sparkline';
 import TradingViewWidget from '../components/TradingViewWidget';
 import { useAuthStore } from '../store/authStore';
 import AISignals from './admin/AISignals';
-import { apiClient } from '../api/client'; // <-- ADDED IMPORT
+import { apiClient } from '../api/client';
 
 const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { stocks: Record<string, number>, onMarketClick: () => void, onIndexClick: (index: string) => void, onProfileClick: () => void }) => {
   const { user } = useAuthStore();
@@ -16,65 +16,42 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
   const [gainerLoserTab, setGainerLoserTab] = useState<'Gainers' | 'Losers'>('Gainers');
   const [eventFilter, setEventFilter] = useState('Upcoming');
   const [confirmExit, setConfirmExit] = useState<number | null>(null);
-  
-  // State for Upstox OAuth popup flow
   const [isConnecting, setIsConnecting] = useState(false);
 
   useEffect(() => {
     const fetchPortfolio = async () => {
       try {
-        // Switched to apiClient to automatically handle 403s & Token Refreshes
         const res = await apiClient.get('/api/portfolio');
-        
-        const data = res.data;
-        // The backend returns the array directly, so we check if it's an array
-        const portfolioArray = Array.isArray(data) ? data : [];
-        
-        // Set both holdings and positions from the single portfolio endpoint
+        const portfolioArray = Array.isArray(res.data) ? res.data : [];
+        // ✅ FIX: Only set holdings — positions stay empty to avoid field-name mismatch
+        // (holdings don't have pos.ltp / pos.avgPrice / pos.pnl fields)
         setHoldings(portfolioArray);
-        setPositions(portfolioArray); 
       } catch (e) {
         console.error("Failed to fetch portfolio", e);
       }
     };
-    
     fetchPortfolio();
     const interval = setInterval(fetchPortfolio, 5000);
     return () => clearInterval(interval);
   }, []);
 
-  // Opens the Upstox OAuth popup.
-  // App.tsx's global message listener handles the callback, saves the token,
-  // and calls refreshUser() — which updates is_uptox_connected in the store
-  // and causes this component to re-render automatically.
   const handleUpstoxConnect = async () => {
-  setIsConnecting(true);
-  try {
-    const res = await apiClient.get('/api/auth/uptox/url');
-    const { url } = res.data;
-
-    const width = 500, height = 700;
-    const left = window.screen.width / 2 - width / 2;
-    const top = window.screen.height / 2 - height / 2;
-
-    const popup = window.open(
-      url,
-      'UpstoxAuth',
-      `width=${width},height=${height},top=${top},left=${left},toolbar=no,menubar=no`
-    );
-
-    // Only reset spinner when popup closes — App.tsx handles the actual auth
-    const timer = setInterval(() => {
-      if (popup?.closed) {
-        clearInterval(timer);
-        setIsConnecting(false);
-      }
-    }, 500);
-  } catch (err: any) {
-    toast.error('Failed to initialize Upstox connection.');
-    setIsConnecting(false);
-  }
-};
+    setIsConnecting(true);
+    try {
+      const res = await apiClient.get('/api/auth/uptox/url');
+      const { url } = res.data;
+      const width = 500, height = 700;
+      const left = window.screen.width / 2 - width / 2;
+      const top = window.screen.height / 2 - height / 2;
+      const popup = window.open(url, 'UpstoxAuth', `width=${width},height=${height},top=${top},left=${left},toolbar=no,menubar=no`);
+      const timer = setInterval(() => {
+        if (popup?.closed) { clearInterval(timer); setIsConnecting(false); }
+      }, 500);
+    } catch (err: any) {
+      toast.error('Failed to initialize Upstox connection.');
+      setIsConnecting(false);
+    }
+  };
 
   const handleExit = async (index: number) => {
     const pos = positions[index];
@@ -88,16 +65,24 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
     }
   };
 
-  const totalInvested = holdings.reduce((acc, curr) => acc + (curr.quantity * curr.average_price), 0);
+  // ✅ FIX: Use correct field names from the Holding interface
+  // OLD (broken): stocks[curr.trading_symbol] || curr.last_price  → always undefined
+  // NEW (correct): stocks[curr.symbol] || curr.current_price      → correct fields
+  const totalInvested = holdings.reduce(
+    (acc, curr) => acc + curr.quantity * curr.average_price, 0
+  );
+
   const currentValue = holdings.reduce((acc, curr) => {
-    const ltp = stocks[curr.trading_symbol] || curr.last_price || curr.average_price;
-    return acc + (curr.quantity * ltp);
+    const ltp =
+      stocks[curr.symbol] ||     // live WebSocket price (best)
+      curr.current_price ||      // Upstox API snapshot (fallback)
+      curr.average_price;        // safe fallback — P&L = ₹0 for this holding
+    return acc + curr.quantity * ltp;
   }, 0);
-  
+
   const dayPnL = positions.reduce((acc, curr) => acc + (curr.pnl || 0), 0);
   const totalPnL = currentValue - totalInvested;
   const totalPnLPercent = totalInvested > 0 ? (totalPnL / totalInvested) * 100 : 0;
-
   const isDataLive = stocks['NIFTY 50'] > 0;
 
   const primaryIndices = ["NIFTY 50", "SENSEX", "BANKNIFTY", "FINNIFTY", "MIDCAP NIFTY", "SMALLCAP NIFTY"];
@@ -140,22 +125,22 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
   const sortedGainersLosers = useMemo(() => {
     const list = Object.entries(stocks)
       .filter(([s]) => !primaryIndices.includes(s) && !secondaryIndices.includes(s))
-      .map(([symbol, price]) => ({ symbol, price, change: 0 })); 
-    
+      .map(([symbol, price]) => ({ symbol, price, change: 0 }));
     return list.slice(0, 5);
   }, [stocks, primaryIndices, secondaryIndices]);
 
   return (
     <div className="space-y-5 pb-20">
-      {/* Market Indices Section */}
+
+      {/* ── Market Indices ── */}
       <div className="space-y-2.5">
         <div className="px-5 flex justify-between items-center">
           <h3 className="text-[11px] font-bold uppercase tracking-widest text-zinc-500">Market Indices</h3>
         </div>
         <div className="px-5 overflow-x-auto scrollbar-hide flex gap-3 py-2">
           {[...primaryIndices, ...secondaryIndices].map(index => (
-            <motion.div 
-              key={index} 
+            <motion.div
+              key={index}
               whileHover={{ y: -2 }}
               onClick={() => onIndexClick(index)}
               className="min-w-37.5 bg-zinc-900/40 border border-zinc-800/50 rounded-2xl pt-3 pb-4 px-4 flex flex-col gap-2 cursor-pointer"
@@ -181,40 +166,32 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
         </div>
       </div>
 
-      {/* Portfolio Snapshot & Upstox Connection */}
+      {/* ── Portfolio Snapshot / Connect Upstox ── */}
       <div className="px-5">
         {!user?.is_uptox_connected ? (
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
             className="bg-linear-to-r from-[#5228D3]/20 to-[#111827] border border-[#5228D3]/50 rounded-2xl p-6 relative overflow-hidden"
           >
             <div className="absolute top-0 right-0 p-4 opacity-10 pointer-events-none">
               <Link2 className="w-32 h-32 text-[#5228D3]" />
             </div>
-            
             <div className="relative z-10 flex flex-col md:flex-row items-center justify-between gap-6">
               <div className="text-left w-full">
                 <div className="flex items-center gap-2 mb-2">
-                  <span className="bg-[#5228D3] text-white text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded">
-                    Action Required
-                  </span>
+                  <span className="bg-[#5228D3] text-white text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded">Action Required</span>
                 </div>
                 <h2 className="text-xl font-bold text-white mb-2">Step 2: Connect Your Broker</h2>
                 <p className="text-zinc-400 text-[11px] max-w-xl leading-relaxed">
                   To view your portfolio, available funds, and execute trades on Aapa Capital, you must link your newly created Upstox account.
                 </p>
               </div>
-              
               <button
                 onClick={handleUpstoxConnect}
                 disabled={isConnecting}
                 className="w-full md:w-auto whitespace-nowrap bg-[#5228D3] hover:bg-[#431db3] text-white font-black py-3 px-6 rounded-xl transition-all shadow-lg shadow-[#5228D3]/20 tracking-widest uppercase text-[10px] flex items-center justify-center gap-2 disabled:opacity-70"
               >
-                {isConnecting ? (
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Link2 className="w-4 h-4" />
-                )}
+                {isConnecting ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Link2 className="w-4 h-4" />}
                 {isConnecting ? 'Connecting...' : 'Connect Upstox'}
               </button>
             </div>
@@ -235,9 +212,7 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
                     {isDataLive ? "Live" : "Connecting..."}
                   </p>
                 </div>
-                {!isDataLive && (
-                  <p className="text-[8px] text-zinc-600 font-medium mt-1">Waiting for market data...</p>
-                )}
+                {!isDataLive && <p className="text-[8px] text-zinc-600 font-medium mt-1">Waiting for market data...</p>}
               </div>
             </div>
             <div className="grid grid-cols-2 gap-5 pt-4 border-t border-zinc-800/50">
@@ -250,17 +225,48 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
                 <p className="text-[13px] font-bold text-zinc-300">{formatCurrency(user?.balance || 0)}</p>
               </div>
             </div>
+
+            {/* ✅ NEW: Holdings mini-preview */}
+            {holdings.length > 0 && (
+              <div className="pt-4 border-t border-zinc-800/50 space-y-2">
+                <p className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">
+                  Holdings ({holdings.length} stocks)
+                </p>
+                {holdings.slice(0, 3).map(h => {
+                  const ltp = stocks[h.symbol] || h.current_price || h.average_price;
+                  const pnl = (ltp - h.average_price) * h.quantity;
+                  return (
+                    <div key={h.symbol} className="flex justify-between items-center">
+                      <div>
+                        <p className="text-[11px] font-bold text-white">{h.symbol}</p>
+                        <p className="text-[9px] text-zinc-600 uppercase">{h.quantity} qty</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[11px] font-bold text-white">{formatCurrency(h.quantity * ltp)}</p>
+                        <p className={cn("text-[9px] font-bold", pnl >= 0 ? "text-emerald-500" : "text-rose-500")}>
+                          {pnl >= 0 ? '+' : ''}{formatCurrency(pnl)}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+                {holdings.length > 3 && (
+                  <p className="text-[9px] text-zinc-600 uppercase tracking-widest text-center pt-1">
+                    +{holdings.length - 3} more in Portfolio tab
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>
 
-      {/* Live F&O Positions for Users */}
+      {/* ── Live F&O Positions (only shown when positions exist) ── */}
       {user?.role === 'user' && positions.length > 0 && (
         <div className="px-5 space-y-3">
           <div className="flex justify-between items-center">
             <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-500 flex items-center gap-2">
-              <Activity size={12} />
-              Live F&O Positions
+              <Activity size={12} />Live F&O Positions
             </h3>
             <span className="text-[8px] font-bold text-zinc-700">{positions.length} Active</span>
           </div>
@@ -283,12 +289,10 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
                     <p className={cn("text-sm font-black tracking-tighter", (pos.ltp - (pos.avgPrice || pos.average_price)) >= 0 ? "text-emerald-500" : "text-rose-500")}>
                       {formatCurrency((pos.ltp - (pos.avgPrice || pos.average_price)) * pos.quantity)}
                     </p>
-                    <p className="text-[10px] font-bold text-zinc-500 mt-1">
-                      LTP: <span className="text-white">{formatCurrency(pos.ltp)}</span>
-                    </p>
+                    <p className="text-[10px] font-bold text-zinc-500 mt-1">LTP: <span className="text-white">{formatCurrency(pos.ltp)}</span></p>
                   </div>
                 </div>
-                <button 
+                <button
                   onClick={() => handleExit(i)}
                   className={cn(
                     "w-full py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all",
@@ -303,7 +307,7 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
         </div>
       )}
 
-      {/* Market Sentiment Section */}
+      {/* ── Market Sentiment ── */}
       <div className="px-5">
         <div className="bg-zinc-900/20 border border-zinc-800/30 rounded-2xl p-4 flex justify-between items-center">
           <div className="space-y-0.5">
@@ -323,7 +327,7 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
         </div>
       </div>
 
-      {/* Top Gainers & Losers */}
+      {/* ── Top Gainers & Losers ── */}
       <div className="px-5 space-y-2.5">
         <div className="flex bg-zinc-900/50 p-1 rounded-xl border border-zinc-800/50">
           {['Gainers', 'Losers'].map(tab => (
@@ -362,21 +366,14 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
         </div>
       </div>
 
-      {/* AI Trading Signals */}
-      <div className="px-5">
-        <AISignals />
-      </div>
+      {/* ── AI Trading Signals ── */}
+      <div className="px-5"><AISignals /></div>
 
-      {/* Stocks in News */}
+      {/* ── Stocks in News ── */}
       <div className="px-5 space-y-2.5">
         <div className="flex justify-between items-center">
           <h3 className="text-[11px] font-bold uppercase tracking-widest text-zinc-500">Stocks in News</h3>
-          <button 
-            onClick={onMarketClick}
-            className="text-[9px] font-bold text-emerald-500 uppercase tracking-widest"
-          >
-            View All
-          </button>
+          <button onClick={onMarketClick} className="text-[9px] font-bold text-emerald-500 uppercase tracking-widest">View All</button>
         </div>
         <div className="space-y-2">
           {stocksInNews.map((stock) => (
@@ -387,9 +384,7 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
                 </div>
                 <div>
                   <p className="text-[13px] font-bold text-white tracking-tight">{stock.symbol}</p>
-                  <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-[8px] font-bold text-zinc-400 uppercase tracking-wider">
-                    {stock.tag}
-                  </span>
+                  <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-[8px] font-bold text-zinc-400 uppercase tracking-wider">{stock.tag}</span>
                 </div>
               </div>
               <div className="text-right">
@@ -403,7 +398,7 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
         </div>
       </div>
 
-      {/* Volume Rockers */}
+      {/* ── Volume Rockers ── */}
       <div className="px-5 space-y-2.5">
         <div className="flex justify-between items-center">
           <h3 className="text-[11px] font-bold uppercase tracking-widest text-zinc-500">Volume Rockers</h3>
@@ -434,7 +429,7 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
         </div>
       </div>
 
-      {/* Market News Section */}
+      {/* ── Market News ── */}
       <div className="space-y-2.5">
         <div className="px-5 flex justify-between items-center">
           <h3 className="text-[11px] font-bold uppercase tracking-widest text-zinc-500">Market News</h3>
@@ -456,7 +451,7 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
         </div>
       </div>
 
-      {/* Market Events */}
+      {/* ── Market Events ── */}
       <div className="space-y-2.5">
         <div className="px-5 flex justify-between items-center">
           <h3 className="text-[11px] font-bold uppercase tracking-widest text-zinc-500">Market Events</h3>
@@ -501,6 +496,7 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
           ))}
         </div>
       </div>
+
     </div>
   );
 };
