@@ -49,16 +49,23 @@ const __dirname = path.dirname(__filename);
 dotenv.config();
 
 // ========================================================
-// --- ADDED FOR TASK 2.2: Extended WebSocket Interface ---
+// --- ADDED FOR TASK 2.2 & 6.1: Extended WebSocket Interface ---
 // ========================================================
 interface ExtWebSocket extends WebSocket {
   isAlive: boolean;
+  userId?: number; // TASK 6.1: Store authenticated user ID
 }
 
 async function startServer() {
   const app = express();
   const server = http.createServer(app);
   const wss = new WebSocketServer({ server });
+
+  // ========================================================
+  // --- MOVED UP FOR TASK 6.1: JWT Secrets required for WS
+  // ========================================================
+  const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret";
+  const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || "fallback-refresh-secret";
 
   // ========================================================
   // --- ADDED FOR TASK 3.1: Redis Client Setup           ---
@@ -72,29 +79,52 @@ async function startServer() {
   logger.info('[Redis] Connected for centralized rate limiting');
   // ========================================================
 
+  // ========================================================
+  // --- UPDATED FOR TASK 6.1: Secure WebSocket Auth      ---
+  // ========================================================
   wss.on("connection", (socket, req) => {
-    // Cast to our extended interface to access isAlive
     const ws = socket as ExtWebSocket;
-    
-    // Initialize connection as alive
     ws.isAlive = true;
 
-    // Listen for pong response to keep connection alive
-    ws.on("pong", () => {
-      ws.isAlive = true;
-    });
-
     const ip = req.socket.remoteAddress;
-    logger.info(`[WebSocket] New client connected from ${ip}. Total clients: ${wss.clients.size}`);
 
-    ws.send(JSON.stringify({ type: "ticker", data: stockPrices }));
+    // Extract token from the query parameters (e.g. ws://.../?token=xyz)
+    const url = new URL(req.url || "", `http://${req.headers.host || "localhost"}`);
+    const token = url.searchParams.get("token");
 
-    ws.on("close", () => {
-      logger.info(`[WebSocket] Client disconnected. Remaining clients: ${wss.clients.size}`);
-    });
+    if (!token) {
+      logger.warn(`[WebSocket] Connection rejected: No token provided from ${ip}`);
+      ws.close(4001, "Unauthorized");
+      return;
+    }
 
-    ws.on("error", (err) => {
-      logger.error("[WebSocket] Client error:", err);
+    // Verify the JWT Token
+    jwt.verify(token, JWT_SECRET, (err: any, decoded: any) => {
+      if (err) {
+        logger.warn(`[WebSocket] Connection rejected: Invalid token from ${ip}`);
+        ws.close(4001, "Unauthorized");
+        return;
+      }
+
+      // Successful Authentication
+      ws.userId = decoded.id;
+      logger.info(`[WebSocket] Authenticated User ID: ${ws.userId} connected from ${ip}. Total clients: ${wss.clients.size}`);
+
+      // Listen for pong response to keep connection alive
+      ws.on("pong", () => {
+        ws.isAlive = true;
+      });
+
+      // Send initial data once securely connected
+      ws.send(JSON.stringify({ type: "ticker", data: stockPrices }));
+
+      ws.on("close", () => {
+        logger.info(`[WebSocket] User ID: ${ws.userId} disconnected. Remaining clients: ${wss.clients.size}`);
+      });
+
+      ws.on("error", (err) => {
+        logger.error(`[WebSocket] User ID: ${ws.userId} error:`, err);
+      });
     });
   });
 
@@ -254,9 +284,6 @@ async function startServer() {
     logger.info(`[HTTP] ${req.method} ${req.url}`);
     next();
   });
-
-  const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret";
-  const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || "fallback-refresh-secret";
 
   const authenticateToken = (req: any, res: any, next: any) => {
     const authHeader = req.headers["authorization"];

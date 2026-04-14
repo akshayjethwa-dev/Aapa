@@ -206,7 +206,7 @@ function App() {
   }, [token, setAuth]);
 
   // ========================================================
-  // --- UPDATED FOR TASK 5.1: WS Reconnection Logic      ---
+  // --- UPDATED FOR TASK 5.1 & 6.1: WS Reconnection Logic ---
   // ========================================================
   useEffect(() => {
     if (!token) return;
@@ -222,7 +222,10 @@ function App() {
       }
 
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const ws = new WebSocket(`${protocol}//${window.location.host}`);
+      
+      // --- TASK 6.1: Append token to connection URL for authentication ---
+      const ws = new WebSocket(`${protocol}//${window.location.host}/?token=${token}`);
+      
       wsRef.current = ws;
 
       ws.onopen = () => {
