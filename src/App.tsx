@@ -1,5 +1,5 @@
 /// <reference types="vite/client" />
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Toaster, toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
 import { LogOut, ChevronRight, Search, AlertCircle } from 'lucide-react';
@@ -40,8 +40,7 @@ import OptionChain from './components/OptionChain';
 // --- Main App ---
 
 function App() {
-  console.log('[App] Rendering main App component, token exists:', !!useAuthStore.getState().token);
-  const { token, user, setAuth, logout } = useAuthStore();
+  const { token, user, setAuth, logout, setIsWsConnected } = useAuthStore();
   const [activeTab, setActiveTab] = useState('dashboard');
   const [stocks, setStocks] = useState<Record<string, number>>({
     "NIFTY 50": 22145.20,
@@ -62,7 +61,6 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedStockFromSearch, setSelectedStockFromSearch] = useState<string | null>(null);
 
-  // --- ADDED FOR TASK-012 ---
   const [isDemoMode, setIsDemoMode] = useState(false); 
 
   // Broker Connection Logic
@@ -72,6 +70,11 @@ function App() {
   const [showAngelLogin, setShowAngelLogin] = useState(false);
   const [debugInfo, setDebugInfo] = useState<any>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // --- TASK 5.1: Reconnection Refs ---
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const reconnectAttemptsRef = useRef(0);
 
   const handleConnectAngel = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -159,13 +162,11 @@ function App() {
       try {
         const res = await apiClient.get('/api/user/profile');
         if (!res.data.id) {
-          console.log('[App] Token invalid, logging out');
           logout();
         } else {
           setAuth(res.data, token);
         }
       } catch (e: any) {
-        console.error('[App] Failed to verify token', e);
         if (e.response?.status === 401 || e.response?.status === 404) {
           logout();
         }
@@ -176,12 +177,9 @@ function App() {
 
   useEffect(() => {
     const handleMessage = async (event: MessageEvent) => {
-      // --- TASK-007: Origin Security Fix ---
       const allowedOrigin = import.meta.env.VITE_APP_URL || 'http://localhost:5173';
       
-      // Reject messages from unknown origins (we also allow window.location.origin in case frontend and backend are served together)
       if (event.origin !== allowedOrigin && event.origin !== window.location.origin) {
-        console.warn(`Blocked postMessage from unauthorized origin: ${event.origin}`);
         return;
       }
 
@@ -207,47 +205,87 @@ function App() {
     return () => window.removeEventListener('message', handleMessage);
   }, [token, setAuth]);
 
+  // ========================================================
+  // --- UPDATED FOR TASK 5.1: WS Reconnection Logic      ---
+  // ========================================================
   useEffect(() => {
     if (!token) return;
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${protocol}//${window.location.host}`);
-    ws.onopen = () => console.log('[WebSocket] Connected to server');
-    ws.onmessage = (event) => {
-      try {
-        const message = JSON.parse(event.data);
 
-        // --- ADDED FOR TASK: API Loop Stabilization ---
-        if (message.type === 'broker_disconnected') {
-          if (message.broker === 'upstox' && user?.is_uptox_connected) {
-            toast.error('Upstox session expired. Please reconnect.');
-            // Force the UI to show the "Connect Upstox" CTA natively
-            setAuth({ ...user, is_uptox_connected: false }, token);
-          }
-        }
-        // ----------------------------------------------
+    let isComponentMounted = true;
 
-        if (message.type === 'ticker') {
-          const hasData = Object.values(message.data).some(v => (v as number) > 0);
-          if (hasData) console.log('[WebSocket] Ticker received with live data');
-          setStocks(message.data);
-
-          // --- ADDED FOR TASK-012 ---
-          // Update Demo Mode state from WebSocket payload
-          if (message.isSimulated !== undefined) {
-            setIsDemoMode(message.isSimulated);
-          }
-          // --------------------------
-        }
-      } catch (e) {
-        console.error('[WebSocket] Failed to parse message', e);
+    const connectWebSocket = () => {
+      if (!isComponentMounted) return;
+      
+      // Clean up existing connection if any
+      if (wsRef.current) {
+        wsRef.current.close();
       }
-    };
-    ws.onerror = (err) => console.error('[WebSocket] Connection error', err);
-    ws.onclose = () => console.log('[WebSocket] Disconnected from server');
-    return () => ws.close();
-  }, [token, user, setAuth]);
 
-  // --- ADDED FOR TASK-014: Check for legal routes before Auth ---
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const ws = new WebSocket(`${protocol}//${window.location.host}`);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        if (!isComponentMounted) return;
+        console.log('[WebSocket] Connected');
+        setIsWsConnected(true);
+        reconnectAttemptsRef.current = 0; // Reset attempts on successful connection
+      };
+
+      ws.onmessage = (event) => {
+        if (!isComponentMounted) return;
+        try {
+          const message = JSON.parse(event.data);
+
+          if (message.type === 'broker_disconnected') {
+            if (message.broker === 'upstox' && user?.is_uptox_connected) {
+              toast.error('Upstox session expired. Please reconnect.');
+              setAuth({ ...user, is_uptox_connected: false }, token);
+            }
+          }
+
+          if (message.type === 'ticker') {
+            setStocks(message.data);
+            if (message.isSimulated !== undefined) {
+              setIsDemoMode(message.isSimulated);
+            }
+          }
+        } catch (e) {
+          console.error('[WebSocket] Failed to parse message', e);
+        }
+      };
+
+      ws.onerror = (err) => {
+        console.error('[WebSocket] Connection error', err);
+      };
+
+      ws.onclose = () => {
+        if (!isComponentMounted) return;
+        console.log('[WebSocket] Disconnected');
+        setIsWsConnected(false);
+
+        // Exponential backoff logic: 1s, 2s, 4s, 8s... max 30s
+        const backoffTime = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
+        reconnectAttemptsRef.current += 1;
+        
+        console.log(`[WebSocket] Reconnecting in ${backoffTime / 1000} seconds...`);
+        reconnectTimeoutRef.current = setTimeout(connectWebSocket, backoffTime);
+      };
+    };
+
+    connectWebSocket();
+
+    return () => {
+      isComponentMounted = false;
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      if (wsRef.current) wsRef.current.close();
+    };
+  }, [token, user?.is_uptox_connected]); 
+  // Dependency note: Removed 'user' to prevent rapid disconnect/reconnect loops whenever user balance changes, 
+  // but kept 'user.is_uptox_connected' so it can respond to the broker disconnect event correctly.
+  // ========================================================
+
+
   const pathname = window.location.pathname;
   if (pathname === '/terms') return <TermsOfService />;
   if (pathname === '/privacy') return <PrivacyPolicy />;
@@ -266,7 +304,6 @@ function App() {
       />
 
       <main className="max-w-md mx-auto pt-20">
-        {/* --- ADDED FOR TASK-012: Global Demo Mode Banner --- */}
         {isDemoMode && (
           <div className="bg-amber-500 text-black py-2 px-4 text-center font-bold text-[10px] uppercase tracking-widest shadow-lg shadow-amber-500/20 z-50 relative">
             <AlertCircle size={14} className="inline mr-2 -mt-0.5" />
@@ -337,7 +374,6 @@ function App() {
               onBack={() => setActiveTab('more')}
             />
           )}
-          {/* --- ADDED FOR TASK-013: KYC Screen --- */}
           {activeTab === 'kyc' && (
             <KycVerification
               key="kyc"
@@ -497,7 +533,6 @@ function App() {
           </motion.div>
         )}
 
-        {/* --- ADDED FOR TASK-012 & 013: Pass isDemoMode and onKycRequired to OrderWindow --- */}
         {orderConfig && (
           <OrderWindow
             key="order-window"

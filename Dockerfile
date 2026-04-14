@@ -1,12 +1,14 @@
-# Build stage - compile TypeScript and build Vite frontend
-FROM node:20-alpine AS builder
+# ========================================================
+# --- TASK 4.1: Stage 1 - The Builder                  ---
+# ========================================================
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 
 COPY package*.json ./
 
-# Install dependencies
-RUN npm install
+# Install all dependencies (using ci for faster, reproducible builds)
+RUN npm ci
 
 COPY . .
 
@@ -19,20 +21,26 @@ RUN npx esbuild server.ts --bundle --platform=node --format=esm --packages=exter
 # Bundle the migration script using esbuild
 RUN npx esbuild scripts/migrate.ts --bundle --platform=node --format=esm --packages=external --outfile=dist-server/migrate.js
 
-# Production stage
-FROM node:20-alpine AS production
+
+# ========================================================
+# --- TASK 4.1 & 4.2: Stage 2 - The Runner (Production)---
+# ========================================================
+FROM node:22-alpine AS runner
 
 WORKDIR /app
 
+# Install curl for the Docker container healthcheck (Task 4.2)
+RUN apk add --no-cache curl
+
 COPY package*.json ./
 
-# Install only production dependencies
-RUN npm install --omit=dev
+# Install only production dependencies for a smaller, secure image
+RUN npm ci --omit=dev
 
-# Copy the bundled server and scripts
+# Copy the bundled server and scripts from the builder stage
 COPY --from=builder /app/dist-server ./dist-server
 
-# Copy the frontend 'dist' INSIDE 'dist-server' so the backend can find it
+# Copy the frontend 'dist' INSIDE 'dist-server' so the backend can serve it
 COPY --from=builder /app/dist ./dist-server/dist
 
 # Copy migrations INSIDE 'dist-server' so the backend can run the SQL files

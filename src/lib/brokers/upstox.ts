@@ -62,4 +62,36 @@ export class UpstoxBrokerService implements BrokerService {
       return { success: false, error: e.message || "Upstox API Error", raw_response: { error: e.message } };
     }
   }
+
+  // ========================================================
+  // --- ADDED FOR TASK 2.3: Proactive Refresh Endpoint ---
+  // ========================================================
+  async refreshAccessToken(apiKey: string, apiSecret: string, refreshToken: string): Promise<{access_token: string, refresh_token?: string}> {
+    const params = new URLSearchParams({
+      client_id: apiKey,
+      client_secret: apiSecret,
+      refresh_token: refreshToken,
+      grant_type: "refresh_token",
+    });
+
+    const response = await fetch("https://api.upstox.com/v2/login/authorization/token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "application/json",
+      },
+      body: params,
+    });
+
+    const data = await response.json();
+    
+    if (data.access_token) {
+      return {
+        access_token: data.access_token,
+        refresh_token: data.refresh_token // Sometimes brokers rotate the refresh token
+      };
+    }
+    
+    throw new Error(data.errors?.[0]?.message || 'Failed to refresh Upstox token');
+  }
 }

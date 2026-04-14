@@ -15,11 +15,21 @@ export default defineConfig(({mode}) => {
         '@': path.resolve(__dirname, '.'),
       },
     },
+    // ========================================================
+    // --- ADDED FOR TASK 5.2: Production Logging Removal   ---
+    // ========================================================
+    build: {
+      minify: 'terser',
+      terserOptions: {
+        compress: {
+          drop_console: true,  // Removes all console.log statements in production
+          drop_debugger: true, // Removes all debugger statements
+        },
+      },
+    },
+    // ========================================================
     server: {
-      // HMR is disabled in AI Studio via DISABLE_HMR env var.
-      // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
-      // Allow connections from Railway domains
       allowedHosts: [
         'aapa-production.up.railway.app', 
         '.up.railway.app', 

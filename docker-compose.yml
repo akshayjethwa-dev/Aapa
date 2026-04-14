@@ -1,6 +1,16 @@
 version: '3.8'
 
 services:
+  # ========================================================
+  # --- ADDED FOR TASK 3.1: Centralized Redis Cache      ---
+  # ========================================================
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
   # 1. NEW SERVICE: The Ephemeral Migration Container
   migrator:
     build: .
@@ -8,6 +18,7 @@ services:
     command: node dist-server/migrate.js
     environment:
       - DATABASE_URL=postgresql://aapa:aapa@postgres:5432/aapa_db
+      - REDIS_URL=redis://redis:6379
       - NODE_ENV=development
     env_file:
       - .env
@@ -22,6 +33,7 @@ services:
       - "3000:3000"
     environment:
       - DATABASE_URL=postgresql://aapa:aapa@postgres:5432/aapa_db
+      - REDIS_URL=redis://redis:6379
       - NODE_ENV=development
     env_file:
       - .env
@@ -30,6 +42,15 @@ services:
         condition: service_healthy
       migrator:
         condition: service_completed_successfully # Critical: Wait for migrations to finish!
+      redis:
+        condition: service_started
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
 
   postgres:
     image: postgres:16-alpine
@@ -48,3 +69,4 @@ services:
 
 volumes:
   postgres_data:
+  redis_data: 

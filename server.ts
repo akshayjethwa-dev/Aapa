@@ -9,7 +9,11 @@ import fs from "fs/promises";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
+
+// --- TASK 3.1 IMPORTS ---
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
+import RedisStore from "rate-limit-redis";
+import { createClient } from "redis";
 
 import helmet from "helmet";
 import cors from "cors";
@@ -44,12 +48,42 @@ const __dirname = path.dirname(__filename);
 
 dotenv.config();
 
+// ========================================================
+// --- ADDED FOR TASK 2.2: Extended WebSocket Interface ---
+// ========================================================
+interface ExtWebSocket extends WebSocket {
+  isAlive: boolean;
+}
+
 async function startServer() {
   const app = express();
   const server = http.createServer(app);
   const wss = new WebSocketServer({ server });
 
-  wss.on("connection", (ws, req) => {
+  // ========================================================
+  // --- ADDED FOR TASK 3.1: Redis Client Setup           ---
+  // ========================================================
+  const redisClient = createClient({
+    url: process.env.REDIS_URL || 'redis://localhost:6379',
+  });
+
+  redisClient.on('error', (err) => logger.error('[Redis] Client Error', err));
+  await redisClient.connect().catch((e) => logger.error('[Redis] Connection Failed', e));
+  logger.info('[Redis] Connected for centralized rate limiting');
+  // ========================================================
+
+  wss.on("connection", (socket, req) => {
+    // Cast to our extended interface to access isAlive
+    const ws = socket as ExtWebSocket;
+    
+    // Initialize connection as alive
+    ws.isAlive = true;
+
+    // Listen for pong response to keep connection alive
+    ws.on("pong", () => {
+      ws.isAlive = true;
+    });
+
     const ip = req.socket.remoteAddress;
     logger.info(`[WebSocket] New client connected from ${ip}. Total clients: ${wss.clients.size}`);
 
@@ -64,6 +98,81 @@ async function startServer() {
     });
   });
 
+  // ========================================================
+  // --- ADDED FOR TASK 2.2: Heartbeat Interval Checker ---
+  // ========================================================
+  const pingInterval = setInterval(() => {
+    wss.clients.forEach((client) => {
+      const ws = client as ExtWebSocket;
+      if (ws.isAlive === false) {
+        logger.info("[WebSocket] Terminating unresponsive client (zombie connection).");
+        return ws.terminate();
+      }
+
+      ws.isAlive = false;
+      ws.ping();
+    });
+  }, 30000); // Run every 30 seconds
+
+  // ========================================================
+  // --- ADDED FOR TASK 2.3: Proactive Token Refresh Job  ---
+  // ========================================================
+  const tokenRefreshInterval = setInterval(async () => {
+    try {
+      // Find tokens expiring within the next 15 minutes
+      const { rows: expiringTokens } = await query(
+        "SELECT user_id, refresh_token FROM user_tokens WHERE broker = 'upstox' AND expires_at <= NOW() + INTERVAL '15 minutes'"
+      );
+
+      if (expiringTokens.length === 0) return;
+
+      logger.info(`[TokenRefresh] Found ${expiringTokens.length} Upstox tokens expiring soon. Attempting refresh...`);
+
+      const apiKey = process.env.UPTOX_API_KEY ?? "";
+      const apiSecret = process.env.UPTOX_API_SECRET ?? "";
+      
+      if (!apiKey || !apiSecret) {
+          logger.warn("[TokenRefresh] UPTOX_API_KEY or UPTOX_API_SECRET is missing. Cannot refresh tokens.");
+          return;
+      }
+
+      const brokerService = getBrokerService("upstox") as any;
+
+      for (const tokenRow of expiringTokens) {
+        try {
+          if (!tokenRow.refresh_token) continue;
+          
+          const decryptedRefreshToken = decrypt(String(tokenRow.refresh_token));
+          if (!decryptedRefreshToken) continue;
+
+          // Call the newly created refreshAccessToken function
+          const refreshData = await brokerService.refreshAccessToken(apiKey, apiSecret, decryptedRefreshToken);
+          
+          if (refreshData && refreshData.access_token) {
+             const newRefreshToken = refreshData.refresh_token ? encrypt(String(refreshData.refresh_token)) : tokenRow.refresh_token;
+             
+             await query(
+               `UPDATE user_tokens 
+                SET access_token = $1, refresh_token = $2, expires_at = NOW() + INTERVAL '24 hours', updated_at = NOW() 
+                WHERE user_id = $3 AND broker = 'upstox'`,
+               [
+                 encrypt(String(refreshData.access_token)),
+                 newRefreshToken,
+                 tokenRow.user_id
+               ]
+             );
+             logger.info(`[TokenRefresh] Successfully proactive refreshed token for user_id: ${tokenRow.user_id}`);
+          }
+        } catch (err) {
+          logger.error(`[TokenRefresh] Failed to proactive refresh token for user_id ${tokenRow.user_id}:`, err);
+        }
+      }
+    } catch (e) {
+       logger.error("[TokenRefresh] Job error:", e);
+    }
+  }, 5 * 60 * 1000); // Check every 5 minutes
+  // ========================================================
+
   app.set("trust proxy", 1);
 
   app.use(
@@ -73,7 +182,6 @@ async function startServer() {
     })
   );
 
-  // --- UPDATED: Added Railway URL to allowed origins ---
   const allowedOrigins = [
     process.env.VITE_APP_URL || "https://aapacapital.com",
     "https://aapa-production.up.railway.app", 
@@ -100,7 +208,13 @@ async function startServer() {
   app.use(express.json());
   app.use(cookieParser());
 
+  // ========================================================
+  // --- UPDATED FOR TASK 3.1: Redis Limiters             ---
+  // ========================================================
   const authLimiter = rateLimit({
+    store: new RedisStore({
+      sendCommand: (...args: string[]) => redisClient.sendCommand(args),
+    }),
     windowMs: 15 * 60 * 1000,
     max: 5,
     message: { error: "Too many login attempts. Please try again in 15 minutes." },
@@ -109,6 +223,9 @@ async function startServer() {
   });
 
   const apiLimiter = rateLimit({
+    store: new RedisStore({
+      sendCommand: (...args: string[]) => redisClient.sendCommand(args),
+    }),
     windowMs: 60 * 1000,
     max: 100,
     message: { error: "Too many requests. Please slow down." },
@@ -117,6 +234,9 @@ async function startServer() {
   });
 
   const aiLimiter = rateLimit({
+    store: new RedisStore({
+      sendCommand: (...args: string[]) => redisClient.sendCommand(args),
+    }),
     windowMs: 60 * 1000,
     max: 10,
     keyGenerator: (req: any, res: any) => req.user?.id || ipKeyGenerator(req, res),
@@ -124,6 +244,7 @@ async function startServer() {
     standardHeaders: true,
     legacyHeaders: false,
   });
+  // ========================================================
 
   app.use("/api/auth", authLimiter);
   app.use("/api/ai", aiLimiter);
@@ -149,9 +270,28 @@ async function startServer() {
     });
   };
 
-  app.get("/api/health", (req, res) => {
-    res.json({ status: "ok", timestamp: new Date().toISOString() });
+  // ========================================================
+  // --- UPDATED FOR TASK 4.2: Robust Healthcheck         ---
+  // ========================================================
+  app.get("/api/health", async (req, res) => {
+    try {
+      // Verify database connection is alive before reporting as healthy
+      await query("SELECT 1");
+      res.status(200).json({ 
+        status: "ok", 
+        database: "connected", 
+        timestamp: new Date().toISOString() 
+      });
+    } catch (error) {
+      logger.error("[HealthCheck] Database ping failed:", error);
+      res.status(503).json({ 
+        status: "error", 
+        database: "disconnected", 
+        timestamp: new Date().toISOString() 
+      });
+    }
   });
+  // ========================================================
 
   app.post(
     "/api/auth/register",
@@ -546,7 +686,13 @@ async function startServer() {
         const { access_token, refresh_token } = req.body;
 
         await query(
-          "INSERT INTO user_tokens (user_id, broker, access_token, refresh_token) VALUES ($1, $2, $3, $4) ON CONFLICT (user_id, broker) DO UPDATE SET access_token = EXCLUDED.access_token, refresh_token = EXCLUDED.refresh_token",
+          `INSERT INTO user_tokens (user_id, broker, access_token, refresh_token, expires_at) 
+           VALUES ($1, $2, $3, $4, NOW() + INTERVAL '24 hours') 
+           ON CONFLICT (user_id, broker) 
+           DO UPDATE SET 
+             access_token = EXCLUDED.access_token, 
+             refresh_token = EXCLUDED.refresh_token,
+             expires_at = EXCLUDED.expires_at`,
           [
             req.user.id,
             "upstox",
@@ -554,6 +700,7 @@ async function startServer() {
             encrypt(String(refresh_token)),
           ]
         );
+        
         await query("UPDATE users SET is_uptox_connected = true WHERE id = $1", [
           req.user.id,
         ]);
@@ -781,6 +928,7 @@ async function startServer() {
   let isFetchingUpstox = false;
   let upstoxConsecutiveFailures = 0;
   let upstoxBackoffUntil = 0;
+  let lastLogTime = 0;
 
   const fetchRealPrices = async () => {
     if (isFetchingUpstox) return;
@@ -792,7 +940,15 @@ async function startServer() {
         "SELECT user_id, access_token FROM user_tokens WHERE broker = 'upstox' LIMIT 1"
       );
       const userToken = rows[0];
-      if (!userToken || !userToken.access_token) return;
+      
+      if (!userToken || !userToken.access_token) {
+        const now = Date.now();
+        if (now - lastLogTime > 300000) { // 300000 ms = 5 minutes
+          logger.warn("[MarketData] No Upstox token found. Live data fetching is paused.");
+          lastLogTime = now;
+        }
+        return;
+      }
 
       const decryptedToken = decrypt(String(userToken.access_token));
 
@@ -995,28 +1151,24 @@ async function startServer() {
     );
   });
 
-  // ========================================================
-  // --- ADDED FOR TASK 1.3: Graceful Server Shutdown ---
-  // ========================================================
   const gracefulShutdown = async (signal: string) => {
     logger.info(`[Server] Received ${signal}. Starting graceful shutdown...`);
 
-    // 1. Stop accepting new HTTP requests
+    clearInterval(pingInterval);
+    clearInterval(tokenRefreshInterval);
+
     server.close(() => {
       logger.info("[Server] HTTP server stopped accepting new requests.");
     });
 
-    // 2. Gracefully close all active WebSocket connections
     wss.clients.forEach((client) => {
       if (client.readyState === WebSocket.OPEN) {
-        // Send a friendly disconnect message to the frontend so they don't see a random drop
         client.send(JSON.stringify({ type: "system_shutdown", message: "Server shutting down for update or maintenance." }));
         client.close(1000, "Server shutting down gracefully");
       }
     });
     logger.info("[WebSocket] All active client connections closed.");
 
-    // 3. Terminate the PostgreSQL pool to prevent hanging queries
     try {
       await pool.end();
       logger.info("[DB] PostgreSQL connection pool closed successfully.");
@@ -1024,16 +1176,23 @@ async function startServer() {
       logger.error("[DB] Error closing PostgreSQL pool:", err);
     }
 
+    // ========================================================
+    // --- ADDED FOR TASK 3.1: Close Redis Connection       ---
+    // ========================================================
+    try {
+      await redisClient.quit();
+      logger.info("[Redis] Connection closed safely.");
+    } catch (err) {
+      logger.error("[Redis] Shutdown error:", err);
+    }
+    // ========================================================
+
     logger.info("[Server] Graceful shutdown complete. Exiting process.");
-    
-    // 4. Exit the process cleanly (0 = success)
     process.exit(0);
   };
 
-  // Listen for termination signals sent by Docker or the OS
   process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
   process.on("SIGINT", () => gracefulShutdown("SIGINT"));
-  // ========================================================
 }
 
 startServer().catch((e) => {
