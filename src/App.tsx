@@ -208,6 +208,9 @@ function App() {
   // ========================================================
   // --- UPDATED FOR TASK 5.1 & 6.1: WS Reconnection Logic ---
   // ========================================================
+  // ========================================================
+  // --- UPDATED FOR TASK 5.1 & 6.1: WS Reconnection Logic ---
+  // ========================================================
   useEffect(() => {
     if (!token) return;
 
@@ -221,16 +224,22 @@ function App() {
         wsRef.current.close();
       }
 
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      // --- BUG FIX: Fetch the freshest token directly from localStorage ---
+      // Axios interceptors refresh the token every 15 mins in the background. 
+      // We must grab it from storage so the WebSocket doesn't use an expired token.
+      const freshToken = localStorage.getItem('token') || token;
       
-      // --- TASK 6.1: Append token to connection URL for authentication ---
-      const ws = new WebSocket(`${protocol}//${window.location.host}/?token=${token}`);
+      // Stop trying to connect if the user has completely logged out
+      if (!freshToken) return;
+
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const ws = new WebSocket(`${protocol}//${window.location.host}/?token=${freshToken}`);
       
       wsRef.current = ws;
 
       ws.onopen = () => {
         if (!isComponentMounted) return;
-        console.log('[WebSocket] Connected');
+        console.log('[WebSocket] Connected securely with fresh token');
         setIsWsConnected(true);
         reconnectAttemptsRef.current = 0; // Reset attempts on successful connection
       };
@@ -283,10 +292,7 @@ function App() {
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       if (wsRef.current) wsRef.current.close();
     };
-  }, [token, user?.is_uptox_connected]); 
-  // Dependency note: Removed 'user' to prevent rapid disconnect/reconnect loops whenever user balance changes, 
-  // but kept 'user.is_uptox_connected' so it can respond to the broker disconnect event correctly.
-  // ========================================================
+  }, [token, user?.is_uptox_connected]);
 
 
   const pathname = window.location.pathname;
