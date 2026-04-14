@@ -677,20 +677,23 @@ async function startServer() {
 
       const data = await response.json();
       if (data.access_token) {
-        const allowedOrigin =
-          process.env.NODE_ENV === "production"
-            ? process.env.VITE_APP_URL || "https://aapacapital.com"
-            : "http://localhost:5173";
-
+        // --- FIX: Using wildcard target origin '*' for the postMessage ---
         res.send(`
           <html>
-            <body style="background: #000; color: #fff; display: flex; align-items: center; justify-content: center; height: 100vh;">
-              <div>
+            <body style="background: #000; color: #fff; display: flex; align-items: center; justify-content: center; height: 100vh; font-family: sans-serif;">
+              <div style="text-align: center;">
                 <h2 style="color: #10b981;">Connection Successful!</h2>
+                <p id="fallback-msg" style="color: #a1a1aa; font-size: 14px;">Redirecting back to app...</p>
                 <script>
                   if (window.opener) {
-                    window.opener.postMessage({ type: 'UPTOX_AUTH_SUCCESS', token: '${data.access_token}', refresh_token: '${data.refresh_token || ""}' }, '${allowedOrigin}');
+                    window.opener.postMessage({ 
+                      type: 'UPTOX_AUTH_SUCCESS', 
+                      token: '${data.access_token}', 
+                      refresh_token: '${data.refresh_token || ""}' 
+                    }, '*');
                     setTimeout(() => window.close(), 2000);
+                  } else {
+                    document.getElementById('fallback-msg').innerText = "Please safely close this tab and return to the application.";
                   }
                 </script>
               </div>
