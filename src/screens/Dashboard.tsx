@@ -43,57 +43,35 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
     return () => clearInterval(interval);
   }, []);
 
-  // Handle the Upstox OAuth Popup Flow
+  // Opens the Upstox OAuth popup.
+  // App.tsx's global message listener handles the callback, saves the token,
+  // and calls refreshUser() — which updates is_uptox_connected in the store
+  // and causes this component to re-render automatically.
   const handleUpstoxConnect = async () => {
     setIsConnecting(true);
     try {
-      // Switched to apiClient
       const res = await apiClient.get('/api/auth/uptox/url');
       const data = res.data;
 
-      // Open the URL in a popup window
       const width = 500;
       const height = 700;
       const left = window.screen.width / 2 - width / 2;
       const top = window.screen.height / 2 - height / 2;
+
       const popup = window.open(
         data.url,
         'UpstoxAuth',
         `width=${width},height=${height},top=${top},left=${left},toolbar=no,menubar=no`
       );
 
-      // Listen for the success message from the popup (sent by server.ts /auth/callback)
-      const messageListener = async (event: MessageEvent) => {
-        // Trust messages from localhost (ignoring ports for dev) or the exact APP URL
-        const isTrustedOrigin = event.origin.includes(window.location.hostname) || event.origin === import.meta.env.VITE_APP_URL;
-        
-        if (!isTrustedOrigin) return;
-
-        if (event.data?.type === 'UPTOX_AUTH_SUCCESS') {
-          window.removeEventListener('message', messageListener);
-          popup?.close();
-          setIsConnecting(false);
-          toast.info('Finalizing connection...');
-          // Notice: App.tsx's global listener handles the actual API request to save-token
-          // so we don't duplicate logic or cause race conditions here.
-        } else if (event.data?.type === 'UPTOX_AUTH_ERROR') {
-          window.removeEventListener('message', messageListener);
-          popup?.close();
-          setIsConnecting(false);
-          toast.error('Failed to link Upstox account');
-        }
-      };
-
-      window.addEventListener('message', messageListener);
-
-      // Fallback: Check if user closed the popup prematurely
+      // Only watch for popup close to reset the connecting spinner.
+      // The actual success/failure is handled by App.tsx global listener.
       const checkPopupInterval = setInterval(() => {
         if (popup?.closed) {
           clearInterval(checkPopupInterval);
-          window.removeEventListener('message', messageListener);
           setIsConnecting(false);
         }
-      }, 1000);
+      }, 500);
 
     } catch (err: any) {
       toast.error('Failed to initialize Upstox connection.');

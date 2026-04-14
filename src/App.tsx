@@ -40,7 +40,7 @@ import OptionChain from './components/OptionChain';
 // --- Main App ---
 
 function App() {
-  const { token, user, setAuth, logout, setIsWsConnected } = useAuthStore();
+  const { token, user, setAuth, logout, setIsWsConnected, refreshUser } = useAuthStore();
   const [activeTab, setActiveTab] = useState('dashboard');
   const [stocks, setStocks] = useState<Record<string, number>>({
     "NIFTY 50": 22145.20,
@@ -175,41 +175,43 @@ function App() {
     verifyToken();
   }, [token, logout, setAuth]);
 
-  // Global Upstox Popup Listener
+    // Global Upstox Popup Listener — Single source of truth for OAuth callback
   useEffect(() => {
     const handleMessage = async (event: MessageEvent) => {
-      // Allow messages from the same hostname (ignoring port differences for local dev) or the configured App URL
-      const isTrustedOrigin = event.origin.includes(window.location.hostname) || event.origin === import.meta.env.VITE_APP_URL;
-      
-      if (!isTrustedOrigin) {
-        return;
-      }
+      const isTrustedOrigin =
+        event.origin.includes(window.location.hostname) ||
+        event.origin === import.meta.env.VITE_APP_URL;
+
+      if (!isTrustedOrigin) return;
 
       if (event.data?.type === 'UPTOX_AUTH_SUCCESS') {
         const { token: uptoxToken, refresh_token: uptoxRefreshToken } = event.data;
         if (!token) return;
+
         try {
-          // Save the token securely
+          // Step 1: Save the Upstox OAuth token on the backend
           await apiClient.post('/api/auth/uptox/save-token', {
             access_token: uptoxToken,
-            refresh_token: uptoxRefreshToken
+            refresh_token: uptoxRefreshToken,
           });
-          
-          // Fetch updated profile to re-trigger dashboard render naturally
-          const profileRes = await apiClient.get('/api/user/profile');
-          if (profileRes.data.id) {
-            setAuth(profileRes.data, token);
-            toast.success("Upstox account connected successfully!");
-          }
+
+          // Step 2: Small delay to ensure the server has committed the update
+          await new Promise((resolve) => setTimeout(resolve, 500));
+
+          // Step 3: Re-fetch the user profile — this updates is_uptox_connected in store
+          await refreshUser();
+
+          toast.success('Upstox account connected successfully! Live data is now active.');
         } catch (e) {
           console.error('Failed to save Uptox token', e);
-          toast.error("Failed to finalize Upstox connection.");
+          toast.error('Failed to finalize Upstox connection. Please try again.');
         }
       }
     };
+
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [token, setAuth]);
+  }, [token, refreshUser]);
 
   // ========================================================
   // --- UPDATED FOR TASK 5.1 & 6.1: WS Reconnection Logic ---

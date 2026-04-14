@@ -13,15 +13,15 @@ interface User {
 interface AuthState {
   user: User | null;
   token: string | null;
-  // --- ADDED FOR TASK 5.1: Global WS State ---
   isWsConnected: boolean;
   setIsWsConnected: (status: boolean) => void;
-  // -------------------------------------------
   setAuth: (user: User, token: string) => void;
   logout: () => void;
+  // NEW: refreshUser fetches the latest profile and updates the store
+  refreshUser: () => Promise<void>;
 }
 
-export const useAuthStore = create<AuthState>((set) => ({
+export const useAuthStore = create<AuthState>((set, get) => ({
   user: (() => {
     try {
       return JSON.parse(localStorage.getItem('user') || 'null');
@@ -59,5 +59,18 @@ export const useAuthStore = create<AuthState>((set) => ({
     }
     set({ user: null, token: null, isWsConnected: false });
     window.location.href = '/';
+  },
+  // NEW: Fetches the latest user profile from server and updates store + localStorage
+  refreshUser: async () => {
+    const { token, setAuth } = get();
+    if (!token) return;
+    try {
+      const res = await apiClient.get('/api/user/profile');
+      if (res.data?.id) {
+        setAuth(res.data, token);
+      }
+    } catch (e) {
+      console.error('Failed to refresh user profile', e);
+    }
   },
 }));
