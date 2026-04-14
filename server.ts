@@ -203,7 +203,8 @@ async function startServer() {
   }, 5 * 60 * 1000); // Check every 5 minutes
   // ========================================================
 
-  app.set("trust proxy", 1);
+  // --- FIX: Trust Railway's proxy chain so IPs don't overlap ---
+  app.set("trust proxy", true);
 
   app.use(
     helmet({
@@ -245,9 +246,9 @@ async function startServer() {
     store: new RedisStore({
       sendCommand: (...args: string[]) => redisClient.sendCommand(args),
     }),
-    windowMs: 15 * 60 * 1000,
-    max: 5,
-    message: { error: "Too many login attempts. Please try again in 15 minutes." },
+    windowMs: 5 * 60 * 1000,
+    max: 20,
+    message: { error: "Too many login attempts. Please try again in 5 minutes." },
     standardHeaders: true,
     legacyHeaders: false,
   });
@@ -257,7 +258,7 @@ async function startServer() {
       sendCommand: (...args: string[]) => redisClient.sendCommand(args),
     }),
     windowMs: 60 * 1000,
-    max: 100,
+    max: 300,
     message: { error: "Too many requests. Please slow down." },
     standardHeaders: true,
     legacyHeaders: false,
@@ -1074,13 +1075,23 @@ async function startServer() {
   fetchRealPrices();
   setInterval(fetchRealPrices, 5000);
 
+  // --- FIX: Cache the token count to prevent DB connection pool exhaustion ---
+  let cachedTokenCount = 0;
+  let lastTokenCountCheck = 0;
+
   setInterval(async () => {
     let isSimulated = false;
+    const now = Date.now();
+    
     try {
-      const { rows } = await query(
-        "SELECT COUNT(*) as count FROM user_tokens"
-      );
-      if (parseInt(rows[0].count) === 0) {
+      // Only hit the database once every 10 seconds, NOT every 1 second
+      if (now - lastTokenCountCheck > 10000) {
+        const { rows } = await query("SELECT COUNT(*) as count FROM user_tokens");
+        cachedTokenCount = parseInt(rows[0].count);
+        lastTokenCountCheck = now;
+      }
+
+      if (cachedTokenCount === 0) {
         isSimulated = true;
         allSymbols.forEach((symbol) => {
           stockPrices[symbol] +=
@@ -1096,6 +1107,7 @@ async function startServer() {
       data: stockPrices,
       isSimulated,
     });
+    
     wss.clients.forEach((c) => {
       if (c.readyState === WebSocket.OPEN) c.send(payload);
     });
