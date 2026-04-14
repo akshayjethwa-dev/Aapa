@@ -313,7 +313,7 @@ async function startServer() {
   };
 
   // ========================================================
-  // --- UPDATED HEALTHCHECK FOR DETAILED ERRORS          ---
+  // --- UPDATED FOR TASK 4.2: Robust Healthcheck         ---
   // ========================================================
   app.get("/api/health", async (req, res) => {
     try {
@@ -323,12 +323,11 @@ async function startServer() {
         database: "connected", 
         timestamp: new Date().toISOString() 
       });
-    } catch (error: any) {
+    } catch (error) {
       logger.error("[HealthCheck] Database ping failed:", error);
       res.status(503).json({ 
         status: "error", 
         database: "disconnected", 
-        details: error.message || String(error),
         timestamp: new Date().toISOString() 
       });
     }
@@ -378,9 +377,6 @@ async function startServer() {
     }
   );
 
-  // ========================================================
-  // --- SECURE LOGIN WITH DEBUG TRACING                  ---
-  // ========================================================
   app.post(
     "/api/auth/login",
     validate(loginSchema),
@@ -392,7 +388,6 @@ async function startServer() {
             return res.status(400).json({ error: "Missing login credentials" });
         }
 
-        // Safe conversion placed inside try-catch to avoid uncaught TypeError
         login = login.toString().toLowerCase().trim();
         logger.info(`[Auth] Login attempt for: ${login}`);
 
@@ -443,12 +438,7 @@ async function startServer() {
           },
         });
       } catch (e: any) {
-        logger.error("[Auth Error]", e);
-        // Explicitly return the specific DB/Runtime error back to the browser
-        return res.status(500).json({ 
-          error: "Server Error during login.", 
-          details: e.message || String(e) 
-        });
+        next(e);
       }
     }
   );
@@ -803,6 +793,9 @@ async function startServer() {
     }
   );
 
+  // ========================================================
+  // --- BULLETPROOF PORTFOLIO FETCH                      ---
+  // ========================================================
   app.get("/api/portfolio", authenticateToken, async (req: any, res, next) => {
     try {
       const { rows: tokens } = await query(
@@ -813,26 +806,44 @@ async function startServer() {
 
       for (const token of tokens) {
         if (!token.access_token) continue;
-        const decryptedToken = decrypt(String(token.access_token));
-        if (!decryptedToken) continue;
-
+        
         try {
+          // 1. Move decryption into Try-Catch to prevent crashes if key changes
+          const decryptedToken = decrypt(String(token.access_token));
+          if (!decryptedToken) continue;
+
           const brokerService = getBrokerService(String(token.broker));
           const holdings = await brokerService.getHoldings(decryptedToken);
           combinedHoldings = [...combinedHoldings, ...holdings];
         } catch (e) {
-          logger.warn(`${token.broker} holdings error`, e);
+          logger.warn(`[Portfolio] ${token.broker} token decryption or holdings fetch error:`, e);
         }
       }
 
-      if (combinedHoldings.length > 0) return res.json(combinedHoldings);
-      const { rows: localHoldings } = await query(
-        "SELECT *, 'Local' as broker FROM portfolios WHERE user_id = $1",
-        [req.user.id]
-      );
+      let localHoldings: any[] = [];
+      try {
+        // 2. Wrap local DB query in Try-Catch so missing table doesn't cause 500 error
+        const { rows } = await query(
+          "SELECT *, 'Local' as broker FROM portfolios WHERE user_id = $1",
+          [req.user.id]
+        );
+        localHoldings = rows;
+      } catch (dbErr: any) {
+        if (dbErr.code === '42P01') { // PostgreSQL error code for "undefined_table"
+          logger.warn("[Portfolio] 'portfolios' table does not exist yet. Skipping local holdings.");
+        } else {
+          logger.error("[Portfolio] Database error fetching local holdings:", dbErr);
+        }
+      }
+
+      if (combinedHoldings.length > 0) {
+          return res.json(combinedHoldings);
+      }
       res.json(localHoldings);
-    } catch (e) {
-      next(e);
+      
+    } catch (e: any) {
+      logger.error("[Portfolio API Error]", e);
+      res.status(500).json({ error: "Failed to load portfolio", details: e.message || String(e) });
     }
   });
 
@@ -1225,9 +1236,6 @@ async function startServer() {
     );
   }
 
-  // ========================================================
-  // --- ENHANCED GLOBAL ERROR HANDLER                    ---
-  // ========================================================
   app.use(
     (err: Error, req: Request, res: Response, next: NextFunction) => {
       logger.error("Unhandled error", {
