@@ -243,7 +243,6 @@ async function startServer() {
           return callback(null, true);
         } else {
           logger.warn(`[CORS] Blocked request from unauthorized origin: ${origin}`);
-          // Returning an Error here causes a 500 error. Changed to standard false rejection.
           return callback(null, false);
         }
       },
@@ -314,7 +313,7 @@ async function startServer() {
   };
 
   // ========================================================
-  // --- UPDATED FOR TASK 4.2: Robust Healthcheck         ---
+  // --- UPDATED HEALTHCHECK FOR DETAILED ERRORS          ---
   // ========================================================
   app.get("/api/health", async (req, res) => {
     try {
@@ -324,11 +323,12 @@ async function startServer() {
         database: "connected", 
         timestamp: new Date().toISOString() 
       });
-    } catch (error) {
+    } catch (error: any) {
       logger.error("[HealthCheck] Database ping failed:", error);
       res.status(503).json({ 
         status: "error", 
         database: "disconnected", 
+        details: error.message || String(error),
         timestamp: new Date().toISOString() 
       });
     }
@@ -378,6 +378,9 @@ async function startServer() {
     }
   );
 
+  // ========================================================
+  // --- SECURE LOGIN WITH DEBUG TRACING                  ---
+  // ========================================================
   app.post(
     "/api/auth/login",
     validate(loginSchema),
@@ -440,7 +443,12 @@ async function startServer() {
           },
         });
       } catch (e: any) {
-        next(e);
+        logger.error("[Auth Error]", e);
+        // Explicitly return the specific DB/Runtime error back to the browser
+        return res.status(500).json({ 
+          error: "Server Error during login.", 
+          details: e.message || String(e) 
+        });
       }
     }
   );
@@ -1217,6 +1225,9 @@ async function startServer() {
     );
   }
 
+  // ========================================================
+  // --- ENHANCED GLOBAL ERROR HANDLER                    ---
+  // ========================================================
   app.use(
     (err: Error, req: Request, res: Response, next: NextFunction) => {
       logger.error("Unhandled error", {
@@ -1228,7 +1239,8 @@ async function startServer() {
       });
 
       res.status(500).json({
-        error: "An internal server error occurred. Please try again.",
+        error: "An internal server error occurred.",
+        details: err.message || String(err)
       });
     }
   );
