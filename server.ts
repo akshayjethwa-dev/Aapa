@@ -68,15 +68,22 @@ async function startServer() {
   const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || "fallback-refresh-secret";
 
   // ========================================================
-  // --- ADDED FOR TASK 3.1: Redis Client Setup           ---
+  // --- UPDATED FOR TASK 3.1: Redis Client Setup with fallback ---
   // ========================================================
   const redisClient = createClient({
     url: process.env.REDIS_URL || 'redis://localhost:6379',
   });
 
+  let redisConnected = false;
   redisClient.on('error', (err) => logger.error('[Redis] Client Error', err));
-  await redisClient.connect().catch((e) => logger.error('[Redis] Connection Failed', e));
-  logger.info('[Redis] Connected for centralized rate limiting');
+  
+  try {
+    await redisClient.connect();
+    redisConnected = true;
+    logger.info('[Redis] Connected for centralized rate limiting');
+  } catch (e) {
+    logger.warn('[Redis] Connection failed — using in-memory rate limiting fallback.');
+  }
   // ========================================================
 
   // ========================================================
@@ -248,12 +255,14 @@ async function startServer() {
   app.use(cookieParser());
 
   // ========================================================
-  // --- UPDATED FOR TASK 3.1: Redis Limiters             ---
+  // --- UPDATED FOR TASK 3.1: Limiters with Redis/Memory fallback ---
   // ========================================================
+  const makeStore = () => redisConnected
+    ? new RedisStore({ sendCommand: (...args: string[]) => redisClient.sendCommand(args) })
+    : undefined;
+
   const authLimiter = rateLimit({
-    store: new RedisStore({
-      sendCommand: (...args: string[]) => redisClient.sendCommand(args),
-    }),
+    store: makeStore(),
     windowMs: 5 * 60 * 1000,
     max: 20,
     message: { error: "Too many login attempts. Please try again in 5 minutes." },
@@ -262,9 +271,7 @@ async function startServer() {
   });
 
   const apiLimiter = rateLimit({
-    store: new RedisStore({
-      sendCommand: (...args: string[]) => redisClient.sendCommand(args),
-    }),
+    store: makeStore(),
     windowMs: 60 * 1000,
     max: 300,
     message: { error: "Too many requests. Please slow down." },
@@ -273,9 +280,7 @@ async function startServer() {
   });
 
   const aiLimiter = rateLimit({
-    store: new RedisStore({
-      sendCommand: (...args: string[]) => redisClient.sendCommand(args),
-    }),
+    store: makeStore(),
     windowMs: 60 * 1000,
     max: 10,
     keyGenerator: (req: any, res: any) => req.user?.id || ipKeyGenerator(req, res),
@@ -1260,8 +1265,10 @@ app.get("/api/auth/uptox/url", authenticateToken, (req: any, res) => {
     // --- ADDED FOR TASK 3.1: Close Redis Connection       ---
     // ========================================================
     try {
-      await redisClient.quit();
-      logger.info("[Redis] Connection closed safely.");
+      if (redisConnected) {
+        await redisClient.quit();
+        logger.info("[Redis] Connection closed safely.");
+      }
     } catch (err) {
       logger.error("[Redis] Shutdown error:", err);
     }
