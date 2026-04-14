@@ -40,7 +40,7 @@ import OptionChain from './components/OptionChain';
 // --- Main App ---
 
 function App() {
-  const { token, user, setAuth, logout, setIsWsConnected, refreshUser } = useAuthStore();
+  const { token, user, setAuth, logout, setIsWsConnected} = useAuthStore();
   const [activeTab, setActiveTab] = useState('dashboard');
   const [stocks, setStocks] = useState<Record<string, number>>({
     "NIFTY 50": 22145.20,
@@ -175,43 +175,56 @@ function App() {
     verifyToken();
   }, [token, logout, setAuth]);
 
-    // Global Upstox Popup Listener — Single source of truth for OAuth callback
-  useEffect(() => {
-    const handleMessage = async (event: MessageEvent) => {
-      const isTrustedOrigin =
-        event.origin.includes(window.location.hostname) ||
-        event.origin === import.meta.env.VITE_APP_URL;
+  // Global Upstox Popup Listener
+useEffect(() => {
+  const handleMessage = async (event: MessageEvent) => {
+    // Fix: accept message from same origin OR any origin for the success type
+    // (postMessage now uses window.location.origin on the server side)
+    const isSameOrigin = event.origin === window.location.origin;
+    const isKnownAppUrl = import.meta.env.VITE_APP_URL 
+      ? event.origin === import.meta.env.VITE_APP_URL 
+      : false;
 
-      if (!isTrustedOrigin) return;
+    if (!isSameOrigin && !isKnownAppUrl) {
+      // Still log so you can debug origin mismatches in production
+      if (event.data?.type === 'UPTOX_AUTH_SUCCESS' || event.data?.type === 'UPTOX_AUTH_ERROR') {
+        console.warn('[Auth] Received Upstox message from untrusted origin:', event.origin, '| Expected:', window.location.origin);
+      }
+      return;
+    }
 
-      if (event.data?.type === 'UPTOX_AUTH_SUCCESS') {
+    if (event.data?.type === 'UPTOX_AUTH_SUCCESS') {
+      try {
         const { token: uptoxToken, refresh_token: uptoxRefreshToken } = event.data;
-        if (!token) return;
 
-        try {
-          // Step 1: Save the Upstox OAuth token on the backend
+        if (uptoxToken) {
+          // Fallback path: token was NOT saved server-side (old flow or state missing)
+          // Save it now via the API
           await apiClient.post('/api/auth/uptox/save-token', {
             access_token: uptoxToken,
-            refresh_token: uptoxRefreshToken,
+            refresh_token: uptoxRefreshToken || '',
           });
-
-          // Step 2: Small delay to ensure the server has committed the update
-          await new Promise((resolve) => setTimeout(resolve, 500));
-
-          // Step 3: Re-fetch the user profile — this updates is_uptox_connected in store
-          await refreshUser();
-
-          toast.success('Upstox account connected successfully! Live data is now active.');
-        } catch (e) {
-          console.error('Failed to save Uptox token', e);
-          toast.error('Failed to finalize Upstox connection. Please try again.');
         }
+        // Whether saved server-side or just now, re-fetch profile to update UI
+        // Small delay ensures DB write is committed
+        await new Promise(r => setTimeout(r, 600));
+        const profileRes = await apiClient.get('/api/user/profile');
+        if (profileRes.data?.id) {
+          setAuth(profileRes.data, token as string);
+          toast.success('Upstox connected! Live data is now active.');
+        }
+      } catch (e) {
+        console.error('Failed to finalize Upstox connection', e);
+        toast.error('Failed to finalize Upstox connection. Please try again.');
       }
-    };
+    } else if (event.data?.type === 'UPTOX_AUTH_ERROR') {
+      toast.error('Upstox connection failed. Please try again.');
+    }
+  };
 
-    window.addEventListener('message', handleMessage);
-    return () => window.removeEventListener('message', handleMessage);
-  }, [token, refreshUser]);
+  window.addEventListener('message', handleMessage);
+  return () => window.removeEventListener('message', handleMessage);
+}, [token, setAuth]);
 
   // ========================================================
   // --- UPDATED FOR TASK 5.1 & 6.1: WS Reconnection Logic ---

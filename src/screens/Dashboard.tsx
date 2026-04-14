@@ -48,36 +48,33 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
   // and calls refreshUser() — which updates is_uptox_connected in the store
   // and causes this component to re-render automatically.
   const handleUpstoxConnect = async () => {
-    setIsConnecting(true);
-    try {
-      const res = await apiClient.get('/api/auth/uptox/url');
-      const data = res.data;
+  setIsConnecting(true);
+  try {
+    const res = await apiClient.get('/api/auth/uptox/url');
+    const { url } = res.data;
 
-      const width = 500;
-      const height = 700;
-      const left = window.screen.width / 2 - width / 2;
-      const top = window.screen.height / 2 - height / 2;
+    const width = 500, height = 700;
+    const left = window.screen.width / 2 - width / 2;
+    const top = window.screen.height / 2 - height / 2;
 
-      const popup = window.open(
-        data.url,
-        'UpstoxAuth',
-        `width=${width},height=${height},top=${top},left=${left},toolbar=no,menubar=no`
-      );
+    const popup = window.open(
+      url,
+      'UpstoxAuth',
+      `width=${width},height=${height},top=${top},left=${left},toolbar=no,menubar=no`
+    );
 
-      // Only watch for popup close to reset the connecting spinner.
-      // The actual success/failure is handled by App.tsx global listener.
-      const checkPopupInterval = setInterval(() => {
-        if (popup?.closed) {
-          clearInterval(checkPopupInterval);
-          setIsConnecting(false);
-        }
-      }, 500);
-
-    } catch (err: any) {
-      toast.error('Failed to initialize Upstox connection.');
-      setIsConnecting(false);
-    }
-  };
+    // Only reset spinner when popup closes — App.tsx handles the actual auth
+    const timer = setInterval(() => {
+      if (popup?.closed) {
+        clearInterval(timer);
+        setIsConnecting(false);
+      }
+    }, 500);
+  } catch (err: any) {
+    toast.error('Failed to initialize Upstox connection.');
+    setIsConnecting(false);
+  }
+};
 
   const handleExit = async (index: number) => {
     const pos = positions[index];
