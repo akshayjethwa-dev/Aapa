@@ -4,22 +4,28 @@ import { PieChart, TrendingUp, ArrowUpRight, ArrowDownRight, CreditCard, History
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart as RePieChart, Pie, Cell } from 'recharts';
 import { formatCurrency, cn } from '../lib/utils';
 import { useAuthStore } from '../store/authStore';
-// ✅ FIX: Use apiClient for auto auth headers + token refresh
 import { apiClient } from '../api/client';
 
 const Portfolio = ({ stocks }: { stocks: Record<string, number> }) => {
   const { user } = useAuthStore();
   const [holdings, setHoldings] = useState<any[]>([]);
+  // ✅ FIX: Added state to capture Upstox live funds if the backend sends it
+  const [availableFunds, setAvailableFunds] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchHoldings = async () => {
       try {
-        // ✅ FIX 1: Correct endpoint '/api/portfolio' (NOT '/api/portfolio/holdings')
-        // ✅ FIX 2: Use apiClient (not raw fetch) for automatic auth + refresh
         const res = await apiClient.get('/api/portfolio');
-        const data = Array.isArray(res.data) ? res.data : [];
-        setHoldings(data);
+        const payload = res.data?.data || res.data;
+        
+        // ✅ FIX: Robust payload handling to extract both holdings and funds dynamically
+        if (Array.isArray(payload)) {
+          setHoldings(payload);
+        } else if (payload && typeof payload === 'object') {
+          if (Array.isArray(payload.holdings)) setHoldings(payload.holdings);
+          if (payload.funds !== undefined) setAvailableFunds(payload.funds);
+        }
       } catch (err) {
         console.error('Failed to fetch portfolio', err);
       } finally {
@@ -29,10 +35,12 @@ const Portfolio = ({ stocks }: { stocks: Record<string, number> }) => {
     fetchHoldings();
   }, []);
 
+  // ✅ FIX: Determine correct funds to display (Upstox priority over local balance)
+  const displayFunds = availableFunds !== null ? availableFunds : (user?.balance || 0);
+
   // Holdings from Upstox shape: { symbol, quantity, average_price, current_price, broker }
   const totalInvested = holdings.reduce((acc, h) => acc + h.quantity * h.average_price, 0);
 
-  // ✅ FIX 3: Use stocks[h.symbol] + h.current_price as live price sources
   const currentValue = holdings.reduce((acc, h) => {
     const ltp =
       stocks[h.symbol] ||       // live WebSocket price
@@ -49,7 +57,8 @@ const Portfolio = ({ stocks }: { stocks: Record<string, number> }) => {
         name: h.symbol,
         value: h.quantity * (stocks[h.symbol] || h.current_price || h.average_price)
       }))
-    : [{ name: 'Cash', value: user?.balance || 0 }];
+    // ✅ FIX: Use displayFunds for the Cash chart fallback
+    : [{ name: 'Cash', value: displayFunds }];
 
   const COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6'];
 
@@ -71,7 +80,8 @@ const Portfolio = ({ stocks }: { stocks: Record<string, number> }) => {
         <div className="bg-linear-to-br from-zinc-900 to-black border border-zinc-800/50 rounded-2xl p-6 space-y-5 shadow-2xl">
           <div className="space-y-0.5">
             <p className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">Total Portfolio Value</p>
-            <h2 className="text-3xl font-black tracking-tighter text-white">{formatCurrency(currentValue + (user?.balance || 0))}</h2>
+            {/* ✅ FIX: Add live funds to the Total Portfolio Value */}
+            <h2 className="text-3xl font-black tracking-tighter text-white">{formatCurrency(currentValue + displayFunds)}</h2>
           </div>
           <div className="grid grid-cols-2 gap-6 pt-5 border-t border-zinc-800/50">
             <div className="space-y-0.5">
@@ -81,9 +91,10 @@ const Portfolio = ({ stocks }: { stocks: Record<string, number> }) => {
               </p>
             </div>
             <div className="space-y-0.5">
-              <p className="text-[9px] font-bold text-zinc-600 uppercase tracking-widest">Day P&L</p>
-              <p className={cn("text-base font-bold", dayPnL >= 0 ? "text-emerald-500" : "text-rose-500")}>
-                {dayPnL >= 0 ? '+' : ''}{formatCurrency(dayPnL)}
+              {/* ✅ FIX: Show Available Cash correctly instead of Day P&L here for better insight */}
+              <p className="text-[9px] font-bold text-zinc-600 uppercase tracking-widest">Available Cash</p>
+              <p className="text-base font-bold text-white">
+                {formatCurrency(displayFunds)}
               </p>
             </div>
           </div>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { TrendingUp, ArrowUpRight, ArrowDownRight, Newspaper, Calendar, Activity, Bell, Zap, ChevronRight, ZapOff, BarChart3, Link2, RefreshCw } from 'lucide-react';
@@ -10,30 +10,41 @@ import AISignals from './admin/AISignals';
 import { apiClient } from '../api/client';
 
 const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { stocks: Record<string, number>, onMarketClick: () => void, onIndexClick: (index: string) => void, onProfileClick: () => void }) => {
-  const { user } = useAuthStore();
+  // ✅ FIX: Destructure refreshUser to update global state after login
+  const { user, refreshUser } = useAuthStore();
   const [holdings, setHoldings] = useState<any[]>([]);
   const [positions, setPositions] = useState<any[]>([]);
+  
+  // ✅ FIX: State to capture live Upstox funds
+  const [availableFunds, setAvailableFunds] = useState<number | null>(null);
+  
   const [gainerLoserTab, setGainerLoserTab] = useState<'Gainers' | 'Losers'>('Gainers');
   const [eventFilter, setEventFilter] = useState('Upcoming');
   const [confirmExit, setConfirmExit] = useState<number | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
 
-  useEffect(() => {
-    const fetchPortfolio = async () => {
-      try {
-        const res = await apiClient.get('/api/portfolio');
-        const portfolioArray = Array.isArray(res.data) ? res.data : [];
-        // ✅ FIX: Only set holdings — positions stay empty to avoid field-name mismatch
-        // (holdings don't have pos.ltp / pos.avgPrice / pos.pnl fields)
-        setHoldings(portfolioArray);
-      } catch (e) {
-        console.error("Failed to fetch portfolio", e);
+  // ✅ FIX: Robust payload handling for Portfolio + Funds
+  const fetchPortfolio = useCallback(async () => {
+    try {
+      const res = await apiClient.get('/api/portfolio');
+      const payload = res.data?.data || res.data; 
+
+      if (Array.isArray(payload)) {
+        setHoldings(payload);
+      } else if (payload && typeof payload === 'object') {
+        if (Array.isArray(payload.holdings)) setHoldings(payload.holdings);
+        if (payload.funds !== undefined) setAvailableFunds(payload.funds);
       }
-    };
+    } catch (e) {
+      console.error("Failed to fetch portfolio", e);
+    }
+  }, []);
+
+  useEffect(() => {
     fetchPortfolio();
     const interval = setInterval(fetchPortfolio, 5000);
     return () => clearInterval(interval);
-  }, []);
+  }, [fetchPortfolio]);
 
   const handleUpstoxConnect = async () => {
     setIsConnecting(true);
@@ -44,8 +55,21 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
       const left = window.screen.width / 2 - width / 2;
       const top = window.screen.height / 2 - height / 2;
       const popup = window.open(url, 'UpstoxAuth', `width=${width},height=${height},top=${top},left=${left},toolbar=no,menubar=no`);
-      const timer = setInterval(() => {
-        if (popup?.closed) { clearInterval(timer); setIsConnecting(false); }
+      
+      const timer = setInterval(async () => {
+        if (popup?.closed) { 
+          clearInterval(timer); 
+          setIsConnecting(false); 
+          
+          // ✅ FIX: Update global user state & force socket reconnect
+          toast.success("Broker Connected! Booting up live market data...");
+          await refreshUser(); 
+          
+          // Soft reload to trigger App.tsx WebSocket reconnection with new token
+          setTimeout(() => {
+            window.location.reload();
+          }, 1500);
+        }
       }, 500);
     } catch (err: any) {
       toast.error('Failed to initialize Upstox connection.');
@@ -65,9 +89,9 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
     }
   };
 
-  // ✅ FIX: Use correct field names from the Holding interface
-  // OLD (broken): stocks[curr.trading_symbol] || curr.last_price  → always undefined
-  // NEW (correct): stocks[curr.symbol] || curr.current_price      → correct fields
+  // ✅ FIX: Determine correct funds to display
+  const displayFunds = availableFunds !== null ? availableFunds : (user?.balance || 0);
+
   const totalInvested = holdings.reduce(
     (acc, curr) => acc + curr.quantity * curr.average_price, 0
   );
@@ -150,7 +174,7 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
                 <Sparkline color={stocks[index] > (index.includes('SENSEX') ? 70000 : 20000) ? '#10b981' : '#ef4444'} />
               </div>
               <div>
-                <p className="text-lg font-black tracking-tight text-white">{stocks[index]?.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</p>
+                <p className="text-lg font-black tracking-tight text-white">{stocks[index]?.toLocaleString('en-IN', { minimumFractionDigits: 2 }) || '---'}</p>
                 <div className="flex items-center gap-1.5 mt-0.5">
                   <div className={cn(
                     "flex items-center gap-0.5 px-1.5 py-0.5 rounded-md text-[10px] font-bold",
@@ -222,11 +246,11 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
               </div>
               <div>
                 <p className="text-[9px] font-bold text-zinc-600 uppercase tracking-widest mb-1">Available Funds</p>
-                <p className="text-[13px] font-bold text-zinc-300">{formatCurrency(user?.balance || 0)}</p>
+                {/* ✅ FIX: Correctly maps Upstox live funds here */}
+                <p className="text-[13px] font-bold text-zinc-300">{formatCurrency(displayFunds)}</p>
               </div>
             </div>
 
-            {/* ✅ NEW: Holdings mini-preview */}
             {holdings.length > 0 && (
               <div className="pt-4 border-t border-zinc-800/50 space-y-2">
                 <p className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">

@@ -1048,10 +1048,13 @@ async function startServer() {
 
       const stockKeys = stocks.map((s) => `NSE_EQ|${s}`);
       const indexKeys = Object.values(indexMap).flat();
+      
+      // ✅ FIX: Encode the keys properly for the URL 
       const allKeys = [...stockKeys, ...indexKeys].join(",");
+      const encodedKeys = encodeURIComponent(allKeys);
 
       const response = await fetch(
-        `https://api.upstox.com/v2/market-quote/quotes?instrument_key=${allKeys}`,
+        `https://api.upstox.com/v2/market-quote/quotes?instrument_key=${encodedKeys}`,
         {
           headers: {
             Authorization: `Bearer ${decryptedToken}`,
