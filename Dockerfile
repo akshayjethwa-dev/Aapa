@@ -14,8 +14,10 @@ COPY . .
 RUN npm run build
 
 # Bundle the Express backend using esbuild
-# This automatically resolves all local file paths without needing .js extensions!
 RUN npx esbuild server.ts --bundle --platform=node --format=esm --packages=external --outfile=dist-server/server.js
+
+# Bundle the migration script using esbuild
+RUN npx esbuild scripts/migrate.ts --bundle --platform=node --format=esm --packages=external --outfile=dist-server/migrate.js
 
 # Production stage
 FROM node:20-alpine AS production
@@ -27,7 +29,7 @@ COPY package*.json ./
 # Install only production dependencies
 RUN npm install --omit=dev
 
-# Copy the bundled server
+# Copy the bundled server and scripts
 COPY --from=builder /app/dist-server ./dist-server
 
 # Copy the frontend 'dist' INSIDE 'dist-server' so the backend can find it
@@ -39,5 +41,5 @@ COPY migrations ./dist-server/migrations
 # Expose port 3000 to match server.ts
 EXPOSE 3000
 
-# Start the server
+# Start ONLY the server
 CMD ["node", "dist-server/server.js"]

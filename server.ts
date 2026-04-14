@@ -11,6 +11,9 @@ import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 
+import helmet from "helmet";
+import cors from "cors";
+
 // Import PostgreSQL Database setup
 import { pool, query } from "./src/db/index";
 
@@ -20,7 +23,6 @@ import {
   registerSchema,
   loginSchema,
   placeOrderSchema,
-  // angelOneLoginSchema,  // REMOVED: not used now
   upstoxSaveTokenSchema,
   adminCreateUserSchema,
   whitelistSchema
@@ -32,7 +34,6 @@ import { logger } from "./src/utils/logger";
 // --- ENCRYPTION IMPORT ---
 import { encrypt, decrypt } from "./src/utils/encryption";
 
-// --- ADDED FOR TASK-013: Import KYC Middleware ---
 import { requireKyc } from "./src/middleware/requireKyc";
 
 // --- BROKER ABSTRACTION IMPORT ---
@@ -42,61 +43,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 dotenv.config();
-
-// Run Migration & Seed Admin
-const initDbAndSeed = async () => {
-  try {
-    const schemaPath = path.join(__dirname, "migrations", "001_initial_schema.sql");
-    const schema = await fs.readFile(schemaPath, "utf8");
-    await pool.query(schema);
-    logger.info("[DB] PostgreSQL Schema 001 initialized successfully.");
-
-    // Run Audit & Compliance Migration
-    try {
-      const migration2Path = path.join(__dirname, "migrations", "002_add_audit_compliance_fields.sql");
-      const migration2 = await fs.readFile(migration2Path, "utf8");
-      await pool.query(migration2);
-      logger.info("[DB] PostgreSQL Schema 002 (Audit Fields) applied successfully.");
-    } catch (migErr) {
-      logger.warn("[DB] Skipping Migration 002: File not found or error.", migErr);
-    }
-
-    // Run Broker Audit Logging Migration
-    try {
-      const migration3Path = path.join(__dirname, "migrations", "003_add_broker_audit_logs.sql");
-      const migration3 = await fs.readFile(migration3Path, "utf8");
-      await pool.query(migration3);
-      logger.info("[DB] PostgreSQL Schema 003 (Broker Audit Logs) applied successfully.");
-    } catch (migErr) {
-      logger.warn("[DB] Skipping Migration 003: File not found or error.", migErr);
-    }
-
-    // --- ADDED FOR TASK-013: Run KYC Migration ---
-    try {
-      const migration4Path = path.join(__dirname, "migrations", "004_add_kyc_fields.sql");
-      const migration4 = await fs.readFile(migration4Path, "utf8");
-      await pool.query(migration4);
-      logger.info("[DB] PostgreSQL Schema 004 (KYC Fields) applied successfully.");
-    } catch (migErr) {
-      logger.warn("[DB] Skipping Migration 004: File not found or error.", migErr);
-    }
-
-    // --- ADDED FOR TASK-014: Run Terms Accepted Migration ---
-    try {
-      const migration5Path = path.join(__dirname, "migrations", "005_add_terms_accepted_field.sql");
-      const migration5 = await fs.readFile(migration5Path, "utf8");
-      await pool.query(migration5);
-      logger.info("[DB] PostgreSQL Schema 005 (Terms Accepted) applied successfully.");
-    } catch (migErr) {
-      logger.warn("[DB] Skipping Migration 005: File not found or error.", migErr);
-    }
-
-  } catch (error) {
-    logger.error("[DB] Error initializing DB or seeding admins:", error);
-  }
-};
-
-await initDbAndSeed();
 
 async function startServer() {
   const app = express();
@@ -119,6 +65,35 @@ async function startServer() {
   });
 
   app.set("trust proxy", 1);
+
+  app.use(
+    helmet({
+      contentSecurityPolicy: process.env.NODE_ENV === "production" ? undefined : false,
+      crossOriginEmbedderPolicy: false,
+    })
+  );
+
+  const allowedOrigins = [
+    process.env.VITE_APP_URL || "https://aapacapital.com",
+    "http://localhost:3000",
+    "http://localhost:5173", 
+  ];
+
+  app.use(
+    cors({
+      origin: function (origin, callback) {
+        if (!origin) return callback(null, true);
+        
+        if (allowedOrigins.includes(origin)) {
+          return callback(null, true);
+        } else {
+          logger.warn(`[CORS] Blocked request from unauthorized origin: ${origin}`);
+          return callback(new Error("Not allowed by CORS"));
+        }
+      },
+      credentials: true, 
+    })
+  );
 
   app.use(express.json());
   app.use(cookieParser());
@@ -257,7 +232,7 @@ async function startServer() {
         res.cookie("refreshToken", refreshToken, {
           httpOnly: true,
           secure: process.env.NODE_ENV === "production",
-          sameSite: "strict",
+          sameSite: process.env.NODE_ENV === "production" ? "none" : "strict",
           maxAge: 7 * 24 * 60 * 60 * 1000,
         });
 
@@ -325,12 +300,10 @@ async function startServer() {
     res.clearCookie("refreshToken", {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "strict",
     });
     res.json({ success: true, message: "Logged out successfully" });
   });
-
-  // /api/auth/angelone/login REMOVED (Angel One not used now)
 
   app.get("/api/admin/users", authenticateToken, async (req: any, res, next) => {
     if (req.user.role !== "admin") return res.sendStatus(403);
@@ -446,16 +419,16 @@ async function startServer() {
       let balance = parseFloat(user?.balance) || 0;
 
       if (userToken && userToken.access_token) {
-  try {
-    const decryptedToken = decrypt(String(userToken.access_token));
-    if (decryptedToken) {  // ✅ null guard — decrypt() can return null
-      const brokerService = getBrokerService("upstox");
-      balance = await brokerService.getFunds(decryptedToken);
-    }
-  } catch (e) {
-    logger.warn("Failed to fetch Upstox funds", e);
-  }
-}
+        try {
+          const decryptedToken = decrypt(String(userToken.access_token));
+          if (decryptedToken) {
+            const brokerService = getBrokerService("upstox");
+            balance = await brokerService.getFunds(decryptedToken);
+          }
+        } catch (e) {
+          logger.warn("Failed to fetch Upstox funds", e);
+        }
+      }
 
       res.json({ ...user, balance, is_uptox_connected: !!userToken });
     } catch (e) {
@@ -463,7 +436,6 @@ async function startServer() {
     }
   });
 
-  // ---------- FIX 1: /api/auth/uptox/url ----------
   app.get("/api/auth/uptox/url", (req, res) => {
     const apiKey = process.env.UPTOX_API_KEY ?? "";
     let redirectUri = process.env.UPTOX_REDIRECT_URI ?? "";
@@ -492,7 +464,6 @@ async function startServer() {
     res.json({ url });
   });
 
-  // ---------- FIX 2 & 3: /auth/callback ----------
   app.get("/auth/callback", async (req, res, next) => {
     const { code } = req.query;
     if (!code) return res.status(400).send("No code provided.");
@@ -605,18 +576,18 @@ async function startServer() {
       let combinedHoldings: any[] = [];
 
       for (const token of tokens) {
-  if (!token.access_token) continue;
-  const decryptedToken = decrypt(String(token.access_token));
-  if (!decryptedToken) continue; // ✅ null guard
+        if (!token.access_token) continue;
+        const decryptedToken = decrypt(String(token.access_token));
+        if (!decryptedToken) continue;
 
-  try {
-    const brokerService = getBrokerService(String(token.broker));
-    const holdings = await brokerService.getHoldings(decryptedToken);
-    combinedHoldings = [...combinedHoldings, ...holdings];
-  } catch (e) {
-    logger.warn(`${token.broker} holdings error`, e);
-  }
-}
+        try {
+          const brokerService = getBrokerService(String(token.broker));
+          const holdings = await brokerService.getHoldings(decryptedToken);
+          combinedHoldings = [...combinedHoldings, ...holdings];
+        } catch (e) {
+          logger.warn(`${token.broker} holdings error`, e);
+        }
+      }
 
       if (combinedHoldings.length > 0) return res.json(combinedHoldings);
       const { rows: localHoldings } = await query(
@@ -653,83 +624,82 @@ async function startServer() {
         }
 
         const decryptedToken = decrypt(String(userToken.access_token));
-if (!decryptedToken) {
-  return res.status(500).json({ error: "Failed to decrypt broker token." });
-}
+        if (!decryptedToken) {
+          return res.status(500).json({ error: "Failed to decrypt broker token." });
+        }
 
-try {
-  const brokerService = getBrokerService(String(broker));
-  const orderRequest: OrderRequest = {
-    symbol,
-    type,
-    order_type,
-    quantity,
-    price,
-    product,
-  };
-  const orderRes = await brokerService.placeOrder(
-    decryptedToken,
-    orderRequest
-  );
+        try {
+          const brokerService = getBrokerService(String(broker));
+          const orderRequest: OrderRequest = {
+            symbol,
+            type,
+            order_type,
+            quantity,
+            price,
+            product,
+          };
+          const orderRes = await brokerService.placeOrder(
+            decryptedToken,
+            orderRequest
+          );
 
-  if (orderRes.success) {
-    await query(
-      "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, broker_order_id, status, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed', $9)",
-      [
-        userId,
-        symbol,
-        type,
-        order_type,
-        quantity,
-        price,
-        broker,
-        orderRes.order_id,
-        JSON.stringify(orderRes.raw_response),
-      ]
-    );
-    return res.json({ success: true, order_id: orderRes.order_id });
-  } else {
-    const errorMsg = orderRes.error || "Order failed";
-    await query(
-      "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8, $9)",
-      [
-        userId,
-        symbol,
-        type,
-        order_type,
-        quantity,
-        price,
-        broker,
-        errorMsg,
-        JSON.stringify(orderRes.raw_response),
-      ]
-    );
-    return res.status(400).json({ error: errorMsg });
-  }
-} catch (e: any) {
-  await query(
-    "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8, $9)",
-    [
-      userId,
-      symbol,
-      type,
-      order_type,
-      quantity,
-      price,
-      broker,
-      e.message,
-      JSON.stringify({ error: e.message }),
-    ]
-  );
-  throw new Error(`${broker} API Error`);
-}
+          if (orderRes.success) {
+            await query(
+              "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, broker_order_id, status, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed', $9)",
+              [
+                userId,
+                symbol,
+                type,
+                order_type,
+                quantity,
+                price,
+                broker,
+                orderRes.order_id,
+                JSON.stringify(orderRes.raw_response),
+              ]
+            );
+            return res.json({ success: true, order_id: orderRes.order_id });
+          } else {
+            const errorMsg = orderRes.error || "Order failed";
+            await query(
+              "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8, $9)",
+              [
+                userId,
+                symbol,
+                type,
+                order_type,
+                quantity,
+                price,
+                broker,
+                errorMsg,
+                JSON.stringify(orderRes.raw_response),
+              ]
+            );
+            return res.status(400).json({ error: errorMsg });
+          }
+        } catch (e: any) {
+          await query(
+            "INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8, $9)",
+            [
+              userId,
+              symbol,
+              type,
+              order_type,
+              quantity,
+              price,
+              broker,
+              e.message,
+              JSON.stringify({ error: e.message }),
+            ]
+          );
+          throw new Error(`${broker} API Error`);
+        }
       } catch (e) {
         next(e);
       }
     }
   );
 
-  // Market Data Arrays
   const primaryIndices = [
     "NIFTY 50",
     "SENSEX",
@@ -919,8 +889,6 @@ try {
   fetchRealPrices();
   setInterval(fetchRealPrices, 5000);
 
-  // AngelOne periodic fetch REMOVED
-
   setInterval(async () => {
     let isSimulated = false;
     try {
@@ -1003,7 +971,6 @@ try {
     );
   }
 
-  // GLOBAL ERROR HANDLER - Must be placed after ALL routes
   app.use(
     (err: Error, req: Request, res: Response, next: NextFunction) => {
       logger.error("Unhandled error", {
@@ -1025,6 +992,46 @@ try {
       `[Server] AAPA CAPITAL server running on http://0.0.0.0:3000`
     );
   });
+
+  // ========================================================
+  // --- ADDED FOR TASK 1.3: Graceful Server Shutdown ---
+  // ========================================================
+  const gracefulShutdown = async (signal: string) => {
+    logger.info(`[Server] Received ${signal}. Starting graceful shutdown...`);
+
+    // 1. Stop accepting new HTTP requests
+    server.close(() => {
+      logger.info("[Server] HTTP server stopped accepting new requests.");
+    });
+
+    // 2. Gracefully close all active WebSocket connections
+    wss.clients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        // Send a friendly disconnect message to the frontend so they don't see a random drop
+        client.send(JSON.stringify({ type: "system_shutdown", message: "Server shutting down for update or maintenance." }));
+        client.close(1000, "Server shutting down gracefully");
+      }
+    });
+    logger.info("[WebSocket] All active client connections closed.");
+
+    // 3. Terminate the PostgreSQL pool to prevent hanging queries
+    try {
+      await pool.end();
+      logger.info("[DB] PostgreSQL connection pool closed successfully.");
+    } catch (err) {
+      logger.error("[DB] Error closing PostgreSQL pool:", err);
+    }
+
+    logger.info("[Server] Graceful shutdown complete. Exiting process.");
+    
+    // 4. Exit the process cleanly (0 = success)
+    process.exit(0);
+  };
+
+  // Listen for termination signals sent by Docker or the OS
+  process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+  process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+  // ========================================================
 }
 
 startServer().catch((e) => {

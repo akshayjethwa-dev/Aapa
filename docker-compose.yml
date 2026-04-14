@@ -1,6 +1,21 @@
 version: '3.8'
 
 services:
+  # 1. NEW SERVICE: The Ephemeral Migration Container
+  migrator:
+    build: .
+    # This runs the separate migration script we built in the Dockerfile
+    command: node dist-server/migrate.js
+    environment:
+      - DATABASE_URL=postgresql://aapa:aapa@postgres:5432/aapa_db
+      - NODE_ENV=development
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy # Wait for the DB to be ready before migrating
+
+  # 2. UPDATED SERVICE: The Main App Container
   app:
     build: .
     ports:
@@ -13,6 +28,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrator:
+        condition: service_completed_successfully # Critical: Wait for migrations to finish!
 
   postgres:
     image: postgres:16-alpine
