@@ -8,7 +8,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install all dependencies (using ci for faster, reproducible builds)
-RUN npm ci
+RUN npm install
 
 COPY . .
 
@@ -35,7 +35,7 @@ RUN apk add --no-cache curl
 COPY package*.json ./
 
 # Install only production dependencies for a smaller, secure image
-RUN npm ci --omit=dev
+RUN npm install --omit=dev
 
 # Copy the bundled server and scripts from the builder stage
 COPY --from=builder /app/dist-server ./dist-server
