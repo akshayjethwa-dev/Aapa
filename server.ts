@@ -212,13 +212,15 @@ async function startServer() {
 
   app.set("trust proxy", 1);
 
+  // ✅ FIX: Added TradingView domains to CSP directives
   app.use(
     helmet({
       contentSecurityPolicy: process.env.NODE_ENV === "production" 
         ? {
             directives: {
               ...helmet.contentSecurityPolicy.getDefaultDirectives(),
-              "script-src": ["'self'", "'unsafe-inline'"],
+              "script-src": ["'self'", "'unsafe-inline'", "https://s3.tradingview.com", "https://www.tradingview.com"],
+              "frame-src": ["'self'", "https://s3.tradingview.com", "https://www.tradingview.com"],
               "style-src": ["'self'", "'unsafe-inline'"],
             },
           }
