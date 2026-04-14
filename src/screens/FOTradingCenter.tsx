@@ -9,6 +9,7 @@ import { F_O_INDICES } from '../constants/marketData';
 import { toast } from 'sonner';
 import Sparkline from '../components/Sparkline';
 import FullChartModal from '../components/FullChartModal';
+import { apiClient } from '../api/client'; // <-- ADDED IMPORT
 
 const FOTradingCenter = ({ 
   stocks, 
@@ -34,18 +35,18 @@ const FOTradingCenter = ({
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // We still check for the token's presence, but we don't need to pass it manually
+    // because apiClient handles the Authorization headers automatically.
     const token = localStorage.getItem('token');
     if (!token) return;
     
     const fetchPositions = async () => {
       try {
-        const res = await fetch('/api/portfolio/positions', {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setPositions(Array.isArray(data) ? data : []);
-        }
+        // Switched to apiClient to handle automatic token refreshing and 403s
+        const res = await apiClient.get('/api/portfolio/positions');
+        
+        const data = res.data;
+        setPositions(Array.isArray(data) ? data : []);
       } catch (err) {
         console.error('Failed to fetch positions', err);
       } finally {

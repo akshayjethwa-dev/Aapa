@@ -7,6 +7,7 @@ import Sparkline from '../components/Sparkline';
 import TradingViewWidget from '../components/TradingViewWidget';
 import { useAuthStore } from '../store/authStore';
 import AISignals from './admin/AISignals';
+import { apiClient } from '../api/client'; // <-- ADDED IMPORT
 
 const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { stocks: Record<string, number>, onMarketClick: () => void, onIndexClick: (index: string) => void, onProfileClick: () => void }) => {
   const { user } = useAuthStore();
@@ -16,29 +17,22 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
   const [eventFilter, setEventFilter] = useState('Upcoming');
   const [confirmExit, setConfirmExit] = useState<number | null>(null);
   
-  // NEW: State for Upstox OAuth popup flow
+  // State for Upstox OAuth popup flow
   const [isConnecting, setIsConnecting] = useState(false);
 
   useEffect(() => {
     const fetchPortfolio = async () => {
-      const token = localStorage.getItem('token');
-      if (!token) return;
-      
       try {
-        // Corrected API endpoint to match server.ts
-        const res = await fetch('/api/portfolio', {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
+        // Switched to apiClient to automatically handle 403s & Token Refreshes
+        const res = await apiClient.get('/api/portfolio');
         
-        if (res.ok) {
-          const data = await res.json();
-          // The backend returns the array directly, so we check if it's an array
-          const portfolioArray = Array.isArray(data) ? data : [];
-          
-          // Set both holdings and positions from the single portfolio endpoint
-          setHoldings(portfolioArray);
-          setPositions(portfolioArray); 
-        }
+        const data = res.data;
+        // The backend returns the array directly, so we check if it's an array
+        const portfolioArray = Array.isArray(data) ? data : [];
+        
+        // Set both holdings and positions from the single portfolio endpoint
+        setHoldings(portfolioArray);
+        setPositions(portfolioArray); 
       } catch (e) {
         console.error("Failed to fetch portfolio", e);
       }
@@ -49,19 +43,15 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
     return () => clearInterval(interval);
   }, []);
 
-  // NEW: Handle the Upstox OAuth Popup Flow
+  // Handle the Upstox OAuth Popup Flow
   const handleUpstoxConnect = async () => {
     setIsConnecting(true);
     try {
-      const token = localStorage.getItem('token');
-      
-      // 1. Get the Upstox Login URL from the backend
-      const res = await fetch('/api/auth/uptox/url', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      const data = await res.json();
+      // Switched to apiClient
+      const res = await apiClient.get('/api/auth/uptox/url');
+      const data = res.data;
 
-      // 2. Open the URL in a popup window
+      // Open the URL in a popup window
       const width = 500;
       const height = 700;
       const left = window.screen.width / 2 - width / 2;
@@ -72,7 +62,7 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
         `width=${width},height=${height},top=${top},left=${left},toolbar=no,menubar=no`
       );
 
-      // 3. Listen for the success message from the popup (sent by server.ts /auth/callback)
+      // Listen for the success message from the popup (sent by server.ts /auth/callback)
       const messageListener = async (event: MessageEvent) => {
         // Trust messages from localhost (ignoring ports for dev) or the exact APP URL
         const isTrustedOrigin = event.origin.includes(window.location.hostname) || event.origin === import.meta.env.VITE_APP_URL;
