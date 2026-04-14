@@ -73,8 +73,10 @@ async function startServer() {
     })
   );
 
+  // --- UPDATED: Added Railway URL to allowed origins ---
   const allowedOrigins = [
     process.env.VITE_APP_URL || "https://aapacapital.com",
+    "https://aapa-production.up.railway.app", 
     "http://localhost:3000",
     "http://localhost:5173", 
   ];
