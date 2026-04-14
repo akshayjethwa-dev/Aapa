@@ -254,16 +254,18 @@ async function startServer() {
   app.use(cookieParser());
 
   // ========================================================
-  // --- UPDATED FOR TASK 3.1: Limiters with Redis/Memory fallback ---
+  // --- UPDATED FIX: Prevent Store Reuse by passing prefix ---
   // ========================================================
-  const makeStore = () => redisConnected
-    ? new RedisStore({ sendCommand: (...args: string[]) => redisClient.sendCommand(args) })
+  const makeStore = (prefix: string) => redisConnected
+    ? new RedisStore({ 
+        sendCommand: (...args: string[]) => redisClient.sendCommand(args),
+        prefix: prefix // Isolate Redis keys for each limiter
+      })
     : undefined;
 
-  const rStore = makeStore();
-
+  const authStore = makeStore("rl:auth:");
   const authLimiter = rateLimit({
-    ...(rStore ? { store: rStore } : {}), // Conditionally pass store so MemoryStore acts as fallback
+    ...(authStore ? { store: authStore } : {}),
     windowMs: 5 * 60 * 1000,
     max: 20,
     message: { error: "Too many login attempts. Please try again in 5 minutes." },
@@ -271,8 +273,9 @@ async function startServer() {
     legacyHeaders: false,
   });
 
+  const apiStore = makeStore("rl:api:");
   const apiLimiter = rateLimit({
-    ...(rStore ? { store: rStore } : {}),
+    ...(apiStore ? { store: apiStore } : {}),
     windowMs: 60 * 1000,
     max: 300,
     message: { error: "Too many requests. Please slow down." },
@@ -280,8 +283,9 @@ async function startServer() {
     legacyHeaders: false,
   });
 
+  const aiStore = makeStore("rl:ai:");
   const aiLimiter = rateLimit({
-    ...(rStore ? { store: rStore } : {}),
+    ...(aiStore ? { store: aiStore } : {}),
     windowMs: 60 * 1000,
     max: 10,
     keyGenerator: (req: any, res: any) => req.user?.id || ipKeyGenerator(req, res),
@@ -312,9 +316,6 @@ async function startServer() {
     });
   };
 
-  // ========================================================
-  // --- UPDATED FOR TASK 4.2: Robust Healthcheck         ---
-  // ========================================================
   app.get("/api/health", async (req, res) => {
     try {
       await query("SELECT 1");
@@ -323,16 +324,16 @@ async function startServer() {
         database: "connected", 
         timestamp: new Date().toISOString() 
       });
-    } catch (error) {
+    } catch (error: any) {
       logger.error("[HealthCheck] Database ping failed:", error);
       res.status(503).json({ 
         status: "error", 
         database: "disconnected", 
+        details: error.message || String(error),
         timestamp: new Date().toISOString() 
       });
     }
   });
-  // ========================================================
 
   app.post(
     "/api/auth/register",
@@ -438,7 +439,11 @@ async function startServer() {
           },
         });
       } catch (e: any) {
-        next(e);
+        logger.error("[Auth Error]", e);
+        return res.status(500).json({ 
+          error: "Server Error during login.", 
+          details: e.message || String(e) 
+        });
       }
     }
   );
@@ -645,7 +650,6 @@ async function startServer() {
       return res.status(500).json({ error: "UPTOX_API_KEY is missing." });
     }
 
-    // Embed the user's JWT as 'state' so callback can identify who is connecting
     const state = req.headers.authorization?.split(" ")[1] || "";
 
     const url = `https://api.upstox.com/v2/login/authorization/dialog?response_type=code&client_id=${apiKey}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}`;
@@ -709,7 +713,6 @@ async function startServer() {
         return res.status(400).send(renderHtmlResponse(false, "Connection Failed!", { type: 'UPTOX_AUTH_ERROR', error: data }));
       }
 
-      // ---- NEW: Save token server-side using the JWT from 'state' ----
       const userJwt = state ? String(state) : null;
       if (userJwt) {
         try {
@@ -733,7 +736,6 @@ async function startServer() {
           upstoxBackoffUntil = 0;
           fetchRealPrices();
 
-          // Notify only: no tokens sent to frontend
           return res.send(renderHtmlResponse(true, "Connection Successful! ✓", {
             type: 'UPTOX_AUTH_SUCCESS'
           }));
@@ -742,7 +744,6 @@ async function startServer() {
         }
       }
 
-      // Fallback (no state): send token to frontend for client-side save
       res.send(renderHtmlResponse(true, "Connection Successful!", {
         type: 'UPTOX_AUTH_SUCCESS',
         token: data.access_token,
@@ -793,9 +794,6 @@ async function startServer() {
     }
   );
 
-  // ========================================================
-  // --- BULLETPROOF PORTFOLIO FETCH                      ---
-  // ========================================================
   app.get("/api/portfolio", authenticateToken, async (req: any, res, next) => {
     try {
       const { rows: tokens } = await query(
@@ -808,7 +806,6 @@ async function startServer() {
         if (!token.access_token) continue;
         
         try {
-          // 1. Move decryption into Try-Catch to prevent crashes if key changes
           const decryptedToken = decrypt(String(token.access_token));
           if (!decryptedToken) continue;
 
@@ -822,14 +819,13 @@ async function startServer() {
 
       let localHoldings: any[] = [];
       try {
-        // 2. Wrap local DB query in Try-Catch so missing table doesn't cause 500 error
         const { rows } = await query(
           "SELECT *, 'Local' as broker FROM portfolios WHERE user_id = $1",
           [req.user.id]
         );
         localHoldings = rows;
       } catch (dbErr: any) {
-        if (dbErr.code === '42P01') { // PostgreSQL error code for "undefined_table"
+        if (dbErr.code === '42P01') {
           logger.warn("[Portfolio] 'portfolios' table does not exist yet. Skipping local holdings.");
         } else {
           logger.error("[Portfolio] Database error fetching local holdings:", dbErr);
