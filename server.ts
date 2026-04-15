@@ -216,23 +216,26 @@ async function startServer() {
   app.use(express.json());
   app.use(cookieParser());
 
+  // 🚀 FIX: Made sendCommand 'async' so that if Redis disconnects, it throws a Promise Rejection.
+  // This allows passOnStoreError to catch it silently instead of crashing the route with a 500 error!
   const makeStore = (prefix: string) => redisConnected
     ? new RedisStore({ 
-        sendCommand: (...args: string[]) => {
-          if (!redisClient.isReady) throw new Error('Redis not ready');
+        sendCommand: async (...args: string[]) => {
+          if (!redisClient.isReady) {
+            throw new Error('Redis not ready');
+          }
           return redisClient.sendCommand(args);
         },
         prefix: prefix 
       })
     : undefined;
 
-  // 🚀 FIX: passOnStoreError set to true prevents app from crashing on Redis disconnects
   const authStore = makeStore("rl:auth:");
   const authLimiter = rateLimit({
     ...(authStore ? { store: authStore } : {}),
     windowMs: 5 * 60 * 1000,
     max: 20,
-    passOnStoreError: true, 
+    passOnStoreError: true, // Crucial for Railway fragile redis connections
     message: { error: "Too many login attempts. Please try again in 5 minutes." },
     standardHeaders: true,
     legacyHeaders: false,
@@ -331,7 +334,6 @@ async function startServer() {
     }
   );
 
-  // 🚀 FIX: Hyper-resilient login endpoint to catch empty bodies and DB disconnections without crashing (500)
   app.post("/api/auth/login", validate(loginSchema), async (req, res, next) => {
       try {
         if (!req.body) {
@@ -721,7 +723,6 @@ async function startServer() {
     if (!stockPrices[s]) stockPrices[s] = Math.random() * 1000 + 100;
   });
 
-  // 🚀 FIX: Correct Upstox ISIN mapping for V2 live feeds
   const stockISINMap: Record<string, string> = {
     "RELIANCE": "NSE_EQ|INE002A01018",
     "TCS": "NSE_EQ|INE467B01029",
@@ -781,7 +782,6 @@ async function startServer() {
       const indexKeys = Object.values(indexMap).flat();
       const allKeysList = [...stockKeys, ...indexKeys];
       
-      // 🚀 FIX: Prevent encoding commas. Encode individual items, THEN join with comma
       const encodedKeys = allKeysList.map(k => encodeURIComponent(k)).join(",");
 
       const response = await fetch(
@@ -820,7 +820,6 @@ async function startServer() {
 
       const data = await response.json();
 
-      // 🚀 FIX: Catch silent empty data errors from Upstox
       if (data.status === "success" && data.data) {
         const returnedKeys = Object.keys(data.data);
         
