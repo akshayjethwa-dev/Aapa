@@ -11,6 +11,7 @@ import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
 import protobuf from "protobufjs";
 
+// Removed Redis completely to prevent 500 crashes on flaky connections
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 
 import helmet from "helmet";
@@ -280,7 +281,6 @@ async function startServer() {
           userCount = parseInt(countRows[0].count);
         } catch (dbErr: any) {
           logger.error(`[Auth DB Error] DB query failed during register: ${dbErr.message}`);
-          // CHANGED: 400 -> 503 so frontend displays actual error
           return res.status(503).json({ error: "Database connection failed. If you are using a Supabase free tier, your database might be paused. Please wake it up." });
         }
 
@@ -304,7 +304,6 @@ async function startServer() {
     }
   );
 
-  // 🚀 FIX: Pre-validation mapper to prevent 400 Bad Request if frontend sends 'email' instead of 'login'
   app.post(
     "/api/auth/login", 
     (req, res, next) => {
@@ -334,7 +333,6 @@ async function startServer() {
           rows = result.rows;
         } catch (dbErr: any) {
           logger.error(`[Auth DB Error] DB query failed during login: ${dbErr.message}`);
-          // CHANGED: 400 -> 503 so frontend displays actual error
           return res.status(503).json({ error: "Database connection failed. If you are using a Supabase free tier, your database might be paused. Please log into Supabase to wake it up." });
         }
         
@@ -770,7 +768,8 @@ async function startServer() {
 
   const initMarketDataFeed = async (token: string, userId: number) => {
     try {
-      const authRes = await fetch("https://api.upstox.com/v2/feed/market-data-feed/authorize", {
+      // 🚀 FIX: Swapped to v3 endpoint because Upstox deprecated v2 causing 410 Gone errors.
+      const authRes = await fetch("https://api.upstox.com/v3/feed/market-data-feed/authorize", {
         headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
       });
 
