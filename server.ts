@@ -966,24 +966,31 @@ async function startServer() {
   let cachedTokenCount = 0;
   let lastTokenCountCheck = 0;
 
+  // 🚀 FIX: Prevented the simulator from jumping the gun and overwriting real data before the WS opens.
   setInterval(async () => {
-    let isSimulated = false;
     const now = Date.now();
     
     try {
       if (now - lastTokenCountCheck > 10000) {
-        const { rows } = await query("SELECT COUNT(*) as count FROM user_tokens");
+        const { rows } = await query("SELECT COUNT(*) as count FROM user_tokens WHERE broker = 'upstox'");
         cachedTokenCount = parseInt(rows[0].count);
         lastTokenCountCheck = now;
       }
 
-      if (cachedTokenCount === 0 || (!upstoxMarketWs || upstoxMarketWs.readyState !== WebSocket.OPEN)) {
-        isSimulated = true;
+      // If NO users are connected to Upstox, run the Demo Mode Simulator
+      if (cachedTokenCount === 0) {
         allSymbols.forEach((symbol) => {
           stockPrices[symbol] += stockPrices[symbol] * (Math.random() * 0.0002 - 0.0001);
         });
         
-        const payload = JSON.stringify({ type: "ticker", data: stockPrices, isSimulated });
+        const payload = JSON.stringify({ type: "ticker", data: stockPrices, isSimulated: true });
+        wss.clients.forEach((c) => {
+          if (c.readyState === WebSocket.OPEN) c.send(payload);
+        });
+      } else {
+        // A user IS connected. Broadcast the real prices (from snapshot or live WebSocket)
+        // and enforce that Demo Mode is OFF.
+        const payload = JSON.stringify({ type: "ticker", data: stockPrices, isSimulated: false });
         wss.clients.forEach((c) => {
           if (c.readyState === WebSocket.OPEN) c.send(payload);
         });
