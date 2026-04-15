@@ -9,6 +9,7 @@ import fs from "fs/promises";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
+import protobuf from "protobufjs"; // <-- NEW: Added Protobuf for Upstox WebSockets
 
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import RedisStore from "rate-limit-redis";
@@ -216,8 +217,6 @@ async function startServer() {
   app.use(express.json());
   app.use(cookieParser());
 
-  // 🚀 FIX: Made sendCommand 'async' so that if Redis disconnects, it throws a Promise Rejection.
-  // This allows passOnStoreError to catch it silently instead of crashing the route with a 500 error!
   const makeStore = (prefix: string) => redisConnected
     ? new RedisStore({ 
         sendCommand: async (...args: string[]) => {
@@ -235,7 +234,7 @@ async function startServer() {
     ...(authStore ? { store: authStore } : {}),
     windowMs: 5 * 60 * 1000,
     max: 20,
-    passOnStoreError: true, // Crucial for Railway fragile redis connections
+    passOnStoreError: true,
     message: { error: "Too many login attempts. Please try again in 5 minutes." },
     standardHeaders: true,
     legacyHeaders: false,
@@ -612,10 +611,9 @@ async function startServer() {
           );
 
           await query("UPDATE users SET is_uptox_connected = true WHERE id = $1", [userId]);
-
-          upstoxConsecutiveFailures = 0;
-          upstoxBackoffUntil = 0;
-          fetchRealPrices();
+          
+          // Re-initialize WebSockets now that we have a fresh token
+          initUpstoxWebSockets();
 
           return res.send(renderHtmlResponse(true, "Connection Successful! ✓", { type: 'UPTOX_AUTH_SUCCESS' }));
         } catch (jwtErr) { logger.warn("[OAuth Callback] Invalid state JWT, falling back to client-side save"); }
@@ -636,9 +634,8 @@ async function startServer() {
         );
         await query("UPDATE users SET is_uptox_connected = true WHERE id = $1", [req.user.id]);
         
-        upstoxConsecutiveFailures = 0;
-        upstoxBackoffUntil = 0;
-        fetchRealPrices();
+        // Start WebSockets
+        initUpstoxWebSockets();
         res.json({ success: true });
       } catch (e) { next(e); }
     }
@@ -751,123 +748,208 @@ async function startServer() {
     "NIFTY REALTY": ["NSE_INDEX|Nifty Realty", "NSE_INDEX|NIFTY REALTY"],
   };
 
-  let isFetchingUpstox = false;
-  let upstoxConsecutiveFailures = 0;
-  let upstoxBackoffUntil = 0;
-  let lastLogTime = 0;
 
-  const fetchRealPrices = async () => {
-    if (isFetchingUpstox) return;
-    if (Date.now() < upstoxBackoffUntil) return;
+  // =========================================================================
+  // UPSTOX WEBSOCKET INTEGRATION FOR LIVE DATA (MARKET & PORTFOLIO)
+  // =========================================================================
 
-    isFetchingUpstox = true;
+  let upstoxMarketWs: WebSocket | null = null;
+  let upstoxPortfolioWs: WebSocket | null = null;
+
+  const initUpstoxWebSockets = async () => {
     try {
-      const { rows } = await query(
-        "SELECT user_id, access_token FROM user_tokens WHERE broker = 'upstox' LIMIT 1"
-      );
+      const { rows } = await query("SELECT user_id, access_token FROM user_tokens WHERE broker = 'upstox' LIMIT 1");
       const userToken = rows[0];
       
       if (!userToken || !userToken.access_token) {
-        const now = Date.now();
-        if (now - lastLogTime > 300000) { 
-          logger.warn("[MarketData] No Upstox token found. Live data fetching is paused.");
-          lastLogTime = now;
-        }
+        logger.warn("[MarketData] No Upstox token found. Live WS paused.");
         return;
       }
 
       const decryptedToken = decrypt(String(userToken.access_token));
 
-      const stockKeys = stocks.map((s) => stockISINMap[s] || `NSE_EQ|${s}`);
-      const indexKeys = Object.values(indexMap).flat();
-      const allKeysList = [...stockKeys, ...indexKeys];
-      
-      const encodedKeys = allKeysList.map(k => encodeURIComponent(k)).join(",");
-
-      const response = await fetch(
-        `https://api.upstox.com/v2/market-quote/quotes?instrument_key=${encodedKeys}`,
-        {
-          headers: {
-            Authorization: `Bearer ${decryptedToken}`,
-            Accept: "application/json",
-          },
-          signal: AbortSignal.timeout(6000),
-        }
-      );
-
-      if (!response.ok) {
-        if (response.status === 401) {
-          logger.warn("[MarketData] Upstox token expired (401). Clearing token.");
-          await query("DELETE FROM user_tokens WHERE broker = 'upstox'");
-          await query("UPDATE users SET is_uptox_connected = false WHERE id = $1", [userToken.user_id]);
-
-          const payload = JSON.stringify({ type: "broker_disconnected", broker: "upstox" });
-          wss.clients.forEach((c) => { if (c.readyState === WebSocket.OPEN) c.send(payload); });
-
-          upstoxConsecutiveFailures = 0;
-          upstoxBackoffUntil = 0;
-        } else {
-          upstoxConsecutiveFailures++;
-          const backoffTime = Math.min(upstoxConsecutiveFailures * 5000, 60000);
-          upstoxBackoffUntil = Date.now() + backoffTime;
-          logger.warn(`[MarketData] Upstox API error ${response.status}. Backing off for ${backoffTime}ms.`);
-        }
+      // FIX: Check if decryption returned null before proceeding
+      if (!decryptedToken) {
+        logger.error("[MarketData] Failed to decrypt Upstox token. Live WS paused.");
         return;
       }
 
-      upstoxConsecutiveFailures = 0;
-      upstoxBackoffUntil = 0;
+      // 1. Initialize Market Data Feed (Protobuf)
+      await initMarketDataFeed(decryptedToken);
 
-      const data = await response.json();
+      // 2. Initialize Portfolio Feed (JSON)
+      await initPortfolioFeed(decryptedToken);
 
-      if (data.status === "success" && data.data) {
-        const returnedKeys = Object.keys(data.data);
-        
-        if (returnedKeys.length === 0) {
-            logger.warn(`[MarketData] Upstox returned 200 OK but NO DATA for instruments. Out of market hours or invalid keys.`);
-        }
-
-        const reverseMap: Record<string, string> = {};
-        Object.entries(indexMap).forEach(([internal, upstoxKeys]) => upstoxKeys.forEach((uk) => (reverseMap[uk] = internal)));
-        Object.entries(stockISINMap).forEach(([symbol, isin]) => { reverseMap[isin] = symbol; });
-
-        Object.keys(data.data).forEach((key) => {
-          const price = data.data[key].last_price;
-          if (!price) return;
-          if (reverseMap[key]) {
-             stockPrices[reverseMap[key]] = price;
-          } else {
-             const parts = key.split("|");
-             if (parts.length > 1 && allSymbols.includes(parts[1])) {
-               stockPrices[parts[1]] = price;
-             }
-          }
-        });
-      } else {
-         logger.warn(`[MarketData] Unexpected format from Upstox: ${JSON.stringify(data)}`);
-      }
     } catch (e) {
-      upstoxConsecutiveFailures++;
-      const backoffTime = Math.min(upstoxConsecutiveFailures * 5000, 60000);
-      upstoxBackoffUntil = Date.now() + backoffTime;
-      logger.error(`[MarketData] Upstox Fetch Error: ${e instanceof Error ? e.message : "Unknown"}. Backing off for ${backoffTime}ms.`);
-    } finally {
-      isFetchingUpstox = false;
+      logger.error("Failed to initialize Upstox WebSockets", e);
     }
   };
 
+  const initMarketDataFeed = async (token: string) => {
+    try {
+      // Get WS Auth URL
+      const authRes = await fetch("https://api.upstox.com/v2/feed/market-data-feed/authorize", {
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      });
+      const authData = await authRes.json();
+      
+      if (!authData?.data?.authorized_redirect_uri) {
+         logger.warn("[Upstox WS] Could not authorize Market feed.");
+         return;
+      }
+
+      // Load Protobuf Schema safely
+      let root;
+      try {
+        root = await protobuf.load(path.join(__dirname, "MarketDataFeed.proto"));
+      } catch (protoErr) {
+        logger.error("[Upstox WS] Protobuf file missing or invalid. Please ensure MarketDataFeed.proto exists.");
+        return;
+      }
+      
+      const FeedResponse = root.lookupType("com.upstox.marketdatafeeder.rpc.proto.FeedResponse");
+
+      upstoxMarketWs = new WebSocket(authData.data.authorized_redirect_uri);
+      upstoxMarketWs.binaryType = "nodebuffer"; // Required for Protobuf
+
+      upstoxMarketWs.on("open", () => {
+        logger.info("[Upstox WS] Market Data Stream Connected.");
+        
+        const stockKeys = stocks.map((s) => stockISINMap[s] || `NSE_EQ|${s}`);
+        const indexKeys = Object.values(indexMap).flat();
+        
+        // Subscribe to instruments
+        const requestPayload = {
+          guid: "aapa-market-data",
+          method: "sub",
+          data: {
+            mode: "full", // "full" gets depth, "ltpc" gets just prices
+            instrumentKeys: [...stockKeys, ...indexKeys]
+          }
+        };
+        
+        upstoxMarketWs?.send(Buffer.from(JSON.stringify(requestPayload)));
+      });
+
+      upstoxMarketWs.on("message", (data: any) => {
+        try {
+          const decoded = FeedResponse.decode(data as Buffer);
+          const payload = FeedResponse.toObject(decoded, { enums: String, bytes: String });
+          
+          // Map Upstox keys back to internal symbols
+          const reverseMap: Record<string, string> = {};
+          Object.entries(indexMap).forEach(([internal, upstoxKeys]) => upstoxKeys.forEach((uk) => (reverseMap[uk] = internal)));
+          Object.entries(stockISINMap).forEach(([symbol, isin]) => { reverseMap[isin] = symbol; });
+
+          let updated = false;
+          
+          if (payload.feeds) {
+            Object.entries(payload.feeds).forEach(([key, feedData]: [string, any]) => {
+              const price = feedData?.fullFeed?.marketFF?.ltp || feedData?.ltpcFeed?.ltp;
+              if (price) {
+                const symbol = reverseMap[key] || (key.includes('|') ? key.split('|')[1] : null);
+                if (symbol && allSymbols.includes(symbol)) {
+                  stockPrices[symbol] = price;
+                  updated = true;
+                }
+              }
+            });
+          }
+
+          // Broadcast to your React frontend via your existing websocket immediately
+          if (updated) {
+            const wsPayload = JSON.stringify({ type: "ticker", data: stockPrices });
+            wss.clients.forEach((c) => { if (c.readyState === WebSocket.OPEN) c.send(wsPayload); });
+          }
+
+        } catch (err) {
+          // If a specific binary frame fails decoding, ignore instead of crashing the server
+          logger.warn("[Upstox WS] Protobuf Decode Warning (non-fatal)", err);
+        }
+      });
+
+      upstoxMarketWs.on("close", () => {
+        logger.warn("[Upstox WS] Market Data Closed. Reconnecting in 5s...");
+        setTimeout(() => initMarketDataFeed(token), 5000);
+      });
+
+      upstoxMarketWs.on("error", (err) => {
+        logger.error("[Upstox WS] Market WS Error:", err);
+      });
+
+    } catch (err) {
+      logger.error("[Upstox WS] Market Feed Init Error", err);
+    }
+  };
+
+  const initPortfolioFeed = async (token: string) => {
+    try {
+      const authRes = await fetch("https://api.upstox.com/v2/feed/portfolio-stream-feed/authorize", {
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      });
+      const authData = await authRes.json();
+      
+      if (!authData?.data?.authorized_redirect_uri) {
+         logger.warn("[Upstox WS] Could not authorize Portfolio feed.");
+         return;
+      }
+
+      upstoxPortfolioWs = new WebSocket(authData.data.authorized_redirect_uri);
+
+      upstoxPortfolioWs.on("open", () => {
+        logger.info("[Upstox WS] Portfolio Stream Connected.");
+      });
+
+      upstoxPortfolioWs.on("message", (data: any) => {
+        try {
+          const payload = JSON.parse(data.toString());
+          
+          // If it's an order update event
+          if (payload.update_type === 'order') {
+            logger.info(`[Upstox WS] Order Update: ${payload.order_id} - ${payload.status}`);
+            
+            // Notify the frontend to refresh Holdings and Funds
+            const wsPayload = JSON.stringify({ type: "order_update", data: payload });
+            wss.clients.forEach((c) => { if (c.readyState === WebSocket.OPEN) c.send(wsPayload); });
+          }
+        } catch (err) {
+          logger.warn("[Upstox WS] Portfolio Feed Parse Error", err);
+        }
+      });
+
+      upstoxPortfolioWs.on("close", () => {
+        logger.warn("[Upstox WS] Portfolio Closed. Reconnecting in 5s...");
+        setTimeout(() => initPortfolioFeed(token), 5000);
+      });
+
+      upstoxPortfolioWs.on("error", (err) => {
+        logger.error("[Upstox WS] Portfolio WS Error:", err);
+      });
+
+    } catch (err) {
+      logger.error("[Upstox WS] Portfolio Feed Init Error", err);
+    }
+  };
+
+
   app.post("/api/market/refresh", authenticateToken, async (req: any, res: any, next: NextFunction) => {
       try {
-        await fetchRealPrices();
-        res.json({ success: true, last_prices: stockPrices });
+        // If user manually triggers a refresh, attempt to reconnect the WebSockets
+        initUpstoxWebSockets();
+        res.json({ success: true, message: "Requested WebSocket reconnection.", last_prices: stockPrices });
       } catch (e) {
         next(e);
       }
     }
   );
 
-  fetchRealPrices();
-  setInterval(fetchRealPrices, 5000);
+  // Initialize live data streams on startup
+  initUpstoxWebSockets();
+
+
+  // =========================================================================
+  // FALLBACK SIMULATOR & BROADCASTER (Keeps UI alive when WS is disconnected)
+  // =========================================================================
 
   let cachedTokenCount = 0;
   let lastTokenCountCheck = 0;
@@ -883,21 +965,23 @@ async function startServer() {
         lastTokenCountCheck = now;
       }
 
-      if (cachedTokenCount === 0) {
+      // If no valid broker token is connected, simulate tiny price movements
+      // so the charts and frontend UI don't freeze for guest users.
+      if (cachedTokenCount === 0 || (!upstoxMarketWs || upstoxMarketWs.readyState !== WebSocket.OPEN)) {
         isSimulated = true;
         allSymbols.forEach((symbol) => {
           stockPrices[symbol] += stockPrices[symbol] * (Math.random() * 0.0002 - 0.0001);
+        });
+        
+        // Broadcast simulated data
+        const payload = JSON.stringify({ type: "ticker", data: stockPrices, isSimulated });
+        wss.clients.forEach((c) => {
+          if (c.readyState === WebSocket.OPEN) c.send(payload);
         });
       }
     } catch (e) {
       logger.error("[MarketData] Error calculating simulated token count", e);
     }
-
-    const payload = JSON.stringify({ type: "ticker", data: stockPrices, isSimulated });
-    
-    wss.clients.forEach((c) => {
-      if (c.readyState === WebSocket.OPEN) c.send(payload);
-    });
   }, 1000);
 
   app.get("/api/market-status", async (req, res, next) => {
@@ -905,7 +989,7 @@ async function startServer() {
       const { rows: countRows } = await query("SELECT COUNT(*) as count FROM user_tokens");
       const { rows: tokens } = await query("SELECT user_id, updated_at FROM user_tokens");
       res.json({
-        is_fetching: parseInt(countRows[0].count) > 0,
+        is_fetching: (upstoxMarketWs && upstoxMarketWs.readyState === WebSocket.OPEN),
         token_count: parseInt(countRows[0].count),
         tokens,
         last_prices: stockPrices,
@@ -953,6 +1037,10 @@ async function startServer() {
 
     clearInterval(pingInterval);
     clearInterval(tokenRefreshInterval);
+
+    // Close Upstox websockets on shutdown
+    if (upstoxMarketWs) upstoxMarketWs.close();
+    if (upstoxPortfolioWs) upstoxPortfolioWs.close();
 
     server.close(() => { logger.info("[Server] HTTP server stopped accepting new requests."); });
 

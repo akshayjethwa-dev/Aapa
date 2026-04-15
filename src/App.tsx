@@ -102,7 +102,7 @@ function App() {
     try {
       const res = await apiClient.post('/api/market/refresh');
       if (res.data.success) {
-        setStocks(res.data.last_prices);
+        setStocks(res.data.last_prices || stocks);
         const debugRes = await apiClient.get('/api/market-status');
         setDebugInfo(debugRes.data);
       }
@@ -162,7 +162,6 @@ function App() {
   // Global Upstox Popup Listener
   useEffect(() => {
     const handleMessage = async (event: MessageEvent) => {
-      // 🚀 FIX: Allow messages if they specifically represent the known auth types, regardless of local/API strict origin mismatches in decoupled environments.
       if (event.data?.type === 'UPTOX_AUTH_SUCCESS') {
         try {
           const { token: uptoxToken, refresh_token: uptoxRefreshToken } = event.data;
@@ -192,6 +191,9 @@ function App() {
     return () => window.removeEventListener('message', handleMessage);
   }, [token, setAuth]);
 
+  // =========================================================================
+  // GLOBAL WEBSOCKET CONNECTION (Prices & Portfolio Events)
+  // =========================================================================
   useEffect(() => {
     if (!token) return;
 
@@ -223,6 +225,7 @@ function App() {
         try {
           const message = JSON.parse(event.data);
 
+          // Handle Broken Broker Session
           if (message.type === 'broker_disconnected') {
             if (message.broker === 'upstox' && user?.is_uptox_connected) {
               toast.error('Upstox session expired. Please reconnect.');
@@ -230,12 +233,32 @@ function App() {
             }
           }
 
+          // Handle Live Market Feed
           if (message.type === 'ticker') {
             setStocks(message.data);
             if (message.isSimulated !== undefined) {
               setIsDemoMode(message.isSimulated);
             }
           }
+
+          // NEW: Handle Live Upstox Order/Portfolio Updates
+          if (message.type === 'order_update') {
+             const statusStr = message.data.status ? String(message.data.status).toUpperCase() : 'UPDATED';
+             toast.info(`Upstox Order: ${statusStr}`, { description: `Order ID: ${message.data.order_id}` });
+             
+             // Auto-refresh the user's funds/balance globally when an order executes
+             apiClient.get('/api/user/profile').then(res => {
+                 if (res.data?.id && isComponentMounted) {
+                    setAuth(res.data, token);
+                 }
+             }).catch(console.error);
+
+             // Note: If you are currently on the 'portfolio' tab, the Portfolio.tsx 
+             // component will also need to refresh holdings. We accomplish this by 
+             // dispatching a custom event that Portfolio.tsx can listen for.
+             window.dispatchEvent(new CustomEvent('broker_portfolio_updated'));
+          }
+
         } catch (e) {}
       };
 
@@ -271,7 +294,7 @@ function App() {
       <Toaster position="top-center" richColors />
       <Header onProfileClick={() => setActiveTab('more')} onSearchClick={() => setIsSearchOpen(true)} />
 
-      <main className="max-w-md mx-auto pt-20">
+      <main className="max-w-md mx-auto pt-20 pb-24">
         {isDemoMode && (
           <div className="bg-amber-500 text-black py-2 px-4 text-center font-bold text-[10px] uppercase tracking-widest shadow-lg shadow-amber-500/20 z-50 relative">
             <AlertCircle size={14} className="inline mr-2 -mt-0.5" />
@@ -306,7 +329,7 @@ function App() {
       {/* Angel One Login Modal */}
       <AnimatePresence>
         {showAngelLogin && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-200 bg-black/90 backdrop-blur-md flex items-center justify-center p-6">
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[200] bg-black/90 backdrop-blur-md flex items-center justify-center p-6">
             <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} className="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-[2.5rem] p-8 space-y-6">
               <div className="flex justify-between items-center">
                 <h3 className="text-xl font-black text-white uppercase tracking-tighter">Angel One Login</h3>
@@ -338,7 +361,7 @@ function App() {
 
       <AnimatePresence mode="wait">
         {isSearchOpen && (
-          <motion.div key="search-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-150 bg-black/95 backdrop-blur-xl p-6 flex flex-col">
+          <motion.div key="search-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[150] bg-black/95 backdrop-blur-xl p-6 flex flex-col">
             <div className="flex items-center gap-4 mb-8">
               <button onClick={() => setIsSearchOpen(false)} className="p-2 -ml-2 rounded-full hover:bg-zinc-900 text-zinc-400">
                 <ChevronRight className="rotate-180" size={24} />
