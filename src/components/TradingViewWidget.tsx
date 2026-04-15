@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { getTradingViewSymbol } from '../constants/marketData';
 
 const TradingViewWidget = React.memo(({ symbol, height = "100%" }: { symbol: string, height?: string | number }) => {
   const container = useRef<HTMLDivElement>(null);
@@ -10,8 +9,11 @@ const TradingViewWidget = React.memo(({ symbol, height = "100%" }: { symbol: str
     
     setLoading(true);
     const currentContainer = container.current;
+    
+    // Clean up previous widget instance
     currentContainer.innerHTML = '';
     
+    // Create the exact DOM structure TradingView expects
     const widgetContainer = document.createElement('div');
     widgetContainer.className = 'tradingview-widget-container__widget';
     widgetContainer.style.height = '100%';
@@ -47,7 +49,6 @@ const TradingViewWidget = React.memo(({ symbol, height = "100%" }: { symbol: str
     script.src = "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
     script.type = "text/javascript";
     script.async = true;
-    script.crossOrigin = "anonymous";
     
     const config = {
       "autosize": true,
@@ -61,7 +62,6 @@ const TradingViewWidget = React.memo(({ symbol, height = "100%" }: { symbol: str
       "hide_top_toolbar": false,
       "hide_legend": false,
       "save_image": false,
-      "container_id": "tradingview_chart",
       "allow_symbol_change": true,
       "calendar": false,
       "support_host": "https://www.tradingview.com",
@@ -76,16 +76,17 @@ const TradingViewWidget = React.memo(({ symbol, height = "100%" }: { symbol: str
     
     script.innerHTML = JSON.stringify(config);
     
-    // Use a small delay to ensure the container is ready and not conflicting with animations
-    const timeoutId = setTimeout(() => {
-      if (currentContainer) {
-        currentContainer.appendChild(script);
-        setLoading(false);
-      }
-    }, 300);
+    // 🚀 FIX: Append synchronously. TradingView relies on document.currentScript 
+    // to find its container. If delayed via setTimeout, currentScript becomes null!
+    currentContainer.appendChild(script);
+
+    // Fade out the custom loading overlay after 800ms (giving iframe time to paint)
+    const overlayTimeoutId = setTimeout(() => {
+      setLoading(false);
+    }, 800);
 
     return () => {
-      clearTimeout(timeoutId);
+      clearTimeout(overlayTimeoutId);
       if (currentContainer) {
         currentContainer.innerHTML = '';
       }
