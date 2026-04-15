@@ -11,7 +11,6 @@ import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
 import protobuf from "protobufjs";
 
-// FIX: Removed Redis completely to prevent 500 crashes on flaky connections
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 
 import helmet from "helmet";
@@ -201,7 +200,6 @@ async function startServer() {
   app.use(express.json());
   app.use(cookieParser());
 
-  // FIX: Stabilized Rate Limiters using standard memory store. Prevents Redis crash 500s.
   const authLimiter = rateLimit({
     windowMs: 5 * 60 * 1000,
     max: 20,
@@ -282,7 +280,8 @@ async function startServer() {
           userCount = parseInt(countRows[0].count);
         } catch (dbErr: any) {
           logger.error(`[Auth DB Error] DB query failed during register: ${dbErr.message}`);
-          return res.status(400).json({ error: "Database connection failed. If you are using a Supabase free tier, your database might be paused. Please wake it up." });
+          // CHANGED: 400 -> 503 so frontend displays actual error
+          return res.status(503).json({ error: "Database connection failed. If you are using a Supabase free tier, your database might be paused. Please wake it up." });
         }
 
         const superAdminEmail = "bharvadvijay371@gmail.com";
@@ -305,12 +304,18 @@ async function startServer() {
     }
   );
 
-  app.post("/api/auth/login", validate(loginSchema), async (req, res, next) => {
+  // 🚀 FIX: Pre-validation mapper to prevent 400 Bad Request if frontend sends 'email' instead of 'login'
+  app.post(
+    "/api/auth/login", 
+    (req, res, next) => {
+      if (req.body && !req.body.login) {
+        req.body.login = req.body.email || req.body.mobile;
+      }
+      next();
+    },
+    validate(loginSchema), 
+    async (req: any, res: any, next: any) => {
       try {
-        if (!req.body) {
-           return res.status(400).json({ error: "Empty request payload" });
-        }
-        
         let { login, password } = req.body;
         
         if (!login || !password) {
@@ -329,7 +334,8 @@ async function startServer() {
           rows = result.rows;
         } catch (dbErr: any) {
           logger.error(`[Auth DB Error] DB query failed during login: ${dbErr.message}`);
-          return res.status(400).json({ error: "Database connection failed. If you are using a Supabase free tier, your database might be paused. Please log into Supabase to wake it up." });
+          // CHANGED: 400 -> 503 so frontend displays actual error
+          return res.status(503).json({ error: "Database connection failed. If you are using a Supabase free tier, your database might be paused. Please log into Supabase to wake it up." });
         }
         
         const user = rows[0];
@@ -725,25 +731,20 @@ async function startServer() {
   let upstoxMarketWs: WebSocket | null = null;
   let upstoxPortfolioWs: WebSocket | null = null;
 
-  // Helper function to aggressively wipe bad tokens and restore the UI button
   const purgeInvalidToken = async (userId: number, reason: string) => {
     logger.warn(`[Upstox] Purging token for user ${userId}. Reason: ${reason}`);
     
-    // 1. Delete the bad token from DB
     await query("DELETE FROM user_tokens WHERE broker = 'upstox' AND user_id = $1", [userId]);
     await query("UPDATE users SET is_uptox_connected = false WHERE id = $1", [userId]);
 
-    // 2. Broadcast to frontend so the "Connect Upstox" button instantly reappears
     const payload = JSON.stringify({ type: "broker_disconnected", broker: "upstox" });
     wss.clients.forEach((c) => { if (c.readyState === WebSocket.OPEN) c.send(payload); });
 
-    // 3. Try to connect using another user's token (if multiple users exist)
     setTimeout(initUpstoxWebSockets, 3000);
   };
 
   const initUpstoxWebSockets = async () => {
     try {
-      // Get the most recently updated token
       const { rows } = await query("SELECT user_id, access_token FROM user_tokens WHERE broker = 'upstox' ORDER BY updated_at DESC LIMIT 1");
       const userToken = rows[0];
       
@@ -773,7 +774,6 @@ async function startServer() {
         headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
       });
 
-      // 🚀 FIX: Catch ALL errors (401, 400, 403, etc.) and reset the UI!
       if (!authRes.ok) {
         await purgeInvalidToken(userId, `Market API rejected token (Status: ${authRes.status})`);
         return;
@@ -842,7 +842,6 @@ async function startServer() {
           }
 
           if (updated) {
-            // Turn OFF demo mode and push live prices
             const wsPayload = JSON.stringify({ type: "ticker", data: stockPrices, isSimulated: false });
             wss.clients.forEach((c) => { if (c.readyState === WebSocket.OPEN) c.send(wsPayload); });
           }
@@ -872,7 +871,7 @@ async function startServer() {
         headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
       });
       
-      if (!authRes.ok) return; // Handled by MarketDataFeed
+      if (!authRes.ok) return; 
 
       const authData = await authRes.json();
       
