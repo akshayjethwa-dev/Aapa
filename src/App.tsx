@@ -202,10 +202,6 @@ function App() {
     const connectWebSocket = () => {
       if (!isComponentMounted) return;
       
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
-
       const freshToken = localStorage.getItem('token') || token;
       if (!freshToken) return;
 
@@ -227,9 +223,14 @@ function App() {
 
           // Handle Broken Broker Session
           if (message.type === 'broker_disconnected') {
-            if (message.broker === 'upstox' && user?.is_uptox_connected) {
+            if (message.broker === 'upstox') {
               toast.error('Upstox session expired. Please reconnect.');
-              setAuth({ ...user, is_uptox_connected: false }, token);
+              // Fetch latest profile here instead of relying on the local user state
+              apiClient.get('/api/user/profile').then(res => {
+                  if (isComponentMounted && res.data?.id) {
+                     setAuth(res.data, freshToken);
+                  }
+              }).catch(console.error);
             }
           }
 
@@ -241,7 +242,7 @@ function App() {
             }
           }
 
-          // NEW: Handle Live Upstox Order/Portfolio Updates
+          // Handle Live Upstox Order/Portfolio Updates
           if (message.type === 'order_update') {
              const statusStr = message.data.status ? String(message.data.status).toUpperCase() : 'UPDATED';
              toast.info(`Upstox Order: ${statusStr}`, { description: `Order ID: ${message.data.order_id}` });
@@ -249,13 +250,10 @@ function App() {
              // Auto-refresh the user's funds/balance globally when an order executes
              apiClient.get('/api/user/profile').then(res => {
                  if (res.data?.id && isComponentMounted) {
-                    setAuth(res.data, token);
+                    setAuth(res.data, freshToken);
                  }
              }).catch(console.error);
 
-             // Note: If you are currently on the 'portfolio' tab, the Portfolio.tsx 
-             // component will also need to refresh holdings. We accomplish this by 
-             // dispatching a custom event that Portfolio.tsx can listen for.
              window.dispatchEvent(new CustomEvent('broker_portfolio_updated'));
           }
 
@@ -276,9 +274,14 @@ function App() {
     return () => {
       isComponentMounted = false;
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
-      if (wsRef.current) wsRef.current.close();
+      if (wsRef.current) {
+        // Silently remove the event listener to prevent infinite reconnect loops
+        // and avoid throwing the browser error when closing a connecting socket.
+        wsRef.current.onclose = null;
+        wsRef.current.close();
+      }
     };
-  }, [token, user?.is_uptox_connected]);
+  }, [token, setAuth, setIsWsConnected]); // 🚀 FIX: Removed user?.is_uptox_connected
 
   const pathname = window.location.pathname;
   if (pathname === '/terms') return <TermsOfService />;
@@ -329,7 +332,7 @@ function App() {
       {/* Angel One Login Modal */}
       <AnimatePresence>
         {showAngelLogin && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[200] bg-black/90 backdrop-blur-md flex items-center justify-center p-6">
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-200 bg-black/90 backdrop-blur-md flex items-center justify-center p-6">
             <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} className="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-[2.5rem] p-8 space-y-6">
               <div className="flex justify-between items-center">
                 <h3 className="text-xl font-black text-white uppercase tracking-tighter">Angel One Login</h3>
@@ -361,7 +364,7 @@ function App() {
 
       <AnimatePresence mode="wait">
         {isSearchOpen && (
-          <motion.div key="search-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[150] bg-black/95 backdrop-blur-xl p-6 flex flex-col">
+          <motion.div key="search-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-150 bg-black/95 backdrop-blur-xl p-6 flex flex-col">
             <div className="flex items-center gap-4 mb-8">
               <button onClick={() => setIsSearchOpen(false)} className="p-2 -ml-2 rounded-full hover:bg-zinc-900 text-zinc-400">
                 <ChevronRight className="rotate-180" size={24} />

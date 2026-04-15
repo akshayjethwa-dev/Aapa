@@ -36,10 +36,21 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
     }
   }, []);
 
+// REPLACE THIS BLOCK in Dashboard.tsx
   useEffect(() => {
     fetchPortfolio();
-    const interval = setInterval(fetchPortfolio, 5000);
-    return () => clearInterval(interval);
+    
+    // Listen for the custom real-time event dispatched by App.tsx WebSockets
+    const handlePortfolioUpdate = () => {
+      console.log("Real-time update triggered: Fetching fresh portfolio...");
+      fetchPortfolio();
+    };
+    
+    window.addEventListener('broker_portfolio_updated', handlePortfolioUpdate);
+    
+    return () => {
+      window.removeEventListener('broker_portfolio_updated', handlePortfolioUpdate);
+    };
   }, [fetchPortfolio]);
 
   const handleUpstoxConnect = async () => {

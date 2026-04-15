@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { PieChart, TrendingUp, ArrowUpRight, ArrowDownRight, CreditCard, History, ArrowRight, AlertCircle, BarChart3, Calendar, Plus, Minus, ArrowRightLeft } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart as RePieChart, Pie, Cell } from 'recharts';
@@ -13,27 +13,40 @@ const Portfolio = ({ stocks }: { stocks: Record<string, number> }) => {
   const [availableFunds, setAvailableFunds] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    const fetchHoldings = async () => {
-      try {
-        const res = await apiClient.get('/api/portfolio');
-        const payload = res.data?.data || res.data;
-        
-        // ✅ FIX: Robust payload handling to extract both holdings and funds dynamically
-        if (Array.isArray(payload)) {
-          setHoldings(payload);
-        } else if (payload && typeof payload === 'object') {
-          if (Array.isArray(payload.holdings)) setHoldings(payload.holdings);
-          if (payload.funds !== undefined) setAvailableFunds(payload.funds);
-        }
-      } catch (err) {
-        console.error('Failed to fetch portfolio', err);
-      } finally {
-        setLoading(false);
+  // 🚀 FIX: Wrapped in useCallback so it can be triggered by the event listener
+  const fetchHoldings = useCallback(async () => {
+    try {
+      const res = await apiClient.get('/api/portfolio');
+      const payload = res.data?.data || res.data;
+      
+      // ✅ FIX: Robust payload handling to extract both holdings and funds dynamically
+      if (Array.isArray(payload)) {
+        setHoldings(payload);
+      } else if (payload && typeof payload === 'object') {
+        if (Array.isArray(payload.holdings)) setHoldings(payload.holdings);
+        if (payload.funds !== undefined) setAvailableFunds(payload.funds);
       }
-    };
-    fetchHoldings();
+    } catch (err) {
+      console.error('Failed to fetch portfolio', err);
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  // 🚀 FIX: Added Event Listener for Real-Time WebSocket Portfolio Updates
+  useEffect(() => {
+    fetchHoldings();
+
+    const handlePortfolioUpdate = () => {
+      fetchHoldings();
+    };
+
+    window.addEventListener('broker_portfolio_updated', handlePortfolioUpdate);
+
+    return () => {
+      window.removeEventListener('broker_portfolio_updated', handlePortfolioUpdate);
+    };
+  }, [fetchHoldings]);
 
   // ✅ FIX: Determine correct funds to display (Upstox priority over local balance)
   const displayFunds = availableFunds !== null ? availableFunds : (user?.balance || 0);
