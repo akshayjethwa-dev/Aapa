@@ -11,7 +11,6 @@ import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
 import protobuf from "protobufjs";
 
-// Removed Redis completely to prevent 500 crashes on flaky connections
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 
 import helmet from "helmet";
@@ -684,7 +683,7 @@ async function startServer() {
   const stocks = ["RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "BHARTIARTL", "SBIN", "LICI", "ITC", "HINDUNILVR"];
   const allSymbols = [...primaryIndices, ...secondaryIndices, ...stocks];
 
-  const stockPrices: Record<string, number> = {
+  let stockPrices: Record<string, number> = {
     "NIFTY 50": 22145.2, SENSEX: 72850.4, BANKNIFTY: 46800.15, FINNIFTY: 20850.6, "MIDCAP NIFTY": 10920.45, "SMALLCAP NIFTY": 16150.3,
     "NIFTY IT": 37850.2, "NIFTY AUTO": 20150.4, "NIFTY PHARMA": 18920.15, "NIFTY METAL": 7950.6, "NIFTY FMCG": 54120.3, "NIFTY REALTY": 890.45,
     RELIANCE: 2985.4, TCS: 4120.15, HDFCBANK: 1450.6, INFY: 1680.4, ICICIBANK: 1050.2, BHARTIARTL: 1120.3, SBIN: 750.45, LICI: 940.2, ITC: 410.15, HINDUNILVR: 2380.6,
@@ -707,19 +706,20 @@ async function startServer() {
     "HINDUNILVR": "NSE_EQ|INE030A01027"
   };
 
+  // 🚀 FIX: Removed duplicated and incorrect casing keys to prevent 400 Bad Request from Upstox!
   const indexMap: Record<string, string[]> = {
-    "NIFTY 50": ["NSE_INDEX|Nifty 50", "NSE_INDEX|NIFTY 50"],
-    BANKNIFTY: ["NSE_INDEX|Nifty Bank", "NSE_INDEX|NIFTY BANK"],
-    FINNIFTY: ["NSE_INDEX|Nifty Fin Service", "NSE_INDEX|NIFTY FIN SERVICE"],
-    "MIDCAP NIFTY": ["NSE_INDEX|Nifty Midcap 100", "NSE_INDEX|NIFTY MIDCAP 100"],
-    SENSEX: ["BSE_INDEX|SENSEX", "BSE_INDEX|Sensex"],
-    "SMALLCAP NIFTY": ["NSE_INDEX|Nifty Smallcap 100", "NSE_INDEX|NIFTY SMALLCAP 100"],
-    "NIFTY IT": ["NSE_INDEX|Nifty IT", "NSE_INDEX|NIFTY IT"],
-    "NIFTY AUTO": ["NSE_INDEX|Nifty Auto", "NSE_INDEX|NIFTY AUTO"],
-    "NIFTY PHARMA": ["NSE_INDEX|Nifty Pharma", "NSE_INDEX|NIFTY PHARMA"],
-    "NIFTY METAL": ["NSE_INDEX|Nifty Metal", "NSE_INDEX|NIFTY METAL"],
-    "NIFTY FMCG": ["NSE_INDEX|Nifty FMCG", "NSE_INDEX|NIFTY FMCG"],
-    "NIFTY REALTY": ["NSE_INDEX|Nifty Realty", "NSE_INDEX|NIFTY REALTY"],
+    "NIFTY 50": ["NSE_INDEX|Nifty 50"],
+    BANKNIFTY: ["NSE_INDEX|Nifty Bank"],
+    FINNIFTY: ["NSE_INDEX|Nifty Fin Service"],
+    "MIDCAP NIFTY": ["NSE_INDEX|Nifty Midcap 100"],
+    SENSEX: ["BSE_INDEX|SENSEX"],
+    "SMALLCAP NIFTY": ["NSE_INDEX|Nifty Smallcap 100"],
+    "NIFTY IT": ["NSE_INDEX|Nifty IT"],
+    "NIFTY AUTO": ["NSE_INDEX|Nifty Auto"],
+    "NIFTY PHARMA": ["NSE_INDEX|Nifty Pharma"],
+    "NIFTY METAL": ["NSE_INDEX|Nifty Metal"],
+    "NIFTY FMCG": ["NSE_INDEX|Nifty FMCG"],
+    "NIFTY REALTY": ["NSE_INDEX|Nifty Realty"],
   };
 
   // =========================================================================
@@ -772,13 +772,21 @@ async function startServer() {
       const indexKeys = Object.values(indexMap).flat();
       const allKeysList = [...stockKeys, ...indexKeys];
 
+      // 🚀 FIX: Instantly wipe dummy data. If snapshot fails, it will show 0 so you know it failed.
+      allSymbols.forEach((s) => { stockPrices[s] = 0; });
+
       // =========================================================================
       // 1. FETCH INITIAL SNAPSHOT (Gets closing prices if market is closed)
       // =========================================================================
       try {
         const encodedKeys = allKeysList.map(k => encodeURIComponent(k)).join(",");
         const quoteRes = await fetch(`https://api.upstox.com/v2/market-quote/quotes?instrument_key=${encodedKeys}`, {
-          headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }
+          // 🚀 FIX: Upstox REQUIRES Api-Version header for quotes
+          headers: { 
+            Authorization: `Bearer ${token}`, 
+            Accept: "application/json",
+            "Api-Version": "2.0"
+          }
         });
 
         if (quoteRes.ok) {
@@ -805,6 +813,9 @@ async function startServer() {
               wss.clients.forEach((c) => { if (c.readyState === WebSocket.OPEN) c.send(wsPayload); });
             }
           }
+        } else {
+           const errTxt = await quoteRes.text();
+           logger.error(`[Upstox] Snapshot API Failed: ${quoteRes.status} - ${errTxt}`);
         }
       } catch (snapshotErr) {
         logger.warn("[Upstox] Failed to fetch initial snapshot", snapshotErr);
@@ -966,7 +977,6 @@ async function startServer() {
   let cachedTokenCount = 0;
   let lastTokenCountCheck = 0;
 
-  // 🚀 FIX: Prevented the simulator from jumping the gun and overwriting real data before the WS opens.
   setInterval(async () => {
     const now = Date.now();
     
@@ -977,10 +987,12 @@ async function startServer() {
         lastTokenCountCheck = now;
       }
 
-      // If NO users are connected to Upstox, run the Demo Mode Simulator
+      // 🚀 FIX: Prevented the simulator from overriding real data.
       if (cachedTokenCount === 0) {
         allSymbols.forEach((symbol) => {
-          stockPrices[symbol] += stockPrices[symbol] * (Math.random() * 0.0002 - 0.0001);
+          if (stockPrices[symbol] > 0) {
+             stockPrices[symbol] += stockPrices[symbol] * (Math.random() * 0.0002 - 0.0001);
+          }
         });
         
         const payload = JSON.stringify({ type: "ticker", data: stockPrices, isSimulated: true });
@@ -988,8 +1000,7 @@ async function startServer() {
           if (c.readyState === WebSocket.OPEN) c.send(payload);
         });
       } else {
-        // A user IS connected. Broadcast the real prices (from snapshot or live WebSocket)
-        // and enforce that Demo Mode is OFF.
+        // Broadcast pure real data (even if 0) without any simulated changes
         const payload = JSON.stringify({ type: "ticker", data: stockPrices, isSimulated: false });
         wss.clients.forEach((c) => {
           if (c.readyState === WebSocket.OPEN) c.send(payload);
