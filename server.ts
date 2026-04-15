@@ -768,7 +768,51 @@ async function startServer() {
 
   const initMarketDataFeed = async (token: string, userId: number) => {
     try {
-      // 🚀 FIX: Swapped to v3 endpoint because Upstox deprecated v2 causing 410 Gone errors.
+      const stockKeys = stocks.map((s) => stockISINMap[s] || `NSE_EQ|${s}`);
+      const indexKeys = Object.values(indexMap).flat();
+      const allKeysList = [...stockKeys, ...indexKeys];
+
+      // =========================================================================
+      // 1. FETCH INITIAL SNAPSHOT (Gets closing prices if market is closed)
+      // =========================================================================
+      try {
+        const encodedKeys = allKeysList.map(k => encodeURIComponent(k)).join(",");
+        const quoteRes = await fetch(`https://api.upstox.com/v2/market-quote/quotes?instrument_key=${encodedKeys}`, {
+          headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }
+        });
+
+        if (quoteRes.ok) {
+          const quoteData = await quoteRes.json();
+          const reverseMap: Record<string, string> = {};
+          Object.entries(indexMap).forEach(([internal, upstoxKeys]) => upstoxKeys.forEach((uk) => (reverseMap[uk] = internal)));
+          Object.entries(stockISINMap).forEach(([symbol, isin]) => { reverseMap[isin] = symbol; });
+
+          if (quoteData.data) {
+            let updated = false;
+            Object.keys(quoteData.data).forEach((key) => {
+              const price = quoteData.data[key].last_price;
+              if (price) {
+                const symbol = reverseMap[key] || (key.includes('|') ? key.split('|')[1] : null);
+                if (symbol && allSymbols.includes(symbol)) {
+                  stockPrices[symbol] = price;
+                  updated = true;
+                }
+              }
+            });
+            
+            if (updated) {
+              const wsPayload = JSON.stringify({ type: "ticker", data: stockPrices, isSimulated: false });
+              wss.clients.forEach((c) => { if (c.readyState === WebSocket.OPEN) c.send(wsPayload); });
+            }
+          }
+        }
+      } catch (snapshotErr) {
+        logger.warn("[Upstox] Failed to fetch initial snapshot", snapshotErr);
+      }
+
+      // =========================================================================
+      // 2. CONNECT WEBSOCKET (Listens for live ticks when market is open)
+      // =========================================================================
       const authRes = await fetch("https://api.upstox.com/v3/feed/market-data-feed/authorize", {
         headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
       });
@@ -801,15 +845,12 @@ async function startServer() {
       upstoxMarketWs.on("open", () => {
         logger.info("[Upstox WS] Market Data Stream Connected.");
         
-        const stockKeys = stocks.map((s) => stockISINMap[s] || `NSE_EQ|${s}`);
-        const indexKeys = Object.values(indexMap).flat();
-        
         const requestPayload = {
           guid: "aapa-market-data",
           method: "sub",
           data: {
             mode: "full",
-            instrumentKeys: [...stockKeys, ...indexKeys]
+            instrumentKeys: allKeysList
           }
         };
         
