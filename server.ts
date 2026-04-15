@@ -749,7 +749,7 @@ async function startServer() {
   };
 
 
-  // =========================================================================
+// =========================================================================
   // UPSTOX WEBSOCKET INTEGRATION FOR LIVE DATA (MARKET & PORTFOLIO)
   // =========================================================================
 
@@ -767,30 +767,40 @@ async function startServer() {
       }
 
       const decryptedToken = decrypt(String(userToken.access_token));
-
-      // FIX: Check if decryption returned null before proceeding
+      
       if (!decryptedToken) {
         logger.error("[MarketData] Failed to decrypt Upstox token. Live WS paused.");
         return;
       }
 
-      // 1. Initialize Market Data Feed (Protobuf)
-      await initMarketDataFeed(decryptedToken);
-
-      // 2. Initialize Portfolio Feed (JSON)
-      await initPortfolioFeed(decryptedToken);
+      // Pass the user_id so we can disconnect them if the token is expired
+      await initMarketDataFeed(decryptedToken, userToken.user_id);
+      await initPortfolioFeed(decryptedToken, userToken.user_id);
 
     } catch (e) {
       logger.error("Failed to initialize Upstox WebSockets", e);
     }
   };
 
-  const initMarketDataFeed = async (token: string) => {
+  const initMarketDataFeed = async (token: string, userId: number) => {
     try {
       // Get WS Auth URL
       const authRes = await fetch("https://api.upstox.com/v2/feed/market-data-feed/authorize", {
         headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
       });
+
+      // 🚀 FIX: IF TOKEN IS EXPIRED, TELL THE FRONTEND TO SHOW THE CONNECT BUTTON AGAIN
+      if (authRes.status === 401) {
+        logger.warn("[MarketData] Upstox token expired (401). Clearing token and notifying UI.");
+        await query("DELETE FROM user_tokens WHERE broker = 'upstox' AND user_id = $1", [userId]);
+        await query("UPDATE users SET is_uptox_connected = false WHERE id = $1", [userId]);
+
+        // Broadcast disconnect to frontend (this brings the button back)
+        const payload = JSON.stringify({ type: "broker_disconnected", broker: "upstox" });
+        wss.clients.forEach((c) => { if (c.readyState === WebSocket.OPEN) c.send(payload); });
+        return;
+      }
+
       const authData = await authRes.json();
       
       if (!authData?.data?.authorized_redirect_uri) {
@@ -858,19 +868,18 @@ async function startServer() {
 
           // Broadcast to your React frontend via your existing websocket immediately
           if (updated) {
-            const wsPayload = JSON.stringify({ type: "ticker", data: stockPrices });
+            const wsPayload = JSON.stringify({ type: "ticker", data: stockPrices, isSimulated: false });
             wss.clients.forEach((c) => { if (c.readyState === WebSocket.OPEN) c.send(wsPayload); });
           }
 
         } catch (err) {
-          // If a specific binary frame fails decoding, ignore instead of crashing the server
           logger.warn("[Upstox WS] Protobuf Decode Warning (non-fatal)", err);
         }
       });
 
       upstoxMarketWs.on("close", () => {
         logger.warn("[Upstox WS] Market Data Closed. Reconnecting in 5s...");
-        setTimeout(() => initMarketDataFeed(token), 5000);
+        setTimeout(() => initMarketDataFeed(token, userId), 5000);
       });
 
       upstoxMarketWs.on("error", (err) => {
@@ -882,11 +891,14 @@ async function startServer() {
     }
   };
 
-  const initPortfolioFeed = async (token: string) => {
+  const initPortfolioFeed = async (token: string, userId: number) => {
     try {
       const authRes = await fetch("https://api.upstox.com/v2/feed/portfolio-stream-feed/authorize", {
         headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
       });
+      
+      if (authRes.status === 401) return; // Handled by MarketDataFeed
+
       const authData = await authRes.json();
       
       if (!authData?.data?.authorized_redirect_uri) {
@@ -904,11 +916,8 @@ async function startServer() {
         try {
           const payload = JSON.parse(data.toString());
           
-          // If it's an order update event
           if (payload.update_type === 'order') {
             logger.info(`[Upstox WS] Order Update: ${payload.order_id} - ${payload.status}`);
-            
-            // Notify the frontend to refresh Holdings and Funds
             const wsPayload = JSON.stringify({ type: "order_update", data: payload });
             wss.clients.forEach((c) => { if (c.readyState === WebSocket.OPEN) c.send(wsPayload); });
           }
@@ -919,7 +928,7 @@ async function startServer() {
 
       upstoxPortfolioWs.on("close", () => {
         logger.warn("[Upstox WS] Portfolio Closed. Reconnecting in 5s...");
-        setTimeout(() => initPortfolioFeed(token), 5000);
+        setTimeout(() => initPortfolioFeed(token, userId), 5000);
       });
 
       upstoxPortfolioWs.on("error", (err) => {
@@ -934,7 +943,6 @@ async function startServer() {
 
   app.post("/api/market/refresh", authenticateToken, async (req: any, res: any, next: NextFunction) => {
       try {
-        // If user manually triggers a refresh, attempt to reconnect the WebSockets
         initUpstoxWebSockets();
         res.json({ success: true, message: "Requested WebSocket reconnection.", last_prices: stockPrices });
       } catch (e) {
