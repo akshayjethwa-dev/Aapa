@@ -9,11 +9,10 @@ import fs from "fs/promises";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
-import protobuf from "protobufjs"; // <-- NEW: Added Protobuf for Upstox WebSockets
+import protobuf from "protobufjs";
 
+// FIX: Removed Redis completely to prevent 500 crashes on flaky connections
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
-import RedisStore from "rate-limit-redis";
-import { createClient } from "redis";
 
 import helmet from "helmet";
 import cors from "cors";
@@ -51,21 +50,6 @@ async function startServer() {
 
   const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret";
   const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || "fallback-refresh-secret";
-
-  const redisClient = createClient({
-    url: process.env.REDIS_URL || 'redis://localhost:6379',
-  });
-
-  let redisConnected = false;
-  redisClient.on('error', (err) => logger.error('[Redis] Client Error', err));
-  
-  try {
-    await redisClient.connect();
-    redisConnected = true;
-    logger.info('[Redis] Connected for centralized rate limiting');
-  } catch (e) {
-    logger.warn('[Redis] Connection failed — using in-memory rate limiting fallback.');
-  }
 
   wss.on("connection", (socket, req) => {
     const ws = socket as ExtWebSocket;
@@ -217,46 +201,26 @@ async function startServer() {
   app.use(express.json());
   app.use(cookieParser());
 
-  const makeStore = (prefix: string) => redisConnected
-    ? new RedisStore({ 
-        sendCommand: async (...args: string[]) => {
-          if (!redisClient.isReady) {
-            throw new Error('Redis not ready');
-          }
-          return redisClient.sendCommand(args);
-        },
-        prefix: prefix 
-      })
-    : undefined;
-
-  const authStore = makeStore("rl:auth:");
+  // FIX: Stabilized Rate Limiters using standard memory store. Prevents Redis crash 500s.
   const authLimiter = rateLimit({
-    ...(authStore ? { store: authStore } : {}),
     windowMs: 5 * 60 * 1000,
     max: 20,
-    passOnStoreError: true,
     message: { error: "Too many login attempts. Please try again in 5 minutes." },
     standardHeaders: true,
     legacyHeaders: false,
   });
 
-  const apiStore = makeStore("rl:api:");
   const apiLimiter = rateLimit({
-    ...(apiStore ? { store: apiStore } : {}),
     windowMs: 60 * 1000,
     max: 300,
-    passOnStoreError: true,
     message: { error: "Too many requests. Please slow down." },
     standardHeaders: true,
     legacyHeaders: false,
   });
 
-  const aiStore = makeStore("rl:ai:");
   const aiLimiter = rateLimit({
-    ...(aiStore ? { store: aiStore } : {}),
     windowMs: 60 * 1000,
     max: 10,
-    passOnStoreError: true,
     keyGenerator: (req: any, res: any) => req.user?.id || ipKeyGenerator(req, res),
     message: { error: "AI signal limit reached. Please wait." },
     standardHeaders: true,
@@ -311,8 +275,17 @@ async function startServer() {
 
         logger.info(`[Auth] Registration attempt for email: ${email}`);
         const hashedPassword = await bcrypt.hash(String(password), 10);
-        const { rows: countRows } = await query("SELECT COUNT(*) as count FROM users");
-        const userCount = parseInt(countRows[0].count);
+        
+        let userCount = 0;
+        try {
+          const { rows: countRows } = await query("SELECT COUNT(*) as count FROM users");
+          userCount = parseInt(countRows[0].count);
+        } catch (dbErr: any) {
+          logger.error(`[Auth DB Error] DB query failed during register: ${dbErr.message}`);
+          // FIX: Return clear 400 instead of 500 so UI shows message properly
+          return res.status(400).json({ error: "Database connection failed. If you are using a Supabase free tier, your database might be paused. Please wake it up." });
+        }
+
         const superAdminEmail = "bharvadvijay371@gmail.com";
         const role = userCount === 0 || email === superAdminEmail ? "admin" : "user";
 
@@ -357,7 +330,8 @@ async function startServer() {
           rows = result.rows;
         } catch (dbErr: any) {
           logger.error(`[Auth DB Error] DB query failed during login: ${dbErr.message}`);
-          return res.status(500).json({ error: "Database error during login. Please try again." });
+          // FIX: Return clear 400 instead of crashing with 500 when Supabase sleeps
+          return res.status(400).json({ error: "Database connection failed. If you are using a Supabase free tier, your database might be paused. Please log into Supabase to wake it up." });
         }
         
         const user = rows[0];
@@ -612,7 +586,6 @@ async function startServer() {
 
           await query("UPDATE users SET is_uptox_connected = true WHERE id = $1", [userId]);
           
-          // Re-initialize WebSockets now that we have a fresh token
           initUpstoxWebSockets();
 
           return res.send(renderHtmlResponse(true, "Connection Successful! ✓", { type: 'UPTOX_AUTH_SUCCESS' }));
@@ -634,7 +607,6 @@ async function startServer() {
         );
         await query("UPDATE users SET is_uptox_connected = true WHERE id = $1", [req.user.id]);
         
-        // Start WebSockets
         initUpstoxWebSockets();
         res.json({ success: true });
       } catch (e) { next(e); }
@@ -748,11 +720,6 @@ async function startServer() {
     "NIFTY REALTY": ["NSE_INDEX|Nifty Realty", "NSE_INDEX|NIFTY REALTY"],
   };
 
-
-// =========================================================================
-  // UPSTOX WEBSOCKET INTEGRATION FOR LIVE DATA (MARKET & PORTFOLIO)
-  // =========================================================================
-
   let upstoxMarketWs: WebSocket | null = null;
   let upstoxPortfolioWs: WebSocket | null = null;
 
@@ -773,7 +740,6 @@ async function startServer() {
         return;
       }
 
-      // Pass the user_id so we can disconnect them if the token is expired
       await initMarketDataFeed(decryptedToken, userToken.user_id);
       await initPortfolioFeed(decryptedToken, userToken.user_id);
 
@@ -784,18 +750,15 @@ async function startServer() {
 
   const initMarketDataFeed = async (token: string, userId: number) => {
     try {
-      // Get WS Auth URL
       const authRes = await fetch("https://api.upstox.com/v2/feed/market-data-feed/authorize", {
         headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
       });
 
-      // 🚀 FIX: IF TOKEN IS EXPIRED, TELL THE FRONTEND TO SHOW THE CONNECT BUTTON AGAIN
       if (authRes.status === 401) {
         logger.warn("[MarketData] Upstox token expired (401). Clearing token and notifying UI.");
         await query("DELETE FROM user_tokens WHERE broker = 'upstox' AND user_id = $1", [userId]);
         await query("UPDATE users SET is_uptox_connected = false WHERE id = $1", [userId]);
 
-        // Broadcast disconnect to frontend (this brings the button back)
         const payload = JSON.stringify({ type: "broker_disconnected", broker: "upstox" });
         wss.clients.forEach((c) => { if (c.readyState === WebSocket.OPEN) c.send(payload); });
         return;
@@ -808,7 +771,6 @@ async function startServer() {
          return;
       }
 
-      // Load Protobuf Schema safely
       let root;
       try {
         root = await protobuf.load(path.join(__dirname, "MarketDataFeed.proto"));
@@ -820,7 +782,7 @@ async function startServer() {
       const FeedResponse = root.lookupType("com.upstox.marketdatafeeder.rpc.proto.FeedResponse");
 
       upstoxMarketWs = new WebSocket(authData.data.authorized_redirect_uri);
-      upstoxMarketWs.binaryType = "nodebuffer"; // Required for Protobuf
+      upstoxMarketWs.binaryType = "nodebuffer"; 
 
       upstoxMarketWs.on("open", () => {
         logger.info("[Upstox WS] Market Data Stream Connected.");
@@ -828,12 +790,11 @@ async function startServer() {
         const stockKeys = stocks.map((s) => stockISINMap[s] || `NSE_EQ|${s}`);
         const indexKeys = Object.values(indexMap).flat();
         
-        // Subscribe to instruments
         const requestPayload = {
           guid: "aapa-market-data",
           method: "sub",
           data: {
-            mode: "full", // "full" gets depth, "ltpc" gets just prices
+            mode: "full",
             instrumentKeys: [...stockKeys, ...indexKeys]
           }
         };
@@ -846,7 +807,6 @@ async function startServer() {
           const decoded = FeedResponse.decode(data as Buffer);
           const payload = FeedResponse.toObject(decoded, { enums: String, bytes: String });
           
-          // Map Upstox keys back to internal symbols
           const reverseMap: Record<string, string> = {};
           Object.entries(indexMap).forEach(([internal, upstoxKeys]) => upstoxKeys.forEach((uk) => (reverseMap[uk] = internal)));
           Object.entries(stockISINMap).forEach(([symbol, isin]) => { reverseMap[isin] = symbol; });
@@ -866,7 +826,6 @@ async function startServer() {
             });
           }
 
-          // Broadcast to your React frontend via your existing websocket immediately
           if (updated) {
             const wsPayload = JSON.stringify({ type: "ticker", data: stockPrices, isSimulated: false });
             wss.clients.forEach((c) => { if (c.readyState === WebSocket.OPEN) c.send(wsPayload); });
@@ -897,7 +856,7 @@ async function startServer() {
         headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
       });
       
-      if (authRes.status === 401) return; // Handled by MarketDataFeed
+      if (authRes.status === 401) return; 
 
       const authData = await authRes.json();
       
@@ -951,13 +910,11 @@ async function startServer() {
     }
   );
 
-  // Initialize live data streams on startup
-  initUpstoxWebSockets();
-
-
-  // =========================================================================
-  // FALLBACK SIMULATOR & BROADCASTER (Keeps UI alive when WS is disconnected)
-  // =========================================================================
+  try {
+    initUpstoxWebSockets();
+  } catch (err) {
+    logger.error("Failed to start initial websockets", err);
+  }
 
   let cachedTokenCount = 0;
   let lastTokenCountCheck = 0;
@@ -973,15 +930,12 @@ async function startServer() {
         lastTokenCountCheck = now;
       }
 
-      // If no valid broker token is connected, simulate tiny price movements
-      // so the charts and frontend UI don't freeze for guest users.
       if (cachedTokenCount === 0 || (!upstoxMarketWs || upstoxMarketWs.readyState !== WebSocket.OPEN)) {
         isSimulated = true;
         allSymbols.forEach((symbol) => {
           stockPrices[symbol] += stockPrices[symbol] * (Math.random() * 0.0002 - 0.0001);
         });
         
-        // Broadcast simulated data
         const payload = JSON.stringify({ type: "ticker", data: stockPrices, isSimulated });
         wss.clients.forEach((c) => {
           if (c.readyState === WebSocket.OPEN) c.send(payload);
@@ -1044,9 +998,7 @@ async function startServer() {
     logger.info(`[Server] Received ${signal}. Starting graceful shutdown...`);
 
     clearInterval(pingInterval);
-    clearInterval(tokenRefreshInterval);
 
-    // Close Upstox websockets on shutdown
     if (upstoxMarketWs) upstoxMarketWs.close();
     if (upstoxPortfolioWs) upstoxPortfolioWs.close();
 
@@ -1060,7 +1012,6 @@ async function startServer() {
     });
 
     try { await pool.end(); } catch (err) {}
-    try { if (redisConnected) await redisClient.quit(); } catch (err) {}
 
     process.exit(0);
   };
