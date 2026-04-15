@@ -837,7 +837,8 @@ async function startServer() {
         return;
       }
       
-      const FeedResponse = root.lookupType("com.upstox.marketdatafeeder.rpc.proto.FeedResponse");
+      // 1. FIXED PROTOBUF PACKAGE NAME
+      const FeedResponse = root.lookupType("com.upstox.marketdatafeederv3udapi.rpc.proto.FeedResponse");
 
       upstoxMarketWs = new WebSocket(authData.data.authorized_redirect_uri);
       upstoxMarketWs.binaryType = "nodebuffer"; 
@@ -854,7 +855,8 @@ async function startServer() {
           }
         };
         
-        upstoxMarketWs?.send(Buffer.from(JSON.stringify(requestPayload)));
+        // 2. FIXED: SEND AS JSON STRING, NOT BUFFER
+        upstoxMarketWs?.send(JSON.stringify(requestPayload)); 
       });
 
       upstoxMarketWs.on("message", (data: any) => {
@@ -870,7 +872,12 @@ async function startServer() {
           
           if (payload.feeds) {
             Object.entries(payload.feeds).forEach(([key, feedData]: [string, any]) => {
-              const price = feedData?.fullFeed?.marketFF?.ltp || feedData?.ltpcFeed?.ltp;
+                
+              // 3. FIXED: CORRECT NESTED PATH FOR 'ltp'
+              const price = feedData?.fullFeed?.marketFF?.ltpc?.ltp || 
+                            feedData?.fullFeed?.indexFF?.ltpc?.ltp || 
+                            feedData?.ltpc?.ltp;
+
               if (price) {
                 const symbol = reverseMap[key] || (key.includes('|') ? key.split('|')[1] : null);
                 if (symbol && allSymbols.includes(symbol)) {
@@ -886,8 +893,9 @@ async function startServer() {
             wss.clients.forEach((c) => { if (c.readyState === WebSocket.OPEN) c.send(wsPayload); });
           }
 
-        } catch (err) {
-          logger.warn("[Upstox WS] Protobuf Decode Warning (non-fatal)");
+        } catch (err: any) {
+          // Log the actual error message so you aren't flying blind in the future
+          logger.warn(`[Upstox WS] Protobuf Decode Warning: ${err.message}`);
         }
       });
 
