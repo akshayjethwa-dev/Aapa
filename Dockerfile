@@ -46,6 +46,9 @@ COPY --from=builder /app/dist ./dist-server/dist
 # Copy migrations INSIDE 'dist-server' so the backend can run the SQL files
 COPY migrations ./dist-server/migrations
 
+# ---> FIX: Copy the required Protobuf schema into the production container
+COPY --from=builder /app/MarketDataFeed.proto ./
+
 # Expose port 3000 to match server.ts
 EXPOSE 3000
 
