@@ -44,19 +44,39 @@ interface ExtWebSocket extends WebSocket {
 }
 
 // --- MARKET HOURS UTILITY (IST) ---
-const isMarketOpen = () => {
+const getMarketPhase = (): 'LIVE' | 'PRE_OPEN' | 'CLOSED' => {
   const now = new Date();
-  const istTime = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
-  const day = istTime.getDay();
-  const hours = istTime.getHours();
-  const mins = istTime.getMinutes();
   
-  // Weekend check
-  if (day === 0 || day === 6) return false; 
+  // Format to IST strictly
+  const options: Intl.DateTimeFormatOptions = { 
+    timeZone: 'Asia/Kolkata', 
+    hour: 'numeric', 
+    minute: 'numeric', 
+    hour12: false, 
+    weekday: 'short' 
+  };
+  const formatter = new Intl.DateTimeFormat('en-US', options);
+  const parts = formatter.formatToParts(now);
+
+  let hour = 0, minute = 0, weekday = '';
+  parts.forEach(p => {
+    if (p.type === 'hour') hour = parseInt(p.value, 10);
+    if (p.type === 'minute') minute = parseInt(p.value, 10);
+    if (p.type === 'weekday') weekday = p.value;
+  });
+
+  // Weekends are closed
+  if (weekday === 'Sat' || weekday === 'Sun') return 'CLOSED';
+
+  const timeInMinutes = hour * 60 + minute;
+  const preOpenStart = 9 * 60; // 09:00 AM IST
+  const marketOpen = 9 * 60 + 15; // 09:15 AM IST
+  const marketClose = 15 * 60 + 30; // 03:30 PM IST
+
+  if (timeInMinutes >= preOpenStart && timeInMinutes < marketOpen) return 'PRE_OPEN';
+  if (timeInMinutes >= marketOpen && timeInMinutes < marketClose) return 'LIVE';
   
-  const timeInMins = hours * 60 + mins;
-  // 09:15 AM = 555 mins | 03:30 PM = 930 mins
-  return timeInMins >= 555 && timeInMins <= 930;
+  return 'CLOSED';
 };
 
 // --- PRECISE UPSTOX TOKEN EXPIRY (3:30 AM IST) ---
@@ -115,12 +135,12 @@ async function startServer() {
         ws.isAlive = true;
       });
 
-      // Send initial state immediately with market status included
+      // Send initial state immediately with precise market phase
       ws.send(JSON.stringify({ 
         type: "ticker", 
-        data: stockPrices,
+        data: marketData,
         isSimulated: false,
-        marketStatus: isMarketOpen() ? 'open' : 'closed' 
+        marketPhase: getMarketPhase() 
       }));
 
       ws.on("close", () => {
@@ -731,14 +751,21 @@ async function startServer() {
   const stocks = ["RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "BHARTIARTL", "SBIN", "LICI", "ITC", "HINDUNILVR"];
   const allSymbols = [...primaryIndices, ...secondaryIndices, ...stocks];
 
-  const stockPrices: Record<string, number> = {
-    "NIFTY 50": 22145.2, SENSEX: 72850.4, BANKNIFTY: 46800.15, FINNIFTY: 20850.6, "MIDCAP NIFTY": 10920.45, "SMALLCAP NIFTY": 16150.3,
-    "NIFTY IT": 37850.2, "NIFTY AUTO": 20150.4, "NIFTY PHARMA": 18920.15, "NIFTY METAL": 7950.6, "NIFTY FMCG": 54120.3, "NIFTY REALTY": 890.45,
-    RELIANCE: 2985.4, TCS: 4120.15, HDFCBANK: 1450.6, INFY: 1680.4, ICICIBANK: 1050.2, BHARTIARTL: 1120.3, SBIN: 750.45, LICI: 940.2, ITC: 410.15, HINDUNILVR: 2380.6,
-  };
+  const marketData: Record<string, any> = {};
   
   allSymbols.forEach((s) => {
-    if (!stockPrices[s]) stockPrices[s] = Math.random() * 1000 + 100;
+    const ltp = Math.random() * 1000 + 100;
+    const prevClose = ltp * (1 - (Math.random() * 0.04 - 0.02)); // Mock previous close within +/- 2%
+    marketData[s] = {
+      symbol: s,
+      ltp: ltp,
+      prevClose: prevClose,
+      open: ltp,
+      high: ltp * 1.01,
+      low: ltp * 0.99,
+      change: ltp - prevClose,
+      changePercent: ((ltp - prevClose) / prevClose) * 100
+    };
   });
 
   const stockISINMap: Record<string, string> = {
@@ -829,7 +856,8 @@ async function startServer() {
       try {
         const encodedKeys = allKeysList.map(k => encodeURIComponent(k)).join(",");
         
-        const quoteRes = await fetch(`https://api.upstox.com/v3/market-quote/ltp?instrument_key=${encodedKeys}`, {
+        // Upgraded from /ltp to /quotes to get OHLC data
+        const quoteRes = await fetch(`https://api.upstox.com/v3/market-quote/quotes?instrument_key=${encodedKeys}`, {
           headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }
         });
 
@@ -842,12 +870,22 @@ async function startServer() {
           if (quoteData.data) {
             let updated = false;
             Object.keys(quoteData.data).forEach((key) => {
-              const price = quoteData.data[key].last_price || quoteData.data[key].ltp || quoteData.data[key].price;
+              const item = quoteData.data[key];
+              const ltp = item.last_price || item.price;
+              const prevClose = item.ohlc?.close || ltp;
+              const open = item.ohlc?.open || ltp;
+              const high = item.ohlc?.high || ltp;
+              const low = item.ohlc?.low || ltp;
               
-              if (price) {
+              if (ltp) {
                 const symbol = reverseMap[key] || (key.includes('|') ? key.split('|')[1] : null);
                 if (symbol && allSymbols.includes(symbol)) {
-                  stockPrices[symbol] = price;
+                  marketData[symbol] = {
+                    ...marketData[symbol],
+                    symbol, ltp, prevClose, open, high, low,
+                    change: ltp - prevClose,
+                    changePercent: prevClose ? ((ltp - prevClose) / prevClose) * 100 : 0
+                  };
                   updated = true;
                 }
               }
@@ -856,16 +894,16 @@ async function startServer() {
             if (updated) {
               const wsPayload = JSON.stringify({ 
                 type: "ticker", 
-                data: stockPrices, 
+                data: marketData, 
                 isSimulated: false,
-                marketStatus: isMarketOpen() ? 'open' : 'closed'
+                marketPhase: getMarketPhase()
               });
               wss.clients.forEach((c) => { if (c.readyState === WebSocket.OPEN) c.send(wsPayload); });
             }
           }
         }
       } catch (snapshotErr) {
-        logger.warn("[Upstox] Failed to fetch initial V3 LTP snapshot", snapshotErr);
+        logger.warn("[Upstox] Failed to fetch initial V3 Quotes snapshot", snapshotErr);
       }
 
       // =========================================================================
@@ -904,7 +942,8 @@ async function startServer() {
       upstoxMarketWs.binaryType = "nodebuffer"; 
 
       upstoxMarketWs.on("open", () => {
-        logger.info(`[Upstox WS] Market Data Connected. Market is currently ${isMarketOpen() ? 'OPEN' : 'CLOSED'}.`);
+        const currentPhase = getMarketPhase();
+        logger.info(`[Upstox WS] Market Data Connected. Market is currently ${currentPhase}.`);
         
         const requestPayload = {
           guid: "aapa-market-data",
@@ -932,7 +971,6 @@ async function startServer() {
           if (payload.feeds) {
             Object.entries(payload.feeds).forEach(([key, feedData]: [string, any]) => {
               
-              // FIX 3: Update the extraction logic to follow your new protobuf schema structure
               const price = 
                 feedData?.fullFeed?.marketFF?.ltpc?.ltp || 
                 feedData?.fullFeed?.indexFF?.ltpc?.ltp || 
@@ -942,7 +980,13 @@ async function startServer() {
               if (price) {
                 const symbol = reverseMap[key] || (key.includes('|') ? key.split('|')[1] : null);
                 if (symbol && allSymbols.includes(symbol)) {
-                  stockPrices[symbol] = price;
+                  const prevClose = marketData[symbol]?.prevClose || price;
+                  marketData[symbol] = {
+                    ...marketData[symbol],
+                    ltp: price,
+                    change: price - prevClose,
+                    changePercent: prevClose ? ((price - prevClose) / prevClose) * 100 : 0
+                  };
                   updated = true;
                 }
               }
@@ -952,9 +996,9 @@ async function startServer() {
           if (updated) {
             const wsPayload = JSON.stringify({ 
               type: "ticker", 
-              data: stockPrices, 
+              data: marketData, 
               isSimulated: false,
-              marketStatus: isMarketOpen() ? 'open' : 'closed' 
+              marketPhase: getMarketPhase() 
             });
             wss.clients.forEach((c) => { if (c.readyState === WebSocket.OPEN) c.send(wsPayload); });
           }
@@ -1023,7 +1067,7 @@ async function startServer() {
   app.post("/api/market/refresh", authenticateToken, async (req: any, res: any, next: NextFunction) => {
       try {
         initUpstoxWebSockets();
-        res.json({ success: true, message: "Requested WebSocket reconnection.", last_prices: stockPrices });
+        res.json({ success: true, message: "Requested WebSocket reconnection.", last_prices: marketData });
       } catch (e) {
         next(e);
       }
@@ -1041,6 +1085,7 @@ async function startServer() {
 
   setInterval(async () => {
     const now = Date.now();
+    const currentPhase = getMarketPhase();
     
     try {
       if (now - lastTokenCountCheck > 10000) {
@@ -1050,15 +1095,24 @@ async function startServer() {
       }
 
       if (cachedTokenCount === 0) {
-        allSymbols.forEach((symbol) => {
-          stockPrices[symbol] += stockPrices[symbol] * (Math.random() * 0.0002 - 0.0001);
-        });
+        // ONLY simulate movements if the market is actually LIVE to save CPU on Railway
+        if (currentPhase === 'LIVE') {
+          allSymbols.forEach((symbol) => {
+            const oldLtp = marketData[symbol].ltp;
+            const newLtp = oldLtp + oldLtp * (Math.random() * 0.0002 - 0.0001);
+            const prevClose = marketData[symbol].prevClose;
+            
+            marketData[symbol].ltp = newLtp;
+            marketData[symbol].change = newLtp - prevClose;
+            marketData[symbol].changePercent = ((newLtp - prevClose) / prevClose) * 100;
+          });
+        }
         
         const payload = JSON.stringify({ 
           type: "ticker", 
-          data: stockPrices, 
+          data: marketData, 
           isSimulated: true,
-          marketStatus: isMarketOpen() ? 'open' : 'closed' 
+          marketPhase: currentPhase 
         });
         wss.clients.forEach((c) => {
           if (c.readyState === WebSocket.OPEN) c.send(payload);
@@ -1066,9 +1120,9 @@ async function startServer() {
       } else {
         const payload = JSON.stringify({ 
           type: "ticker", 
-          data: stockPrices, 
+          data: marketData, 
           isSimulated: false,
-          marketStatus: isMarketOpen() ? 'open' : 'closed' 
+          marketPhase: currentPhase 
         });
         wss.clients.forEach((c) => {
           if (c.readyState === WebSocket.OPEN) c.send(payload);
@@ -1100,9 +1154,9 @@ async function startServer() {
         is_fetching: (upstoxMarketWs && upstoxMarketWs.readyState === WebSocket.OPEN),
         token_count: parseInt(countRows[0].count),
         tokens,
-        last_prices: stockPrices,
+        last_prices: marketData,
         market_hours: { open: "09:15", close: "15:30", timezone: "Asia/Kolkata" },
-        market_open: isMarketOpen(), 
+        market_phase: getMarketPhase(), 
         timestamp: new Date().toISOString()
       });
     } catch (e) {

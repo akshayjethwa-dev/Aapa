@@ -8,8 +8,22 @@ import TradingViewWidget from '../components/TradingViewWidget';
 import { useAuthStore } from '../store/authStore';
 import AISignals from './admin/AISignals';
 import { apiClient } from '../api/client';
+import MarketStatusPill from '../components/MarketStatusPill';
+import { MarketPhase } from '../types';
 
-const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { stocks: Record<string, number>, onMarketClick: () => void, onIndexClick: (index: string) => void, onProfileClick: () => void }) => {
+const Dashboard = ({ 
+  stocks, 
+  onMarketClick, 
+  onIndexClick, 
+  onProfileClick,
+  marketPhase = 'CLOSED'
+}: { 
+  stocks: Record<string, number>, 
+  onMarketClick: () => void, 
+  onIndexClick: (index: string) => void, 
+  onProfileClick: () => void,
+  marketPhase?: MarketPhase
+}) => {
   const { user, refreshUser } = useAuthStore();
   const [holdings, setHoldings] = useState<any[]>([]);
   const [positions, setPositions] = useState<any[]>([]);
@@ -36,7 +50,6 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
     }
   }, []);
 
-// REPLACE THIS BLOCK in Dashboard.tsx
   useEffect(() => {
     fetchPortfolio();
     
@@ -105,7 +118,9 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
   const dayPnL = positions.reduce((acc, curr) => acc + (curr.pnl || 0), 0);
   const totalPnL = currentValue - totalInvested;
   const totalPnLPercent = totalInvested > 0 ? (totalPnL / totalInvested) * 100 : 0;
-  const isDataLive = stocks['NIFTY 50'] > 0;
+  
+  // Tie the live data indicator to our precise market phase
+  const isDataLive = marketPhase === 'LIVE';
 
   const primaryIndices = ["NIFTY 50", "SENSEX", "BANKNIFTY", "FINNIFTY", "MIDCAP NIFTY", "SMALLCAP NIFTY"];
   const secondaryIndices = ["NIFTY IT", "NIFTY AUTO", "NIFTY PHARMA", "NIFTY METAL", "NIFTY FMCG", "NIFTY REALTY"];
@@ -158,6 +173,7 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
       <div className="space-y-2.5">
         <div className="px-5 flex justify-between items-center">
           <h3 className="text-[11px] font-bold uppercase tracking-widest text-zinc-500">Market Indices</h3>
+          <MarketStatusPill phase={marketPhase} />
         </div>
         <div className="px-5 overflow-x-auto scrollbar-hide flex gap-3 py-2">
           {[...primaryIndices, ...secondaryIndices].map(index => (
@@ -229,9 +245,9 @@ const Dashboard = ({ stocks, onMarketClick, onIndexClick, onProfileClick }: { st
               </div>
               <div className="text-right">
                 <div className="flex items-center gap-2 justify-end">
-                  <div className={cn("w-1.5 h-1.5 rounded-full animate-pulse", isDataLive ? "bg-emerald-500" : "bg-rose-500")} />
+                  <div className={cn("w-1.5 h-1.5 rounded-full", isDataLive ? "bg-emerald-500 animate-pulse" : "bg-rose-500")} />
                   <p className={cn("text-[9px] font-bold uppercase tracking-widest", isDataLive ? "text-emerald-500" : "text-rose-500")}>
-                    {isDataLive ? "Live" : "Connecting..."}
+                    {isDataLive ? "Live" : (marketPhase === 'PRE_OPEN' ? "Pre-Open" : "Closed")}
                   </p>
                 </div>
                 {!isDataLive && <p className="text-[8px] text-zinc-600 font-medium mt-1">Waiting for market data...</p>}

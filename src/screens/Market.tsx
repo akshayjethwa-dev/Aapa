@@ -7,12 +7,21 @@ import Sparkline from '../components/Sparkline';
 import OptionChain from '../components/OptionChain';
 import ErrorBoundary from '../components/ErrorBoundary';
 import { INDEX_CONSTITUENTS, F_O_INDICES } from '../constants/marketData';
+import { MarketQuote, MarketPhase } from '../types';
+import MarketStatusPill from '../components/MarketStatusPill';
 
-const Market = ({ stocks, onIndexClick, onPlaceOrder, initialSelectedStock }: { 
-  stocks: Record<string, number>, 
+const Market = ({ 
+  stocks, 
+  onIndexClick, 
+  onPlaceOrder, 
+  initialSelectedStock,
+  marketPhase = 'CLOSED'
+}: { 
+  stocks: Record<string, MarketQuote | number | any>, 
   onIndexClick: (index: string) => void,
   onPlaceOrder: (config: any) => void,
-  initialSelectedStock?: string | null
+  initialSelectedStock?: string | null,
+  marketPhase?: MarketPhase
 }) => {
   const [activeSegment, setActiveSegment] = useState('Watchlist');
   const [selectedStock, setSelectedStock] = useState<string | null>(initialSelectedStock || null);
@@ -41,11 +50,20 @@ const Market = ({ stocks, onIndexClick, onPlaceOrder, initialSelectedStock }: {
   const primaryIndices = ["NIFTY 50", "SENSEX", "BANKNIFTY", "FINNIFTY", "MIDCAP NIFTY", "SMALLCAP NIFTY"];
   const secondaryIndices = ["NIFTY IT", "NIFTY AUTO", "NIFTY PHARMA", "NIFTY METAL", "NIFTY FMCG", "NIFTY REALTY"];
 
+  // Helper to safely extract LTP for legacy components that expect numbers
+  const optionChainStocks = useMemo(() => {
+    const map: Record<string, number> = {};
+    Object.entries(stocks).forEach(([k, v]) => {
+      map[k] = typeof v === 'number' ? v : (v?.ltp || 0);
+    });
+    return map;
+  }, [stocks]);
+
   return (
     <div className="space-y-4 pb-20">
-      {/* Segmented Tabs */}
-      <div className="px-4 pt-1.5">
-        <div className="bg-zinc-900/50 p-1 rounded-xl flex gap-1 border border-zinc-800/50">
+      {/* Segmented Tabs & Market Status */}
+      <div className="px-4 pt-1.5 flex justify-between items-center gap-2">
+        <div className="bg-zinc-900/50 p-1 rounded-xl flex gap-1 border border-zinc-800/50 flex-1">
           {segments.map(segment => (
             <button
               key={segment}
@@ -59,6 +77,7 @@ const Market = ({ stocks, onIndexClick, onPlaceOrder, initialSelectedStock }: {
             </button>
           ))}
         </div>
+        <MarketStatusPill phase={marketPhase} />
       </div>
 
       <div className="px-4 space-y-4">
@@ -75,16 +94,30 @@ const Market = ({ stocks, onIndexClick, onPlaceOrder, initialSelectedStock }: {
             
             {/* Indices Quick View */}
             <div className="overflow-x-auto scrollbar-hide flex gap-2.5 py-1">
-              {primaryIndices.map(index => (
-                <button 
-                  key={index}
-                  onClick={() => onIndexClick(index)}
-                  className="px-3.5 py-1.5 bg-zinc-900/40 border border-zinc-800/50 rounded-xl whitespace-nowrap"
-                >
-                  <p className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">{index}</p>
-                  <p className="text-[11px] font-bold text-white">{stocks[index]?.toLocaleString('en-IN')}</p>
-                </button>
-              ))}
+              {primaryIndices.map(index => {
+                const quote = stocks[index];
+                const ltp = typeof quote === 'number' ? quote : (quote?.ltp || 0);
+                const changePct = quote?.changePercent;
+                const isPositive = changePct !== undefined && changePct >= 0;
+
+                return (
+                  <button 
+                    key={index}
+                    onClick={() => onIndexClick(index)}
+                    className="px-3.5 py-1.5 bg-zinc-900/40 border border-zinc-800/50 rounded-xl whitespace-nowrap"
+                  >
+                    <p className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">{index}</p>
+                    <div className="flex items-baseline gap-1.5">
+                      <p className="text-[11px] font-bold text-white">{ltp.toLocaleString('en-IN')}</p>
+                      {changePct !== undefined && (
+                        <p className={cn("text-[8px] font-bold", isPositive ? "text-emerald-500" : "text-rose-500")}>
+                          {isPositive ? '+' : ''}{changePct.toFixed(2)}%
+                        </p>
+                      )}
+                    </div>
+                  </button>
+                )
+              })}
             </div>
 
             <div className="flex justify-between items-center">
@@ -98,28 +131,40 @@ const Market = ({ stocks, onIndexClick, onPlaceOrder, initialSelectedStock }: {
             <div className="space-y-2">
               {Object.entries(stocks)
                 .filter(([s]) => !primaryIndices.includes(s) && !secondaryIndices.includes(s))
-                .map(([symbol, price]) => (
-                <motion.div 
-                  layout
-                  key={symbol} 
-                  onClick={() => handleStockClick(symbol)}
-                  className="bg-zinc-900/20 hover:bg-zinc-900/40 border border-zinc-800/30 rounded-xl p-3 flex justify-between items-center transition-all cursor-pointer"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-xl bg-zinc-900 flex items-center justify-center font-bold text-[11px] text-zinc-500">
-                      {symbol.substring(0, 2)}
-                    </div>
-                    <div>
-                      <p className="text-[13px] font-bold text-white tracking-tight">{symbol}</p>
-                      <p className="text-[9px] font-bold text-zinc-600 uppercase">NSE</p>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-[13px] font-bold text-white">{formatCurrency(price)}</p>
-                    <p className="text-[9px] font-bold text-emerald-500">+{(Math.random() * 2).toFixed(2)}%</p>
-                  </div>
-                </motion.div>
-              ))}
+                .map(([symbol, quote]) => {
+                  const ltp = typeof quote === 'number' ? quote : (quote?.ltp || 0);
+                  const changePct = quote?.changePercent;
+                  const isPositive = changePct !== undefined && changePct >= 0;
+
+                  return (
+                    <motion.div 
+                      layout
+                      key={symbol} 
+                      onClick={() => handleStockClick(symbol)}
+                      className="bg-zinc-900/20 hover:bg-zinc-900/40 border border-zinc-800/30 rounded-xl p-3 flex justify-between items-center transition-all cursor-pointer"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-xl bg-zinc-900 flex items-center justify-center font-bold text-[11px] text-zinc-500">
+                          {symbol.substring(0, 2)}
+                        </div>
+                        <div>
+                          <p className="text-[13px] font-bold text-white tracking-tight">{symbol}</p>
+                          <p className="text-[9px] font-bold text-zinc-600 uppercase">NSE</p>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[13px] font-bold text-white">{formatCurrency(ltp)}</p>
+                        {changePct !== undefined ? (
+                          <p className={cn("text-[9px] font-bold", isPositive ? "text-emerald-500" : "text-rose-500")}>
+                            {isPositive ? '+' : ''}{changePct.toFixed(2)}%
+                          </p>
+                        ) : (
+                          <p className="text-[9px] font-bold text-emerald-500">+{(Math.random() * 2).toFixed(2)}%</p>
+                        )}
+                      </div>
+                    </motion.div>
+                  )
+                })}
             </div>
           </>
         )}
@@ -134,26 +179,6 @@ const Market = ({ stocks, onIndexClick, onPlaceOrder, initialSelectedStock }: {
               <FileText className="mx-auto text-zinc-800 mb-2.5" size={32} />
               <p className="text-[13px] font-bold text-zinc-500">No Active Orders</p>
               <p className="text-[10px] text-zinc-700 mt-0.5">Your pending orders will appear here</p>
-            </div>
-            
-            <div className="pt-2 space-y-2.5">
-              <h4 className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest px-1">Order History</h4>
-              {[1,2].map(i => (
-                <div key={i} className="bg-zinc-900/20 border border-zinc-800/30 rounded-xl p-3 flex justify-between items-center">
-                  <div className="flex items-center gap-3">
-                    <div className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-500">
-                      <ArrowUpRight size={14} />
-                    </div>
-                    <div>
-                      <p className="text-[11px] font-bold text-white">RELIANCE Buy</p>
-                      <p className="text-[8px] font-bold text-zinc-600 uppercase">Completed • 28 Feb</p>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <span className="px-1.5 py-0.5 rounded bg-emerald-500/10 text-[8px] font-bold text-emerald-500 uppercase">Filled</span>
-                  </div>
-                </div>
-              ))}
             </div>
           </div>
         )}
@@ -177,123 +202,125 @@ const Market = ({ stocks, onIndexClick, onPlaceOrder, initialSelectedStock }: {
 
         {activeSegment === 'F&O' && (
           <div className="space-y-4">
-            <OptionChain onPlaceOrder={onPlaceOrder} stocks={stocks} fullChain={true} />
+            <OptionChain onPlaceOrder={onPlaceOrder} stocks={optionChainStocks} fullChain={true} />
           </div>
         )}
       </div>
 
       {/* Stock Detail Modal */}
       <AnimatePresence mode="wait">
-        {selectedStock && (
-          <motion.div 
-            key="stock-detail-modal"
-            initial={{ y: '100%' }}
-            animate={{ y: 0 }}
-            exit={{ y: '100%' }}
-            className="fixed inset-0 z-60 bg-black p-6 flex flex-col"
-          >
-            <div className="flex justify-between items-center mb-8">
-              <button onClick={() => setSelectedStock(null)} className="p-3 rounded-2xl bg-zinc-900 text-zinc-400">
-                <ChevronRight className="rotate-180" size={24} />
-              </button>
-              <div className="text-center">
-                <h2 className="text-lg font-bold tracking-tight">{selectedStock}</h2>
-                <p className="text-[10px] font-bold text-zinc-500 uppercase">NSE • EQUITY</p>
-              </div>
-              <button 
-                onClick={() => toggleWatchlist(selectedStock!)}
-                className={cn(
-                  "p-3 rounded-2xl transition-all",
-                  watchlist.includes(selectedStock!) ? "bg-emerald-500 text-black" : "bg-zinc-900 text-zinc-400"
-                )}
-              >
-                <Plus size={24} className={cn(watchlist.includes(selectedStock!) && "rotate-45")} />
-              </button>
-            </div>
+        {selectedStock && (() => {
+          const quote = stocks[selectedStock];
+          const ltp = typeof quote === 'number' ? quote : (quote?.ltp || 0);
+          const change = quote?.change || 0;
+          const changePct = quote?.changePercent || 0;
+          const isPositive = change >= 0;
 
-            <div className="flex-1 space-y-8 overflow-y-auto pb-24 scrollbar-hide">
-              <div className="text-center">
-                <p className="text-5xl font-bold tracking-tighter mb-2">{formatCurrency(stocks[selectedStock])}</p>
-                <p className="text-sm font-bold text-emerald-500">+₹12.45 (0.85%) Today</p>
-              </div>
-
-              <div className="h-80 bg-zinc-900/50 rounded-4xl border border-zinc-800/50 relative overflow-hidden">
-                <ErrorBoundary>
-                  <TradingViewWidget symbol={selectedStock} />
-                </ErrorBoundary>
-              </div>
-
-              <div className="bg-zinc-900/40 border border-zinc-800/50 rounded-3xl p-6 space-y-4">
-                <div className="flex items-center gap-2 text-zinc-400">
-                  <Activity size={18} />
-                  <h4 className="text-xs font-bold uppercase tracking-widest">Technical Overview</h4>
+          return (
+            <motion.div 
+              key="stock-detail-modal"
+              initial={{ y: '100%' }}
+              animate={{ y: 0 }}
+              exit={{ y: '100%' }}
+              className="fixed inset-0 z-60 bg-black p-6 flex flex-col"
+            >
+              <div className="flex justify-between items-center mb-8">
+                <button onClick={() => setSelectedStock(null)} className="p-3 rounded-2xl bg-zinc-900 text-zinc-400">
+                  <ChevronRight className="rotate-180" size={24} />
+                </button>
+                <div className="text-center">
+                  <h2 className="text-lg font-bold tracking-tight">{selectedStock}</h2>
+                  <p className="text-[10px] font-bold text-zinc-500 uppercase">NSE • EQUITY</p>
                 </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-zinc-900/50 p-4 rounded-2xl border border-zinc-800">
-                    <p className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest mb-1">RSI (14)</p>
-                    <p className="text-sm font-bold text-white">58.42 <span className="text-[10px] text-zinc-500 font-medium ml-1">Neutral</span></p>
-                  </div>
-                  <div className="bg-zinc-900/50 p-4 rounded-2xl border border-zinc-800">
-                    <p className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest mb-1">MACD</p>
-                    <p className="text-sm font-bold text-emerald-500">Bullish <span className="text-[10px] text-zinc-500 font-medium ml-1">Crossover</span></p>
-                  </div>
-                  <div className="bg-zinc-900/50 p-4 rounded-2xl border border-zinc-800">
-                    <p className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest mb-1">200 DMA</p>
-                    <p className="text-sm font-bold text-white">{(stocks[selectedStock] * 0.92).toFixed(2)}</p>
-                  </div>
-                  <div className="bg-zinc-900/50 p-4 rounded-2xl border border-zinc-800">
-                    <p className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest mb-1">52W High</p>
-                    <p className="text-sm font-bold text-white">{(stocks[selectedStock] * 1.15).toFixed(2)}</p>
-                  </div>
-                </div>
+                <button 
+                  onClick={() => toggleWatchlist(selectedStock)}
+                  className={cn(
+                    "p-3 rounded-2xl transition-all",
+                    watchlist.includes(selectedStock) ? "bg-emerald-500 text-black" : "bg-zinc-900 text-zinc-400"
+                  )}
+                >
+                  <Plus size={24} className={cn(watchlist.includes(selectedStock) && "rotate-45")} />
+                </button>
               </div>
 
-              <div className="grid grid-cols-2 gap-12 px-2">
-                <div className="space-y-3">
-                  <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Bid Price</p>
-                  {[1,2,3,4,5].map(i => (
-                    <div key={`bid-${i}`} className="flex justify-between text-xs font-bold">
-                      <span className="text-emerald-500">{(stocks[selectedStock] - i * 0.5).toFixed(2)}</span>
-                      <span className="text-zinc-600">{i * 250}</span>
+              <div className="flex-1 space-y-8 overflow-y-auto pb-24 scrollbar-hide">
+                <div className="text-center">
+                  <p className="text-5xl font-bold tracking-tighter mb-2">{formatCurrency(ltp)}</p>
+                  <p className={cn("text-sm font-bold", isPositive ? "text-emerald-500" : "text-rose-500")}>
+                    {isPositive ? '+' : ''}{formatCurrency(Math.abs(change))} ({isPositive ? '+' : ''}{changePct.toFixed(2)}%) Today
+                  </p>
+                </div>
+
+                <div className="h-80 bg-zinc-900/50 rounded-4xl border border-zinc-800/50 relative overflow-hidden">
+                  <ErrorBoundary>
+                    <TradingViewWidget symbol={selectedStock} />
+                  </ErrorBoundary>
+                </div>
+
+                <div className="bg-zinc-900/40 border border-zinc-800/50 rounded-3xl p-6 space-y-4">
+                  <div className="flex items-center gap-2 text-zinc-400">
+                    <Activity size={18} />
+                    <h4 className="text-xs font-bold uppercase tracking-widest">Technical Overview</h4>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="bg-zinc-900/50 p-4 rounded-2xl border border-zinc-800">
+                      <p className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest mb-1">RSI (14)</p>
+                      <p className="text-sm font-bold text-white">58.42 <span className="text-[10px] text-zinc-500 font-medium ml-1">Neutral</span></p>
                     </div>
-                  ))}
-                </div>
-                <div className="space-y-3 text-right">
-                  <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Ask Price</p>
-                  {[1,2,3,4,5].map(i => (
-                    <div key={`ask-${i}`} className="flex justify-between text-xs font-bold">
-                      <span className="text-zinc-600">{i * 180}</span>
-                      <span className="text-rose-500">{(stocks[selectedStock] + i * 0.5).toFixed(2)}</span>
+                    <div className="bg-zinc-900/50 p-4 rounded-2xl border border-zinc-800">
+                      <p className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest mb-1">MACD</p>
+                      <p className="text-sm font-bold text-emerald-500">Bullish <span className="text-[10px] text-zinc-500 font-medium ml-1">Crossover</span></p>
                     </div>
-                  ))}
+                    <div className="bg-zinc-900/50 p-4 rounded-2xl border border-zinc-800">
+                      <p className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest mb-1">200 DMA</p>
+                      <p className="text-sm font-bold text-white">{(ltp * 0.92).toFixed(2)}</p>
+                    </div>
+                    <div className="bg-zinc-900/50 p-4 rounded-2xl border border-zinc-800">
+                      <p className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest mb-1">52W High</p>
+                      <p className="text-sm font-bold text-white">{(ltp * 1.15).toFixed(2)}</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-12 px-2">
+                  <div className="space-y-3">
+                    <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Bid Price</p>
+                    {[1,2,3,4,5].map(i => (
+                      <div key={`bid-${i}`} className="flex justify-between text-xs font-bold">
+                        <span className="text-emerald-500">{(ltp - i * 0.5).toFixed(2)}</span>
+                        <span className="text-zinc-600">{i * 250}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="space-y-3 text-right">
+                    <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Ask Price</p>
+                    {[1,2,3,4,5].map(i => (
+                      <div key={`ask-${i}`} className="flex justify-between text-xs font-bold">
+                        <span className="text-zinc-600">{i * 180}</span>
+                        <span className="text-rose-500">{(ltp + i * 0.5).toFixed(2)}</span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
-            </div>
 
-            <div className="fixed bottom-0 left-0 right-0 p-6 bg-black/80 backdrop-blur-xl border-t border-zinc-900 flex gap-4">
-              <button 
-                onClick={() => onPlaceOrder({
-                  side: 'SELL',
-                  symbol: selectedStock,
-                  price: stocks[selectedStock!]
-                })}
-                className="flex-1 bg-rose-500 hover:bg-rose-600 text-black font-bold py-5 rounded-2xl transition-all shadow-xl shadow-rose-500/10"
-              >
-                SELL
-              </button>
-              <button 
-                onClick={() => onPlaceOrder({
-                  side: 'BUY',
-                  symbol: selectedStock,
-                  price: stocks[selectedStock!]
-                })}
-                className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-black font-bold py-5 rounded-2xl transition-all shadow-xl shadow-emerald-500/10"
-              >
-                BUY
-              </button>
-            </div>
-          </motion.div>
-        )}
+              <div className="fixed bottom-0 left-0 right-0 p-6 bg-black/80 backdrop-blur-xl border-t border-zinc-900 flex gap-4">
+                <button 
+                  onClick={() => onPlaceOrder({ side: 'SELL', symbol: selectedStock, price: ltp })}
+                  className="flex-1 bg-rose-500 hover:bg-rose-600 text-black font-bold py-5 rounded-2xl transition-all shadow-xl shadow-rose-500/10"
+                >
+                  SELL
+                </button>
+                <button 
+                  onClick={() => onPlaceOrder({ side: 'BUY', symbol: selectedStock, price: ltp })}
+                  className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-black font-bold py-5 rounded-2xl transition-all shadow-xl shadow-emerald-500/10"
+                >
+                  BUY
+                </button>
+              </div>
+            </motion.div>
+          );
+        })()}
       </AnimatePresence>
     </div>
   );

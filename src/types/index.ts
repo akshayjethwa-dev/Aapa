@@ -1,3 +1,14 @@
+export interface MarketQuote {
+  symbol: string;
+  ltp: number;
+  prevClose: number;
+  open: number;
+  high: number;
+  low: number;
+  change: number;
+  changePercent: number;
+}
+
 export interface Stock {
   symbol: string;
   price: number;
@@ -50,3 +61,5 @@ export interface OrderConfig {
   price?: number;
   [key: string]: any;
 }
+
+export type MarketPhase = 'LIVE' | 'PRE_OPEN' | 'CLOSED';

@@ -31,10 +31,12 @@ import FOTradingCenter from './screens/FOTradingCenter';
 import FullChartModal from './components/FullChartModal';
 import OptionChain from './components/OptionChain';
 
+export type MarketPhase = 'LIVE' | 'PRE_OPEN' | 'CLOSED';
+
 function App() {
   const { token, user, setAuth, logout, setIsWsConnected} = useAuthStore();
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [stocks, setStocks] = useState<Record<string, number>>({
+  const [stocks, setStocks] = useState<Record<string, number | any>>({
     "NIFTY 50": 22145.20, "SENSEX": 72850.40, "BANKNIFTY": 46800.15, "FINNIFTY": 20850.60,
     "RELIANCE": 2985.40, "TCS": 4120.15, "HDFCBANK": 1450.60, "INFY": 1680.40, "ICICIBANK": 1050.20
   });
@@ -47,6 +49,7 @@ function App() {
   const [selectedStockFromSearch, setSelectedStockFromSearch] = useState<string | null>(null);
 
   const [isDemoMode, setIsDemoMode] = useState(false); 
+  const [marketPhase, setMarketPhase] = useState<MarketPhase>('CLOSED');
 
   const [isConnectingAngel, setIsConnectingAngel] = useState(false);
   const [isConnectingUptox, setIsConnectingUptox] = useState(false);
@@ -272,8 +275,12 @@ function App() {
           // Handle Live Market Feed
           if (message.type === 'ticker') {
             setStocks(message.data);
+            
             if (message.isSimulated !== undefined) {
               setIsDemoMode(message.isSimulated);
+            }
+            if (message.marketPhase) {
+              setMarketPhase(message.marketPhase);
             }
           }
 
@@ -342,10 +349,24 @@ function App() {
         
         <AnimatePresence mode="wait">
           {activeTab === 'dashboard' && (
-            <Dashboard key="dashboard" stocks={stocks} onMarketClick={() => setActiveTab('market')} onIndexClick={setSelectedIndex} onProfileClick={() => setActiveTab('more')} />
+            <Dashboard 
+              key="dashboard" 
+              stocks={stocks} 
+              marketPhase={marketPhase}
+              onMarketClick={() => setActiveTab('market')} 
+              onIndexClick={setSelectedIndex} 
+              onProfileClick={() => setActiveTab('more')} 
+            />
           )}
           {activeTab === 'market' && (
-            <Market key="market" stocks={stocks} onIndexClick={setOverviewIndex} onPlaceOrder={setOrderConfig} initialSelectedStock={selectedStockFromSearch} />
+            <Market 
+              key="market" 
+              stocks={stocks} 
+              marketPhase={marketPhase}
+              onIndexClick={setOverviewIndex} 
+              onPlaceOrder={setOrderConfig} 
+              initialSelectedStock={selectedStockFromSearch} 
+            />
           )}
           {activeTab === 'fo' && (
             <div className="space-y-6">
@@ -412,23 +433,29 @@ function App() {
 
             <div className="flex-1 overflow-y-auto space-y-4">
               {filteredStocks.length > 0 ? (
-                filteredStocks.map((symbol: string) => (
-                  <div key={symbol} onClick={() => { setIsSearchOpen(false); setSelectedStockFromSearch(symbol); setActiveTab('market'); }} className="bg-zinc-900/40 border border-zinc-800/50 rounded-2xl p-4 flex justify-between items-center cursor-pointer hover:bg-zinc-900 transition-colors">
-                    <div className="flex items-center gap-4">
-                      <div className="w-10 h-10 rounded-xl bg-zinc-900 flex items-center justify-center font-bold text-xs text-zinc-500">
-                        {symbol.substring(0, 2)}
+                filteredStocks.map((symbol: string) => {
+                  // Make sure we extract the LTP properly if the stock object is full MarketQuote
+                  const stockData = stocks[symbol];
+                  const ltp = typeof stockData === 'number' ? stockData : (stockData?.ltp || 0);
+
+                  return (
+                    <div key={symbol} onClick={() => { setIsSearchOpen(false); setSelectedStockFromSearch(symbol); setActiveTab('market'); }} className="bg-zinc-900/40 border border-zinc-800/50 rounded-2xl p-4 flex justify-between items-center cursor-pointer hover:bg-zinc-900 transition-colors">
+                      <div className="flex items-center gap-4">
+                        <div className="w-10 h-10 rounded-xl bg-zinc-900 flex items-center justify-center font-bold text-xs text-zinc-500">
+                          {symbol.substring(0, 2)}
+                        </div>
+                        <div>
+                          <p className="text-sm font-bold text-white tracking-tight">{symbol}</p>
+                          <p className="text-[10px] font-bold text-zinc-600 uppercase">NSE • Equity</p>
+                        </div>
                       </div>
-                      <div>
-                        <p className="text-sm font-bold text-white tracking-tight">{symbol}</p>
-                        <p className="text-[10px] font-bold text-zinc-600 uppercase">NSE • Equity</p>
+                      <div className="text-right">
+                        <p className="text-sm font-bold text-white">{formatCurrency(ltp)}</p>
+                        <p className="text-[10px] font-bold text-emerald-500">+1.24%</p>
                       </div>
                     </div>
-                    <div className="text-right">
-                      <p className="text-sm font-bold text-white">{formatCurrency(stocks[symbol] || 0)}</p>
-                      <p className="text-[10px] font-bold text-emerald-500">+1.24%</p>
-                    </div>
-                  </div>
-                ))
+                  );
+                })
               ) : searchQuery ? (
                 <div className="text-center py-20">
                   <p className="text-sm font-bold text-zinc-600 uppercase tracking-widest">No results found</p>
