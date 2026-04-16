@@ -59,7 +59,7 @@ const isMarketOpen = () => {
   return timeInMins >= 555 && timeInMins <= 930;
 };
 
-// --- STEP 7: PRECISE UPSTOX TOKEN EXPIRY (3:30 AM IST) ---
+// --- PRECISE UPSTOX TOKEN EXPIRY (3:30 AM IST) ---
 const getUpstoxTokenExpiry = () => {
   const now = new Date();
   const istTime = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
@@ -178,7 +178,6 @@ async function startServer() {
           if (refreshData && refreshData.access_token) {
              const newRefreshToken = refreshData.refresh_token ? encrypt(String(refreshData.refresh_token)) : tokenRow.refresh_token;
              
-             // STEP 7 UPDATE: Apply exact 3:30 AM expiry
              const newExpiry = getUpstoxTokenExpiry();
              
              await query(
@@ -623,7 +622,6 @@ async function startServer() {
           const decoded: any = jwt.verify(userJwt, JWT_SECRET);
           const userId = decoded.id;
 
-          // STEP 7 UPDATE: Apply exact 3:30 AM expiry for new tokens
           const newExpiry = getUpstoxTokenExpiry();
 
           await query(
@@ -728,12 +726,6 @@ async function startServer() {
     }
   );
 
-  // --- INSTRUMENT KEY MANAGEMENT (Note for future scaling) ---
-  // If you ever need to support more than these hardcoded arrays, you can fetch 
-  // the daily CSV from https://assets.upstox.com/market-quote/instruments/exchange/NSE.csv.gz
-  // and load it into a local PostgreSQL table or Redis cache.
-  // -----------------------------------------------------------
-
   const primaryIndices = ["NIFTY 50", "SENSEX", "BANKNIFTY", "FINNIFTY", "MIDCAP NIFTY", "SMALLCAP NIFTY"];
   const secondaryIndices = ["NIFTY IT", "NIFTY AUTO", "NIFTY PHARMA", "NIFTY METAL", "NIFTY FMCG", "NIFTY REALTY"];
   const stocks = ["RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "BHARTIARTL", "SBIN", "LICI", "ITC", "HINDUNILVR"];
@@ -837,7 +829,6 @@ async function startServer() {
       try {
         const encodedKeys = allKeysList.map(k => encodeURIComponent(k)).join(",");
         
-        // STEP 7 UPDATE: Switch to v3/market-quote/ltp endpoint for lighter payload
         const quoteRes = await fetch(`https://api.upstox.com/v3/market-quote/ltp?instrument_key=${encodedKeys}`, {
           headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }
         });
@@ -851,7 +842,6 @@ async function startServer() {
           if (quoteData.data) {
             let updated = false;
             Object.keys(quoteData.data).forEach((key) => {
-              // The v3 ltp endpoint returns { last_price: number } or { ltp: number } or { price: number }
               const price = quoteData.data[key].last_price || quoteData.data[key].ltp || quoteData.data[key].price;
               
               if (price) {
@@ -899,13 +889,16 @@ async function startServer() {
 
       let root;
       try {
-        root = await protobuf.load(path.join(__dirname, "MarketDataFeed.proto"));
-      } catch (protoErr) {
-        logger.error("[Upstox WS] Protobuf file missing. Ensure MarketDataFeed.proto exists.");
+        // FIX 1: Point protobuf to the project root instead of the compiled dist folder
+        const protoPath = path.join(process.cwd(), "MarketDataFeed.proto");
+        root = await protobuf.load(protoPath);
+      } catch (protoErr: any) {
+        logger.error(`[Upstox WS] Protobuf file error: ${protoErr.message}. Ensure MarketDataFeed.proto is in the project root.`);
         return;
       }
       
-      const FeedResponse = root.lookupType("com.upstox.marketdatafeeder.rpc.proto.FeedResponse");
+      // FIX 2: Use the exact namespace defined in your specific .proto file
+      const FeedResponse = root.lookupType("com.upstox.marketdatafeederv3udapi.rpc.proto.FeedResponse");
 
       upstoxMarketWs = new WebSocket(authData.data.authorized_redirect_uri);
       upstoxMarketWs.binaryType = "nodebuffer"; 
@@ -938,9 +931,13 @@ async function startServer() {
           
           if (payload.feeds) {
             Object.entries(payload.feeds).forEach(([key, feedData]: [string, any]) => {
-              // UPSTOX V3 FIX: The Last Traded Price (ltp) is nested inside ltpc for Full Feed
-              const marketFF = feedData?.fullFeed?.marketFF;
-              const price = marketFF?.ltpc?.ltp || feedData?.ltpcFeed?.ltp || marketFF?.ltp;
+              
+              // FIX 3: Update the extraction logic to follow your new protobuf schema structure
+              const price = 
+                feedData?.fullFeed?.marketFF?.ltpc?.ltp || 
+                feedData?.fullFeed?.indexFF?.ltpc?.ltp || 
+                feedData?.ltpc?.ltp ||
+                feedData?.firstLevelWithGreeks?.ltpc?.ltp;
               
               if (price) {
                 const symbol = reverseMap[key] || (key.includes('|') ? key.split('|')[1] : null);
