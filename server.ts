@@ -682,10 +682,13 @@ async function startServer() {
     }
   );
 
-  app.get("/api/portfolio", authenticateToken, async (req: any, res, next) => {
+app.get("/api/portfolio", authenticateToken, async (req: any, res, next) => {
     try {
       const { rows: tokens } = await query("SELECT broker, access_token FROM user_tokens WHERE user_id = $1", [req.user.id]);
+      
       let combinedHoldings: any[] = [];
+      let combinedPositions: any[] = [];
+      let totalFunds: number = 0;
 
       for (const token of tokens) {
         if (!token.access_token) continue;
@@ -694,20 +697,33 @@ async function startServer() {
           if (!decryptedToken) continue;
 
           const brokerService = getBrokerService(String(token.broker));
-          const holdings = await brokerService.getHoldings(decryptedToken);
+          
+          // Fetch Holdings, Positions, and Funds in parallel for speed
+          const [holdings, positions, funds] = await Promise.all([
+            brokerService.getHoldings(decryptedToken).catch(() => []),
+            brokerService.getPositions(decryptedToken).catch(() => []),
+            brokerService.getFunds(decryptedToken).catch(() => 0)
+          ]);
+
           combinedHoldings = [...combinedHoldings, ...holdings];
-        } catch (e) { logger.warn(`[Portfolio] ${token.broker} error:`, e); }
+          combinedPositions = [...combinedPositions, ...positions];
+          totalFunds += funds;
+
+        } catch (e) { 
+          logger.warn(`[Portfolio] ${token.broker} error:`, e); 
+        }
       }
 
-      let localHoldings: any[] = [];
-      try {
-        const { rows } = await query("SELECT *, 'Local' as broker FROM portfolios WHERE user_id = $1", [req.user.id]);
-        localHoldings = rows;
-      } catch (dbErr: any) { }
+      // Return the normalized schema
+      res.json({
+        holdings: combinedHoldings,
+        positions: combinedPositions,
+        funds: totalFunds
+      });
 
-      if (combinedHoldings.length > 0) return res.json(combinedHoldings);
-      res.json(localHoldings);
-    } catch (e: any) { res.status(500).json({ error: "Failed to load portfolio", details: e.message || String(e) }); }
+    } catch (e: any) { 
+      res.status(500).json({ error: "Failed to load portfolio", details: e.message || String(e) }); 
+    }
   });
 
   app.post("/api/orders", authenticateToken, requireKyc, validate(placeOrderSchema), async (req: any, res, next) => {

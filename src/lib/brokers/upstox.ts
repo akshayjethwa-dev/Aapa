@@ -1,4 +1,4 @@
-import { BrokerService, Holding, OrderRequest, OrderResponse } from './types';
+import { BrokerService, Holding, BrokerPosition, OrderRequest, OrderResponse } from './types';
 
 export class UpstoxBrokerService implements BrokerService {
   async getFunds(token: string): Promise<number> {
@@ -23,10 +23,33 @@ export class UpstoxBrokerService implements BrokerService {
         quantity: h.quantity,
         average_price: h.average_price,
         current_price: h.last_price,
+        close_price: h.close_price, // Added for Day PnL calculation
         broker: 'Upstox'
       }));
     }
     throw new Error(data.errors?.[0]?.message || 'Failed to fetch Upstox holdings');
+  }
+
+  // ========================================================
+  // --- ADDED FOR STORY A3: Fetch Active Positions (F&O / Intraday)
+  // ========================================================
+  async getPositions(token: string): Promise<BrokerPosition[]> {
+    const response = await fetch("https://api.upstox.com/v2/portfolio/short-term-positions", {
+      headers: { "Authorization": `Bearer ${token}`, "Accept": "application/json" }
+    });
+    const data = await response.json();
+    if (data.status === 'success') {
+      return data.data.map((p: any) => ({
+        symbol: p.trading_symbol,
+        quantity: p.quantity,
+        average_price: p.average_price,
+        current_price: p.last_price,
+        close_price: p.close_price, // Needed for real Day PnL calculation
+        product: p.product,
+        broker: 'Upstox'
+      }));
+    }
+    throw new Error(data.errors?.[0]?.message || 'Failed to fetch Upstox positions');
   }
 
   async placeOrder(token: string, order: OrderRequest): Promise<OrderResponse> {
