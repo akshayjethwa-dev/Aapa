@@ -43,6 +43,42 @@ interface ExtWebSocket extends WebSocket {
   userId?: number; 
 }
 
+// --- MARKET HOURS UTILITY (IST) ---
+const isMarketOpen = () => {
+  const now = new Date();
+  const istTime = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+  const day = istTime.getDay();
+  const hours = istTime.getHours();
+  const mins = istTime.getMinutes();
+  
+  // Weekend check
+  if (day === 0 || day === 6) return false; 
+  
+  const timeInMins = hours * 60 + mins;
+  // 09:15 AM = 555 mins | 03:30 PM = 930 mins
+  return timeInMins >= 555 && timeInMins <= 930;
+};
+
+// --- STEP 7: PRECISE UPSTOX TOKEN EXPIRY (3:30 AM IST) ---
+const getUpstoxTokenExpiry = () => {
+  const now = new Date();
+  const istTime = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+  
+  let target = new Date(istTime);
+  target.setHours(3, 30, 0, 0);
+
+  // If it's already past 3:30 AM IST today, the token will expire at 3:30 AM IST tomorrow
+  if (istTime.getTime() >= target.getTime()) {
+    target.setDate(target.getDate() + 1);
+  }
+
+  // Format as an ISO-like string with the IST (+05:30) offset for Postgres
+  const y = target.getFullYear();
+  const m = String(target.getMonth() + 1).padStart(2, '0');
+  const d = String(target.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}T03:30:00+05:30`;
+};
+
 async function startServer() {
   const app = express();
   const server = http.createServer(app);
@@ -79,7 +115,13 @@ async function startServer() {
         ws.isAlive = true;
       });
 
-      ws.send(JSON.stringify({ type: "ticker", data: stockPrices }));
+      // Send initial state immediately with market status included
+      ws.send(JSON.stringify({ 
+        type: "ticker", 
+        data: stockPrices,
+        isSimulated: false,
+        marketStatus: isMarketOpen() ? 'open' : 'closed' 
+      }));
 
       ws.on("close", () => {
         logger.info(`[WebSocket] User ID: ${ws.userId} disconnected. Remaining clients: ${wss.clients.size}`);
@@ -136,17 +178,21 @@ async function startServer() {
           if (refreshData && refreshData.access_token) {
              const newRefreshToken = refreshData.refresh_token ? encrypt(String(refreshData.refresh_token)) : tokenRow.refresh_token;
              
+             // STEP 7 UPDATE: Apply exact 3:30 AM expiry
+             const newExpiry = getUpstoxTokenExpiry();
+             
              await query(
                `UPDATE user_tokens 
-                SET access_token = $1, refresh_token = $2, expires_at = NOW() + INTERVAL '24 hours', updated_at = NOW() 
-                WHERE user_id = $3 AND broker = 'upstox'`,
+                SET access_token = $1, refresh_token = $2, expires_at = $3, updated_at = NOW() 
+                WHERE user_id = $4 AND broker = 'upstox'`,
                [
                  encrypt(String(refreshData.access_token)),
                  newRefreshToken,
+                 newExpiry,
                  tokenRow.user_id
                ]
              );
-             logger.info(`[TokenRefresh] Successfully proactive refreshed token for user_id: ${tokenRow.user_id}`);
+             logger.info(`[TokenRefresh] Refreshed token for user_id: ${tokenRow.user_id}. New expiry: ${newExpiry}`);
           }
         } catch (err) {
           logger.error(`[TokenRefresh] Failed to proactive refresh token for user_id ${tokenRow.user_id}:`, err);
@@ -509,15 +555,9 @@ async function startServer() {
 
   app.get("/api/auth/uptox/url", authenticateToken, (req: any, res) => {
     const apiKey = process.env.UPTOX_API_KEY ?? "";
-    let redirectUri = process.env.UPTOX_REDIRECT_URI ?? "";
+    const redirectUri = process.env.UPTOX_REDIRECT_URI ?? "";
 
-    const host = req.get("host") ?? "";
-    const protocol = (req.get("x-forwarded-proto") as string | undefined) ?? req.protocol;
-    const detectedUri = `${protocol}://${host}/auth/callback`;
-
-    if (!redirectUri || !redirectUri.startsWith("http")) redirectUri = detectedUri;
-
-    if (!apiKey) return res.status(500).json({ error: "UPTOX_API_KEY is missing." });
+    if (!apiKey || !redirectUri) return res.status(500).json({ error: "Upstox API Key or Redirect URI is missing in .env." });
 
     const state = req.headers.authorization?.split(" ")[1] || "";
     const url = `https://api.upstox.com/v2/login/authorization/dialog?response_type=code&client_id=${apiKey}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}`;
@@ -530,13 +570,7 @@ async function startServer() {
 
     const apiKey = process.env.UPTOX_API_KEY ?? "";
     const apiSecret = process.env.UPTOX_API_SECRET ?? "";
-    let redirectUri = process.env.UPTOX_REDIRECT_URI ?? "";
-
-    if (!redirectUri || redirectUri.includes("ais-pre-") || redirectUri.includes("ais-dev-") || !redirectUri.startsWith("http")) {
-      const host = req.get("host") ?? "";
-      const protocol = (req.get("x-forwarded-proto") as string | undefined) ?? req.protocol;
-      redirectUri = `${protocol}://${host}/auth/callback`;
-    }
+    const redirectUri = process.env.UPTOX_REDIRECT_URI ?? "";
 
     const frontendTargetOrigin = process.env.VITE_APP_URL || "*";
 
@@ -571,7 +605,17 @@ async function startServer() {
 
       const data = await response.json();
 
-      if (!data.access_token) return res.status(400).send(renderHtmlResponse(false, "Connection Failed!", { type: 'UPTOX_AUTH_ERROR', error: data }));
+      if (!data.access_token) {
+        logger.error("============= UPSTOX AUTH FAILURE =============");
+        logger.error(`[Upstox Auth] Token Exchange Failed!`);
+        logger.error(`[Upstox Auth] HTTP Status: ${response.status} ${response.statusText}`);
+        logger.error(`[Upstox Auth] Error Payload: ${JSON.stringify(data)}`);
+        logger.error(`[Upstox Auth] Redirect URI Sent: ${redirectUri}`);
+        logger.error(`[Upstox Auth] Host/Protocol Detected: ${req.protocol}://${req.get('host')}`);
+        logger.error("===============================================");
+        
+        return res.status(400).send(renderHtmlResponse(false, "Connection Failed!", { type: 'UPTOX_AUTH_ERROR', error: data }));
+      }
 
       const userJwt = state ? String(state) : null;
       if (userJwt) {
@@ -579,11 +623,14 @@ async function startServer() {
           const decoded: any = jwt.verify(userJwt, JWT_SECRET);
           const userId = decoded.id;
 
+          // STEP 7 UPDATE: Apply exact 3:30 AM expiry for new tokens
+          const newExpiry = getUpstoxTokenExpiry();
+
           await query(
             `INSERT INTO user_tokens (user_id, broker, access_token, refresh_token, expires_at)
-             VALUES ($1, 'upstox', $2, $3, NOW() + INTERVAL '24 hours')
+             VALUES ($1, 'upstox', $2, $3, $4)
              ON CONFLICT (user_id, broker) DO UPDATE SET access_token = EXCLUDED.access_token, refresh_token = EXCLUDED.refresh_token, expires_at = EXCLUDED.expires_at`,
-            [userId, encrypt(String(data.access_token)), encrypt(String(data.refresh_token || ""))]
+            [userId, encrypt(String(data.access_token)), encrypt(String(data.refresh_token || "")), newExpiry]
           );
 
           await query("UPDATE users SET is_uptox_connected = true WHERE id = $1", [userId]);
@@ -601,11 +648,13 @@ async function startServer() {
   app.post("/api/auth/uptox/save-token", authenticateToken, validate(upstoxSaveTokenSchema), async (req: any, res, next) => {
       try {
         const { access_token, refresh_token } = req.body;
+        const newExpiry = getUpstoxTokenExpiry();
+        
         await query(
           `INSERT INTO user_tokens (user_id, broker, access_token, refresh_token, expires_at) 
-           VALUES ($1, $2, $3, $4, NOW() + INTERVAL '24 hours') 
+           VALUES ($1, 'upstox', $2, $3, $4) 
            ON CONFLICT (user_id, broker) DO UPDATE SET access_token = EXCLUDED.access_token, refresh_token = EXCLUDED.refresh_token, expires_at = EXCLUDED.expires_at`,
-          [req.user.id, "upstox", encrypt(String(access_token)), encrypt(String(refresh_token))]
+          [req.user.id, encrypt(String(access_token)), encrypt(String(refresh_token)), newExpiry]
         );
         await query("UPDATE users SET is_uptox_connected = true WHERE id = $1", [req.user.id]);
         
@@ -679,6 +728,12 @@ async function startServer() {
     }
   );
 
+  // --- INSTRUMENT KEY MANAGEMENT (Note for future scaling) ---
+  // If you ever need to support more than these hardcoded arrays, you can fetch 
+  // the daily CSV from https://assets.upstox.com/market-quote/instruments/exchange/NSE.csv.gz
+  // and load it into a local PostgreSQL table or Redis cache.
+  // -----------------------------------------------------------
+
   const primaryIndices = ["NIFTY 50", "SENSEX", "BANKNIFTY", "FINNIFTY", "MIDCAP NIFTY", "SMALLCAP NIFTY"];
   const secondaryIndices = ["NIFTY IT", "NIFTY AUTO", "NIFTY PHARMA", "NIFTY METAL", "NIFTY FMCG", "NIFTY REALTY"];
   const stocks = ["RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "BHARTIARTL", "SBIN", "LICI", "ITC", "HINDUNILVR"];
@@ -732,6 +787,10 @@ async function startServer() {
   const purgeInvalidToken = async (userId: number, reason: string) => {
     logger.warn(`[Upstox] Purging token for user ${userId}. Reason: ${reason}`);
     
+    if (reason.includes('401') || reason.includes('rejected')) {
+      logger.warn(`[Upstox Auth Note] Upstox access tokens rigidly expire at 3:30 AM IST. User must log in again.`);
+    }
+
     await query("DELETE FROM user_tokens WHERE broker = 'upstox' AND user_id = $1", [userId]);
     await query("UPDATE users SET is_uptox_connected = false WHERE id = $1", [userId]);
 
@@ -777,7 +836,9 @@ async function startServer() {
       // =========================================================================
       try {
         const encodedKeys = allKeysList.map(k => encodeURIComponent(k)).join(",");
-        const quoteRes = await fetch(`https://api.upstox.com/v2/market-quote/quotes?instrument_key=${encodedKeys}`, {
+        
+        // STEP 7 UPDATE: Switch to v3/market-quote/ltp endpoint for lighter payload
+        const quoteRes = await fetch(`https://api.upstox.com/v3/market-quote/ltp?instrument_key=${encodedKeys}`, {
           headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }
         });
 
@@ -790,7 +851,9 @@ async function startServer() {
           if (quoteData.data) {
             let updated = false;
             Object.keys(quoteData.data).forEach((key) => {
-              const price = quoteData.data[key].last_price;
+              // The v3 ltp endpoint returns { last_price: number } or { ltp: number } or { price: number }
+              const price = quoteData.data[key].last_price || quoteData.data[key].ltp || quoteData.data[key].price;
+              
               if (price) {
                 const symbol = reverseMap[key] || (key.includes('|') ? key.split('|')[1] : null);
                 if (symbol && allSymbols.includes(symbol)) {
@@ -801,13 +864,18 @@ async function startServer() {
             });
             
             if (updated) {
-              const wsPayload = JSON.stringify({ type: "ticker", data: stockPrices, isSimulated: false });
+              const wsPayload = JSON.stringify({ 
+                type: "ticker", 
+                data: stockPrices, 
+                isSimulated: false,
+                marketStatus: isMarketOpen() ? 'open' : 'closed'
+              });
               wss.clients.forEach((c) => { if (c.readyState === WebSocket.OPEN) c.send(wsPayload); });
             }
           }
         }
       } catch (snapshotErr) {
-        logger.warn("[Upstox] Failed to fetch initial snapshot", snapshotErr);
+        logger.warn("[Upstox] Failed to fetch initial V3 LTP snapshot", snapshotErr);
       }
 
       // =========================================================================
@@ -843,7 +911,7 @@ async function startServer() {
       upstoxMarketWs.binaryType = "nodebuffer"; 
 
       upstoxMarketWs.on("open", () => {
-        logger.info("[Upstox WS] Market Data Stream Connected.");
+        logger.info(`[Upstox WS] Market Data Connected. Market is currently ${isMarketOpen() ? 'OPEN' : 'CLOSED'}.`);
         
         const requestPayload = {
           guid: "aapa-market-data",
@@ -870,7 +938,10 @@ async function startServer() {
           
           if (payload.feeds) {
             Object.entries(payload.feeds).forEach(([key, feedData]: [string, any]) => {
-              const price = feedData?.fullFeed?.marketFF?.ltp || feedData?.ltpcFeed?.ltp;
+              // UPSTOX V3 FIX: The Last Traded Price (ltp) is nested inside ltpc for Full Feed
+              const marketFF = feedData?.fullFeed?.marketFF;
+              const price = marketFF?.ltpc?.ltp || feedData?.ltpcFeed?.ltp || marketFF?.ltp;
+              
               if (price) {
                 const symbol = reverseMap[key] || (key.includes('|') ? key.split('|')[1] : null);
                 if (symbol && allSymbols.includes(symbol)) {
@@ -882,12 +953,17 @@ async function startServer() {
           }
 
           if (updated) {
-            const wsPayload = JSON.stringify({ type: "ticker", data: stockPrices, isSimulated: false });
+            const wsPayload = JSON.stringify({ 
+              type: "ticker", 
+              data: stockPrices, 
+              isSimulated: false,
+              marketStatus: isMarketOpen() ? 'open' : 'closed' 
+            });
             wss.clients.forEach((c) => { if (c.readyState === WebSocket.OPEN) c.send(wsPayload); });
           }
 
         } catch (err) {
-          logger.warn("[Upstox WS] Protobuf Decode Warning (non-fatal)");
+          // Suppress verbose protobuf decode warnings
         }
       });
 
@@ -966,7 +1042,6 @@ async function startServer() {
   let cachedTokenCount = 0;
   let lastTokenCountCheck = 0;
 
-  // 🚀 FIX: Prevented the simulator from jumping the gun and overwriting real data before the WS opens.
   setInterval(async () => {
     const now = Date.now();
     
@@ -977,20 +1052,27 @@ async function startServer() {
         lastTokenCountCheck = now;
       }
 
-      // If NO users are connected to Upstox, run the Demo Mode Simulator
       if (cachedTokenCount === 0) {
         allSymbols.forEach((symbol) => {
           stockPrices[symbol] += stockPrices[symbol] * (Math.random() * 0.0002 - 0.0001);
         });
         
-        const payload = JSON.stringify({ type: "ticker", data: stockPrices, isSimulated: true });
+        const payload = JSON.stringify({ 
+          type: "ticker", 
+          data: stockPrices, 
+          isSimulated: true,
+          marketStatus: isMarketOpen() ? 'open' : 'closed' 
+        });
         wss.clients.forEach((c) => {
           if (c.readyState === WebSocket.OPEN) c.send(payload);
         });
       } else {
-        // A user IS connected. Broadcast the real prices (from snapshot or live WebSocket)
-        // and enforce that Demo Mode is OFF.
-        const payload = JSON.stringify({ type: "ticker", data: stockPrices, isSimulated: false });
+        const payload = JSON.stringify({ 
+          type: "ticker", 
+          data: stockPrices, 
+          isSimulated: false,
+          marketStatus: isMarketOpen() ? 'open' : 'closed' 
+        });
         wss.clients.forEach((c) => {
           if (c.readyState === WebSocket.OPEN) c.send(payload);
         });
@@ -1000,17 +1082,31 @@ async function startServer() {
     }
   }, 1000);
 
+  // --- MARKET STATUS & HEALTH CHECK ENDPOINT ---
   app.get("/api/market-status", async (req, res, next) => {
     try {
+      const apiKeySet = !!process.env.UPTOX_API_KEY;
+      const apiSecretSet = !!process.env.UPTOX_API_SECRET;
+      const redirectUriSet = !!process.env.UPTOX_REDIRECT_URI;
+      const frontEndUrlSet = !!process.env.VITE_APP_URL;
+
       const { rows: countRows } = await query("SELECT COUNT(*) as count FROM user_tokens");
       const { rows: tokens } = await query("SELECT user_id, updated_at FROM user_tokens");
+      
       res.json({
+        status: "ok",
+        api_key_set: apiKeySet,
+        api_secret_set: apiSecretSet,
+        redirect_uri_set: redirectUriSet,
+        frontend_url_set: frontEndUrlSet,
+        environment: process.env.NODE_ENV || "development",
         is_fetching: (upstoxMarketWs && upstoxMarketWs.readyState === WebSocket.OPEN),
         token_count: parseInt(countRows[0].count),
         tokens,
         last_prices: stockPrices,
-        api_key_set: !!process.env.UPTOX_API_KEY,
         market_hours: { open: "09:15", close: "15:30", timezone: "Asia/Kolkata" },
+        market_open: isMarketOpen(), 
+        timestamp: new Date().toISOString()
       });
     } catch (e) {
       next(e);

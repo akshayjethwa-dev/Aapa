@@ -1,5 +1,5 @@
 /// <reference types="vite/client" />
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Toaster, toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
 import { LogOut, ChevronRight, Search, AlertCircle } from 'lucide-react';
@@ -76,23 +76,38 @@ function App() {
     }
   };
 
+  // =========================================================================
+  // UPSTOX CONNECTION TRIGGER
+  // =========================================================================
   const handleConnectUptox = async () => {
+    if (!token) return toast.error("Please log in first");
+    
     setIsConnectingUptox(true);
-    // Open immediately to combat popup blockers
-    const authWindow = window.open('about:blank', 'uptox_auth', 'width=500,height=600');
     try {
+      // 1. Get the authorization URL from the backend
       const res = await apiClient.get('/api/auth/uptox/url');
-      const { url, error } = res.data;
-      if (url && authWindow) {
-        authWindow.location.href = url;
+      const data = res.data;
+
+      if (data.url) {
+        // 2. Calculate popup position to center it
+        const width = 500;
+        const height = 700;
+        const left = window.screen.width / 2 - width / 2;
+        const top = window.screen.height / 2 - height / 2;
+
+        // 3. Open the Upstox login page in a popup window
+        window.open(
+          data.url,
+          'UpstoxLogin',
+          `width=${width},height=${height},top=${top},left=${left},toolbar=no,menubar=no,scrollbars=yes,resizable=yes`
+        );
       } else {
-        authWindow?.close();
-        toast.error(error || 'Uptox configuration missing on server');
+        toast.error("Failed to generate Upstox login URL");
+        setIsConnectingUptox(false);
       }
-    } catch (e: any) {
-      authWindow?.close();
-      toast.error(e.response?.data?.error || 'Failed to get connection URL');
-    } finally {
+    } catch (err: any) {
+      console.error("Upstox connection error:", err);
+      toast.error(err.response?.data?.error || "Failed to start connection");
       setIsConnectingUptox(false);
     }
   };
@@ -159,31 +174,51 @@ function App() {
     verifyToken();
   }, [token, logout, setAuth]);
 
-  // Global Upstox Popup Listener
+  // =========================================================================
+  // GLOBAL MESSAGE LISTENER FOR OAUTH CALLBACK
+  // =========================================================================
   useEffect(() => {
     const handleMessage = async (event: MessageEvent) => {
-      if (event.data?.type === 'UPTOX_AUTH_SUCCESS') {
-        try {
-          const { token: uptoxToken, refresh_token: uptoxRefreshToken } = event.data;
+      // Security: ensure the message is from our own domain
+      const allowedOrigins = [
+        window.location.origin,
+        import.meta.env.VITE_APP_URL
+      ];
 
+      if (!allowedOrigins.includes(event.origin)) return;
+
+      const data = event.data;
+
+      if (data?.type === 'UPTOX_AUTH_SUCCESS') {
+        try {
+          const { token: uptoxToken, refresh_token: uptoxRefreshToken } = data;
+
+          // If fallback tokens were returned instead of the backend saving them, save them now
           if (uptoxToken) {
             await apiClient.post('/api/auth/uptox/save-token', {
               access_token: uptoxToken,
               refresh_token: uptoxRefreshToken || '',
             });
           }
+          
+          // Wait a brief moment to ensure backend saved properly
           await new Promise(r => setTimeout(r, 600));
+          
+          // Refresh user profile to fetch updated is_uptox_connected and balance
           const profileRes = await apiClient.get('/api/user/profile');
           if (profileRes.data?.id) {
             setAuth(profileRes.data, token as string);
-            toast.success('Upstox connected! Live data is now active.');
+            toast.success('Successfully connected to Upstox! Live data is now active.');
           }
         } catch (e) {
           console.error('Failed to finalize Upstox connection', e);
           toast.error('Failed to finalize Upstox connection. Please try again.');
+        } finally {
+          setIsConnectingUptox(false); // Stop loading state
         }
-      } else if (event.data?.type === 'UPTOX_AUTH_ERROR') {
-        toast.error('Upstox connection failed. Please try again.');
+      } else if (data?.type === 'UPTOX_AUTH_ERROR') {
+        toast.error(data.error?.message || 'Upstox connection failed or was cancelled.');
+        setIsConnectingUptox(false); // Stop loading state
       }
     };
 
@@ -281,7 +316,7 @@ function App() {
         wsRef.current.close();
       }
     };
-  }, [token, setAuth, setIsWsConnected]); // 🚀 FIX: Removed user?.is_uptox_connected
+  }, [token, setAuth, setIsWsConnected]);
 
   const pathname = window.location.pathname;
   if (pathname === '/terms') return <TermsOfService />;

@@ -182,7 +182,8 @@ const More = ({
                 <button 
                   key={iIdx} 
                   onClick={item.action}
-                  disabled={item.loading || (item.label === 'Uptox Account' && user?.is_uptox_connected)}
+                  // FIX: Matched the label to 'Connect Upstox'
+                  disabled={item.loading || (item.label === 'Connect Upstox' && user?.is_uptox_connected)}
                   className="w-full bg-zinc-900/30 hover:bg-zinc-900/60 border border-zinc-800/30 rounded-2xl p-4 flex justify-between items-center transition-all group disabled:opacity-50"
                 >
                   <div className="flex items-center gap-4">
@@ -212,7 +213,8 @@ const More = ({
                       >
                         <FileText size={14} />
                       </div>
-                    ) : !user?.is_uptox_connected && item.label === 'Uptox Account' ? (
+                    // FIX: Matched the label to 'Connect Upstox'
+                    ) : !user?.is_uptox_connected && item.label === 'Connect Upstox' ? (
                       <div className="bg-emerald-500 text-black px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">Link</div>
                     ) : (
                       <ChevronRight size={16} className="text-zinc-700 group-hover:text-zinc-400 transition-colors" />
