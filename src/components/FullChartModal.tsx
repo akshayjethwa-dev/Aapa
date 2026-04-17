@@ -1,35 +1,14 @@
-import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, ChevronRight } from 'lucide-react';
+import React, { useState } from 'react';
+import { motion } from 'framer-motion';
+import { ChevronRight } from 'lucide-react';
 import { formatCurrency, cn } from '../lib/utils';
-import TradingViewWidget from './TradingViewWidget';
+import TradingTerminal from './TradingTerminal';
 import ErrorBoundary from './ErrorBoundary';
 
 const FullChartModal = ({ instrument, onClose }: { instrument: any, onClose: () => void }) => {
   const [timeframe, setTimeframe] = useState('5m');
-  const [price, setPrice] = useState(instrument.ltp);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setPrice((prev: number) => prev + (Math.random() - 0.5) * 2);
-    }, 2000); // Reduced frequency to prevent excessive re-renders
-    return () => clearInterval(interval);
-  }, []);
-
-  // Mock data for candlestick
-  const chartData = Array.from({ length: 40 }).map((_, i) => {
-    const base = instrument.ltp + Math.sin(i / 5) * 20;
-    return {
-      time: i,
-      open: base,
-      high: base + Math.random() * 5,
-      low: base - Math.random() * 5,
-      close: base + (Math.random() - 0.5) * 10,
-      volume: Math.floor(Math.random() * 1000),
-      ema: base + 2,
-      vwap: base - 1
-    };
-  });
+  // Initialize with the prop LTP, but update when the WebSocket pushes new data
+  const [livePrice, setLivePrice] = useState(instrument.ltp); 
 
   return (
     <motion.div 
@@ -50,10 +29,10 @@ const FullChartModal = ({ instrument, onClose }: { instrument: any, onClose: () 
           </div>
         </div>
         <div className="text-right">
-          <p className={cn("text-lg font-black tracking-tighter", price >= instrument.avgPrice ? "text-emerald-500" : "text-rose-500")}>
-            {formatCurrency(price)}
+          <p className={cn("text-lg font-black tracking-tighter", livePrice >= instrument.ltp ? "text-emerald-500" : "text-rose-500")}>
+            {formatCurrency(livePrice)}
           </p>
-          <p className="text-[10px] font-bold text-zinc-500">{(Math.random() * 2).toFixed(2)}%</p>
+          <p className="text-[10px] font-bold text-zinc-500">Live</p>
         </div>
       </div>
 
@@ -73,22 +52,15 @@ const FullChartModal = ({ instrument, onClose }: { instrument: any, onClose: () 
             </button>
           ))}
         </div>
-        <div className="flex gap-2">
-          <div className="flex items-center gap-1 px-2 py-1 rounded-lg bg-blue-500/10 border border-blue-500/20">
-            <div className="w-1.5 h-1.5 rounded-full bg-blue-500" />
-            <span className="text-[8px] font-black text-blue-500 uppercase">EMA</span>
-          </div>
-          <div className="flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-500/10 border border-amber-500/20">
-            <div className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-            <span className="text-[8px] font-black text-amber-500 uppercase">VWAP</span>
-          </div>
-        </div>
       </div>
 
-      {/* Chart Area */}
-      <div className="flex-1 relative">
+      {/* Chart Area - Now using Real Data via TradingTerminal */}
+      <div className="flex-1 relative bg-black">
         <ErrorBoundary>
-          <TradingViewWidget symbol={instrument.symbol} />
+          <TradingTerminal 
+            instrumentKey={instrument.symbol} 
+            onPriceUpdate={(newPrice) => setLivePrice(newPrice)} 
+          />
         </ErrorBoundary>
       </div>
 

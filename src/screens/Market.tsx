@@ -10,6 +10,7 @@ import { INDEX_CONSTITUENTS, F_O_INDICES } from '../constants/marketData';
 import { MarketQuote, MarketPhase } from '../types';
 import MarketStatusPill from '../components/MarketStatusPill';
 import { apiClient } from '../api/client'; 
+import TradingTerminal from '../components/TradingTerminal';
 
 const Market = ({ 
   stocks, 
@@ -362,7 +363,11 @@ const Market = ({
 
                 <div className="h-80 bg-zinc-900/50 rounded-4xl border border-zinc-800/50 relative overflow-hidden">
                   <ErrorBoundary>
-                    <TradingViewWidget symbol={selectedStock} />
+                    {/* Replaced TradingViewWidget with TradingTerminal */}
+                    <TradingTerminal 
+                      instrumentKey={selectedStock} 
+                      // Optionally update the local selected stock price if you have state for it
+                    />
                   </ErrorBoundary>
                 </div>
 
