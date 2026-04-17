@@ -23,6 +23,9 @@ export const placeOrderSchema = z.object({
   price: z.coerce.number().nonnegative('Price cannot be negative').optional().default(0),
   product: z.string().optional().default('I'),
   broker: z.enum(['upstox', 'angelone']).optional().default('upstox'),
+  
+  // --- NEW: Added for Story B4 (Server-side translation of option contracts) ---
+  expiry: z.string().optional(), 
 });
 
 export const angelOneLoginSchema = z.object({

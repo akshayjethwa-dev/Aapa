@@ -5,7 +5,16 @@ import { toast } from 'sonner';
 import { formatCurrency, cn } from '../lib/utils';
 import { useAuthStore } from '../store/authStore';
 
-// --- MODIFIED: Added onKycRequired to the props ---
+// --- STORY B4: Formalized Data Contract ---
+export interface OrderConfig {
+  side: 'BUY' | 'SELL';
+  symbol: string;      // e.g., "NIFTY 22500 CE" or "RELIANCE"
+  strike?: number;     // e.g., 22500
+  optionType?: 'CE' | 'PE';
+  expiry?: string;     // e.g., "2024-04-18"
+  price: number;       // e.g., 145.20
+}
+
 const OrderWindow = ({ 
   config, 
   onClose, 
@@ -13,17 +22,17 @@ const OrderWindow = ({
   isDemoMode = false,
   onKycRequired 
 }: { 
-  config: any, 
+  config: OrderConfig, 
   onClose: () => void, 
   onOrderPlaced: () => void, 
   isDemoMode?: boolean,
   onKycRequired?: () => void 
 }) => {
   const { user, token } = useAuthStore();
-  const [quantity, setQuantity] = useState(config.quantity || 1);
+  const [quantity, setQuantity] = useState<number | string>(1);
   const [orderType, setOrderType] = useState('Market');
   const [product, setProduct] = useState('Intraday');
-  const [price, setPrice] = useState(config.price || 0);
+  const [price, setPrice] = useState<number | string>(config.price || 0);
   const [loading, setLoading] = useState(false);
   const [broker, setBroker] = useState(user?.is_uptox_connected ? 'uptox' : user?.is_angelone_connected ? 'angelone' : 'uptox');
 
@@ -43,24 +52,23 @@ const OrderWindow = ({
         },
         body: JSON.stringify({
           broker,
-          symbol: config.strike ? `${config.symbol} ${config.strike} ${config.optionType}` : config.symbol,
+          symbol: config.symbol, // Passes "NIFTY 22500 CE" directly
           type: config.side.toLowerCase(),
           order_type: orderType.toLowerCase(),
-          quantity: parseInt(quantity),
-          price: orderType === 'Market' ? config.price : parseFloat(price),
-          product: product.toLowerCase()
+          quantity: parseInt(quantity.toString()),
+          price: orderType === 'Market' ? config.price : parseFloat(price.toString()),
+          product: product.toLowerCase(),
+          expiry: config.expiry // Critical for backend Upstox translation
         })
       });
       const data = await res.json();
 
-      // --- ADDED: Intercept 403 KYC Requirement ---
       if (res.status === 403 && data.requires_kyc) {
-        onClose(); // Close the order window
-        if (onKycRequired) onKycRequired(); // Trigger UI route change
+        onClose(); 
+        if (onKycRequired) onKycRequired(); 
         toast.error(data.message || 'KYC required to trade.');
         return;
       }
-      // --------------------------------------------
 
       if (data.success) {
         onOrderPlaced();
@@ -95,7 +103,7 @@ const OrderWindow = ({
           </button>
           <div>
             <h2 className="text-sm font-black text-white tracking-tight">
-              {config.side} {config.symbol.replace(' 50', '')}{config.strike ? ` ${config.strike} ${config.optionType}` : ''}
+              {config.side} {config.symbol.replace(' 50', '')}
             </h2>
             <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">
               {config.expiry || 'Equity • NSE'}
@@ -222,7 +230,7 @@ const OrderWindow = ({
         <div className="bg-zinc-900/20 border border-zinc-800/30 rounded-2xl p-4 flex justify-between items-center">
           <div>
             <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Approx Margin</p>
-            <p className="text-sm font-bold text-white">{formatCurrency(quantity * (orderType === 'Market' ? config.price : price))}</p>
+            <p className="text-sm font-bold text-white">{formatCurrency((Number(quantity) || 0) * (orderType === 'Market' ? config.price : Number(price) || 0))}</p>
           </div>
           <div className="text-right">
             <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Available</p>
@@ -241,7 +249,7 @@ const OrderWindow = ({
             (loading || connectedBrokers.length === 0 || isDemoMode) && "opacity-50 cursor-not-allowed"
           )}
         >
-          {loading ? 'Processing...' : isDemoMode ? 'Disabled in Demo Mode' : `${config.side} ${config.symbol}`}
+          {loading ? 'Processing...' : isDemoMode ? 'Disabled in Demo Mode' : `${config.side} ${config.symbol.replace(' 50', '')}`}
         </button>
       </div>
     </motion.div>

@@ -1,75 +1,78 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { ChevronDown, RefreshCw, Activity, Zap, TrendingDown } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { ChevronDown, RefreshCw, Activity, TrendingDown, Layers } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useAuthStore } from '../store/authStore';
-import { apiClient } from '../api/client'; // <-- Import apiClient
+import { apiClient } from '../api/client';
 
+// Updated Interface matching Normalized Backend Data with Greeks
 interface OptionData {
   strike: number;
-  ce: {
-    ltp: number;
-    change: number;
-    oi: string;
-    volume: string;
-  };
-  pe: {
-    ltp: number;
-    change: number;
-    oi: string;
-    volume: string;
-  };
+  ce: { ltp: number | null; perc_change: number | null; oi_formatted: string; vol_formatted: string; is_active: boolean; iv: string; delta: string; theta: string; vega: string; };
+  pe: { ltp: number | null; perc_change: number | null; oi_formatted: string; vol_formatted: string; is_active: boolean; iv: string; delta: string; theta: string; vega: string; };
 }
 
 interface OptionChainProps {
   onPlaceOrder?: (config: any) => void;
-  stocks?: Record<string, number>;
+  stocks?: Record<string, number>; // Must contain spot prices e.g. { "NIFTY 50": 22400.50 }
   fullChain?: boolean;
 }
 
 const OptionChain: React.FC<OptionChainProps> = ({ onPlaceOrder, stocks = {}, fullChain = false }) => {
   const [symbol, setSymbol] = useState('NIFTY');
-  const [expiry, setExpiry] = useState('04 APR 2024');
+  const [expiry, setExpiry] = useState(''); 
+  const [expiries, setExpiries] = useState<string[]>([]);
+  const [isExpiriesLoading, setIsExpiriesLoading] = useState(false);
+  
   const [options, setOptions] = useState<OptionData[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [selectedStrike, setSelectedStrike] = useState<{ strike: number; type: 'CE' | 'PE'; price: number } | null>(null);
+  
+  // New State for Option Greeks Toggle
+  const [showGreeks, setShowGreeks] = useState(false);
 
   const { token, user } = useAuthStore();
 
-  // Fetch data from API
+  const indexMap: Record<string, string> = {
+    'NIFTY': 'NSE_INDEX|Nifty 50',
+    'BANKNIFTY': 'NSE_INDEX|Nifty Bank',
+    'FINNIFTY': 'NSE_INDEX|Nifty Fin Service'
+  };
+
+  // 1. Fetch Dynamic Expiries
+  useEffect(() => {
+    const fetchExpiries = async () => {
+      if (!token) return;
+      setIsExpiriesLoading(true);
+      try {
+        const instrumentKey = indexMap[symbol] || `NSE_INDEX|${symbol}`;
+        const response = await apiClient.get(`/api/option-expiries?instrument_key=${encodeURIComponent(instrumentKey)}`);
+        
+        if (response.data.status === 'success' && response.data.data.length > 0) {
+          setExpiries(response.data.data);
+          setExpiry(response.data.data[0]); 
+        }
+      } catch (e) {
+        console.error("Failed to fetch expiries", e);
+      } finally {
+        setIsExpiriesLoading(false);
+      }
+    };
+    fetchExpiries();
+  }, [symbol, token]);
+
+  // 2. Fetch Normalized Option Chain Data with Greeks
   useEffect(() => {
     const fetchData = async () => {
-      if (!token) return;
+      if (!token || !expiry) return; 
       setLoading(true);
       try {
-        const indexMap: Record<string, string> = {
-          'NIFTY': 'NSE_INDEX|Nifty 50',
-          'BANKNIFTY': 'NSE_INDEX|Nifty Bank',
-          'FINNIFTY': 'NSE_INDEX|Nifty Fin Service'
-        };
         const instrumentKey = indexMap[symbol] || `NSE_INDEX|${symbol}`;
-        
-        // --> USING APICLIENT (No manual headers needed!)
         const response = await apiClient.get(`/api/option-chain?instrument_key=${encodeURIComponent(instrumentKey)}&expiry_date=${expiry}`);
-        const data = response.data; // Axios puts JSON in .data
+        const data = response.data; 
         
         if (data.status === 'success' && data.data) {
-          const formattedData: OptionData[] = data.data.map((item: any) => ({
-            strike: item.strike_price,
-            ce: {
-              ltp: item.call_options?.market_data?.ltp || 0,
-              change: item.call_options?.market_data?.perc_change || 0,
-              oi: (item.call_options?.market_data?.oi / 100000).toFixed(1) + 'L',
-              volume: (item.call_options?.market_data?.volume / 1000).toFixed(1) + 'K',
-            },
-            pe: {
-              ltp: item.put_options?.market_data?.ltp || 0,
-              change: item.put_options?.market_data?.perc_change || 0,
-              oi: (item.put_options?.market_data?.oi / 100000).toFixed(1) + 'L',
-              volume: (item.put_options?.market_data?.volume / 1000).toFixed(1) + 'K',
-            }
-          }));
-          setOptions(formattedData);
+          setOptions(data.data);
         }
       } catch (e) {
         console.error("Failed to fetch option chain", e);
@@ -83,12 +86,14 @@ const OptionChain: React.FC<OptionChainProps> = ({ onPlaceOrder, stocks = {}, fu
     return () => clearInterval(interval);
   }, [symbol, expiry, token]);
 
+  // 3. ATM Filtering Logic
   const filteredOptions = useMemo(() => {
-    if (fullChain) return options;
-    if (!user || user.role !== 'user' || options.length === 0) return options;
+    if (fullChain || options.length === 0) return options;
+    if (user && user.role === 'admin') return options;
 
     const indexPriceKey = symbol === 'NIFTY' ? 'NIFTY 50' : symbol;
     const spotPrice = stocks[indexPriceKey] || 0;
+    
     if (spotPrice === 0) return options;
 
     const strikeInterval = symbol.includes('BANKNIFTY') ? 100 : 50;
@@ -97,11 +102,10 @@ const OptionChain: React.FC<OptionChainProps> = ({ onPlaceOrder, stocks = {}, fu
     const atmIdx = options.findIndex(opt => opt.strike === atmStrike);
     
     if (atmIdx !== -1) {
-      return options.slice(Math.max(0, atmIdx - 1), Math.min(options.length, atmIdx + 2));
+      return options.slice(Math.max(0, atmIdx - 2), Math.min(options.length, atmIdx + 3));
     } else {
       let closestIdx = 0;
       let minDiff = Math.abs(options[0].strike - spotPrice);
-      
       for (let i = 1; i < options.length; i++) {
         const diff = Math.abs(options[i].strike - spotPrice);
         if (diff < minDiff) {
@@ -109,22 +113,27 @@ const OptionChain: React.FC<OptionChainProps> = ({ onPlaceOrder, stocks = {}, fu
           closestIdx = i;
         }
       }
-      return options.slice(Math.max(0, closestIdx - 1), Math.min(options.length, closestIdx + 2));
+      return options.slice(Math.max(0, closestIdx - 2), Math.min(options.length, closestIdx + 3));
     }
-  }, [options, user, symbol, stocks]);
+  }, [options, user, symbol, stocks, fullChain]);
 
   const handleTrade = (side: 'BUY' | 'SELL') => {
     if (!selectedStrike || !onPlaceOrder) return;
-    
     onPlaceOrder({
       side,
-      symbol: `${symbol} ${selectedStrike.strike} ${selectedStrike.type}`,
+      symbol, // FIX: Pass just the base symbol (e.g. "NIFTY") so OrderWindow handles the rest
       strike: selectedStrike.strike,
       optionType: selectedStrike.type,
       expiry,
       price: selectedStrike.price
     });
     setSelectedStrike(null);
+  };
+
+  const formatExpiryDisplay = (dateString: string) => {
+    if (!dateString) return '';
+    const date = new Date(dateString);
+    return date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).toUpperCase();
   };
 
   return (
@@ -146,8 +155,8 @@ const OptionChain: React.FC<OptionChainProps> = ({ onPlaceOrder, stocks = {}, fu
           </button>
         </div>
         
-        <div className="grid grid-cols-2 gap-2">
-          <div className="relative group">
+        <div className="grid grid-cols-3 gap-2">
+          <div className="relative group col-span-1">
             <select 
               value={symbol} 
               onChange={(e) => setSymbol(e.target.value)}
@@ -160,34 +169,41 @@ const OptionChain: React.FC<OptionChainProps> = ({ onPlaceOrder, stocks = {}, fu
             <ChevronDown size={14} className="absolute right-4 top-1/2 -translate-y-1/2 text-zinc-600 pointer-events-none" />
           </div>
           
-          <div className="relative group">
+          <div className="relative group col-span-1">
             <select 
               value={expiry} 
               onChange={(e) => setExpiry(e.target.value)}
-              className="w-full bg-zinc-900/50 border border-zinc-800 rounded-xl px-4 py-3 text-[11px] font-bold text-white appearance-none focus:outline-none focus:border-emerald-500/50 transition-all"
+              disabled={isExpiriesLoading || expiries.length === 0}
+              className="w-full bg-zinc-900/50 border border-zinc-800 rounded-xl px-4 py-3 text-[11px] font-bold text-white appearance-none focus:outline-none focus:border-emerald-500/50 transition-all disabled:opacity-50"
             >
-              <option value="04 APR 2024">04 APR 2024</option>
-              <option value="11 APR 2024">11 APR 2024</option>
-              <option value="18 APR 2024">18 APR 2024</option>
+              {isExpiriesLoading ? (
+                <option value="">Loading...</option>
+              ) : expiries.length > 0 ? (
+                expiries.map(dateStr => (
+                  <option key={dateStr} value={dateStr}>
+                    {formatExpiryDisplay(dateStr)}
+                  </option>
+                ))
+              ) : (
+                <option value="">No Expiries</option>
+              )}
             </select>
             <ChevronDown size={14} className="absolute right-4 top-1/2 -translate-y-1/2 text-zinc-600 pointer-events-none" />
           </div>
-        </div>
-      </div>
 
-      {/* Sentiment Indicators */}
-      <div className="grid grid-cols-3 gap-2">
-        <div className="bg-zinc-900/30 border border-zinc-800/50 rounded-xl p-3 space-y-1">
-          <p className="text-[8px] font-bold text-zinc-500 uppercase tracking-widest">Max Pain</p>
-          <p className="text-[12px] font-black text-blue-500">{symbol === 'NIFTY' ? '22,350' : '47,600'}</p>
-        </div>
-        <div className="bg-zinc-900/30 border border-zinc-800/50 rounded-xl p-3 space-y-1">
-          <p className="text-[8px] font-bold text-zinc-500 uppercase tracking-widest">PCR</p>
-          <p className="text-[12px] font-black text-emerald-500">0.92</p>
-        </div>
-        <div className="bg-zinc-900/30 border border-zinc-800/50 rounded-xl p-3 space-y-1">
-          <p className="text-[8px] font-bold text-zinc-500 uppercase tracking-widest">India VIX</p>
-          <p className="text-[12px] font-black text-purple-500">12.45</p>
+          {/* Toggle Greeks Button */}
+          <button 
+            onClick={() => setShowGreeks(!showGreeks)}
+            className={cn(
+              "col-span-1 flex items-center justify-center gap-2 rounded-xl text-[11px] font-bold transition-all border",
+              showGreeks 
+                ? "bg-purple-500/10 border-purple-500/50 text-purple-400 shadow-[0_0_15px_rgba(168,85,247,0.15)]" 
+                : "bg-zinc-900/50 border-zinc-800 text-zinc-400 hover:text-white"
+            )}
+          >
+            <Layers size={14} />
+            {showGreeks ? 'Hide Greeks' : 'Show Greeks'}
+          </button>
         </div>
       </div>
 
@@ -202,51 +218,109 @@ const OptionChain: React.FC<OptionChainProps> = ({ onPlaceOrder, stocks = {}, fu
                 <th colSpan={2} className="px-3 py-2 text-center text-[9px] font-black text-rose-500 uppercase tracking-widest border-l border-zinc-800/50">Puts (PE)</th>
               </tr>
               <tr className="bg-zinc-900/30 border-b border-zinc-800/50 text-[8px] font-bold text-zinc-600 uppercase tracking-tighter">
-                <th className="px-2 py-1.5 text-center">OI</th>
-                <th className="px-2 py-1.5 text-center border-r border-zinc-800/50">LTP</th>
-                <th className="px-2 py-1.5 text-center bg-zinc-900/50">Price</th>
-                <th className="px-2 py-1.5 text-center border-l border-zinc-800/50">LTP</th>
-                <th className="px-2 py-1.5 text-center">OI</th>
+                <th className="px-2 py-1.5 text-center w-1/5">OI</th>
+                <th className="px-2 py-1.5 text-center w-1/5 border-r border-zinc-800/50">LTP</th>
+                <th className="px-2 py-1.5 text-center w-1/5 bg-zinc-900/50">Price</th>
+                <th className="px-2 py-1.5 text-center w-1/5 border-l border-zinc-800/50">LTP</th>
+                <th className="px-2 py-1.5 text-center w-1/5">OI</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-800/30">
               {filteredOptions.map((opt, idx) => (
-                <tr key={idx} className="group hover:bg-zinc-900/40 transition-colors">
-                  {/* CE Side */}
-                  <td className="px-2 py-3 text-center text-[10px] text-zinc-500 font-medium">{opt.ce.oi}</td>
-                  <td 
-                    onClick={() => setSelectedStrike({ strike: opt.strike, type: 'CE', price: opt.ce.ltp })}
-                    className={cn(
-                      "px-2 py-3 text-center cursor-pointer transition-all border-r border-zinc-800/50",
-                      selectedStrike?.strike === opt.strike && selectedStrike?.type === 'CE' ? "bg-emerald-500/10 ring-1 ring-inset ring-emerald-500/20" : ""
-                    )}
-                  >
-                    <p className="text-[11px] font-black text-white">{opt.ce.ltp.toFixed(2)}</p>
-                    <p className={cn("text-[8px] font-bold", opt.ce.change >= 0 ? "text-emerald-500" : "text-rose-500")}>
-                      {opt.ce.change >= 0 ? '+' : ''}{opt.ce.change.toFixed(1)}%
-                    </p>
-                  </td>
+                <React.Fragment key={idx}>
+                  {/* Primary Data Row */}
+                  <tr className="group hover:bg-zinc-900/40 transition-colors">
+                    <td className="px-2 py-3 text-center text-[10px] text-zinc-500 font-medium">
+                      {opt.ce.oi_formatted}
+                    </td>
+                    <td 
+                      onClick={() => opt.ce.is_active && setSelectedStrike({ strike: opt.strike, type: 'CE', price: opt.ce.ltp! })}
+                      className={cn(
+                        "px-2 py-3 text-center transition-all border-r border-zinc-800/50",
+                        opt.ce.is_active ? "cursor-pointer" : "cursor-not-allowed opacity-50",
+                        selectedStrike?.strike === opt.strike && selectedStrike?.type === 'CE' ? "bg-emerald-500/10 ring-1 ring-inset ring-emerald-500/20" : ""
+                      )}
+                    >
+                      {opt.ce.is_active ? (
+                        <>
+                          <p className="text-[11px] font-black text-white">{opt.ce.ltp!.toFixed(2)}</p>
+                          <p className={cn("text-[8px] font-bold", opt.ce.perc_change! >= 0 ? "text-emerald-500" : "text-rose-500")}>
+                            {opt.ce.perc_change! >= 0 ? '+' : ''}{opt.ce.perc_change!.toFixed(1)}%
+                          </p>
+                        </>
+                      ) : (
+                        <p className="text-[11px] font-black text-zinc-600">-</p>
+                      )}
+                    </td>
 
-                  {/* Strike */}
-                  <td className="px-2 py-3 text-center bg-zinc-900/50">
-                    <span className="text-[11px] font-black text-zinc-400">{opt.strike}</span>
-                  </td>
+                    {/* Strike Price */}
+                    <td className="px-2 py-3 text-center bg-zinc-900/50">
+                      <span className="text-[11px] font-black text-zinc-400">{opt.strike}</span>
+                    </td>
 
-                  {/* PE Side */}
-                  <td 
-                    onClick={() => setSelectedStrike({ strike: opt.strike, type: 'PE', price: opt.pe.ltp })}
-                    className={cn(
-                      "px-2 py-3 text-center cursor-pointer transition-all border-l border-zinc-800/50",
-                      selectedStrike?.strike === opt.strike && selectedStrike?.type === 'PE' ? "bg-rose-500/10 ring-1 ring-inset ring-rose-500/20" : ""
-                    )}
-                  >
-                    <p className="text-[11px] font-black text-white">{opt.pe.ltp.toFixed(2)}</p>
-                    <p className={cn("text-[8px] font-bold", opt.pe.change >= 0 ? "text-emerald-500" : "text-rose-500")}>
-                      {opt.pe.change >= 0 ? '+' : ''}{opt.pe.change.toFixed(1)}%
-                    </p>
-                  </td>
-                  <td className="px-2 py-3 text-center text-[10px] text-zinc-500 font-medium">{opt.pe.oi}</td>
-                </tr>
+                    <td 
+                      onClick={() => opt.pe.is_active && setSelectedStrike({ strike: opt.strike, type: 'PE', price: opt.pe.ltp! })}
+                      className={cn(
+                        "px-2 py-3 text-center transition-all border-l border-zinc-800/50",
+                        opt.pe.is_active ? "cursor-pointer" : "cursor-not-allowed opacity-50",
+                        selectedStrike?.strike === opt.strike && selectedStrike?.type === 'PE' ? "bg-rose-500/10 ring-1 ring-inset ring-rose-500/20" : ""
+                      )}
+                    >
+                      {opt.pe.is_active ? (
+                        <>
+                          <p className="text-[11px] font-black text-white">{opt.pe.ltp!.toFixed(2)}</p>
+                          <p className={cn("text-[8px] font-bold", opt.pe.perc_change! >= 0 ? "text-emerald-500" : "text-rose-500")}>
+                            {opt.pe.perc_change! >= 0 ? '+' : ''}{opt.pe.perc_change!.toFixed(1)}%
+                          </p>
+                        </>
+                      ) : (
+                        <p className="text-[11px] font-black text-zinc-600">-</p>
+                      )}
+                    </td>
+                    <td className="px-2 py-3 text-center text-[10px] text-zinc-500 font-medium">
+                      {opt.pe.oi_formatted}
+                    </td>
+                  </tr>
+
+                  {/* Expandable Greeks Row */}
+                  {showGreeks && (
+                    <tr className="bg-zinc-900/30 text-[9px] font-medium text-zinc-500 border-b border-zinc-800/30 shadow-inner">
+                      <td colSpan={2} className="px-2 py-2 border-r border-zinc-800/50">
+                        <div className="flex items-center justify-around w-full">
+                          <span className="flex flex-col items-center">
+                            <span className="text-[8px] uppercase tracking-wider opacity-60">IV</span>
+                            <span className="text-purple-400">{opt.ce.iv}%</span>
+                          </span>
+                          <span className="flex flex-col items-center">
+                            <span className="text-[8px] uppercase tracking-wider opacity-60">Delta</span>
+                            <span className="text-zinc-300">{opt.ce.delta}</span>
+                          </span>
+                          <span className="flex flex-col items-center">
+                            <span className="text-[8px] uppercase tracking-wider opacity-60">Theta</span>
+                            <span className="text-zinc-300">{opt.ce.theta}</span>
+                          </span>
+                        </div>
+                      </td>
+                      <td className="bg-zinc-900/50"></td>
+                      <td colSpan={2} className="px-2 py-2 border-l border-zinc-800/50">
+                        <div className="flex items-center justify-around w-full">
+                          <span className="flex flex-col items-center">
+                            <span className="text-[8px] uppercase tracking-wider opacity-60">IV</span>
+                            <span className="text-purple-400">{opt.pe.iv}%</span>
+                          </span>
+                          <span className="flex flex-col items-center">
+                            <span className="text-[8px] uppercase tracking-wider opacity-60">Delta</span>
+                            <span className="text-zinc-300">{opt.pe.delta}</span>
+                          </span>
+                          <span className="flex flex-col items-center">
+                            <span className="text-[8px] uppercase tracking-wider opacity-60">Theta</span>
+                            <span className="text-zinc-300">{opt.pe.theta}</span>
+                          </span>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
               ))}
             </tbody>
           </table>

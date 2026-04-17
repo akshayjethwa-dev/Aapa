@@ -4,12 +4,13 @@ import { ArrowLeft, TrendingUp, ArrowUpRight, ArrowDownRight, Layers, ChevronDow
 import { formatCurrency, cn } from '../lib/utils';
 import TradingViewWidget from '../components/TradingViewWidget';
 import OptionChain from '../components/OptionChain';
+import OrderWindow, { OrderConfig } from './OrderWindow'; // <-- Imported OrderWindow and Interface
 import { useAuthStore } from '../store/authStore';
 import { F_O_INDICES } from '../constants/marketData';
 import { toast } from 'sonner';
 import Sparkline from '../components/Sparkline';
 import FullChartModal from '../components/FullChartModal';
-import { apiClient } from '../api/client'; // <-- ADDED IMPORT
+import { apiClient } from '../api/client';
 
 const FOTradingCenter = ({ 
   stocks, 
@@ -34,17 +35,16 @@ const FOTradingCenter = ({
   const [positions, setPositions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // --- STORY B4: Order Config State ---
+  const [orderConfig, setOrderConfig] = useState<OrderConfig | null>(null);
+
   useEffect(() => {
-    // We still check for the token's presence, but we don't need to pass it manually
-    // because apiClient handles the Authorization headers automatically.
     const token = localStorage.getItem('token');
     if (!token) return;
     
     const fetchPositions = async () => {
       try {
-        // Switched to apiClient to handle automatic token refreshing and 403s
         const res = await apiClient.get('/api/portfolio/positions');
-        
         const data = res.data;
         setPositions(Array.isArray(data) ? data : []);
       } catch (err) {
@@ -63,7 +63,6 @@ const FOTradingCenter = ({
     const pos = positions[index];
     if (isScalperMode || confirmExit === index) {
       toast.info(`Placing exit order for ${pos.symbol}...`);
-      // In a real app, we'd call /api/orders with the opposite side
       setPositions(positions.filter((_, i) => i !== index));
       setConfirmExit(null);
     } else {
@@ -71,10 +70,6 @@ const FOTradingCenter = ({
       setTimeout(() => setConfirmExit(null), 3000);
     }
   };
-
-  const [orders, setOrders] = useState<any[]>([
-    { symbol: 'FINNIFTY 20500 CE', quantity: 40, price: 12.50, status: 'Pending', type: 'Buy' },
-  ]);
 
   const totalPnL = positions.reduce((acc, pos) => {
     return acc + (pos.ltp - pos.avgPrice) * pos.quantity;
@@ -308,6 +303,7 @@ const FOTradingCenter = ({
             onClose={() => setActiveChart(null)} 
           />
         )}
+        
         {slTgtModal && (
           <motion.div 
             key="sl-tgt-modal"
@@ -343,6 +339,15 @@ const FOTradingCenter = ({
               </div>
             </motion.div>
           </motion.div>
+        )}
+
+        {/* --- STORY B4: Render OrderWindow when OptionChain triggers it --- */}
+        {orderConfig && (
+          <OrderWindow 
+            config={orderConfig}
+            onClose={() => setOrderConfig(null)}
+            onOrderPlaced={() => setOrderConfig(null)}
+          />
         )}
       </AnimatePresence>
     </div>

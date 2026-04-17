@@ -9,7 +9,7 @@ import ErrorBoundary from '../components/ErrorBoundary';
 import { INDEX_CONSTITUENTS, F_O_INDICES } from '../constants/marketData';
 import { MarketQuote, MarketPhase } from '../types';
 import MarketStatusPill from '../components/MarketStatusPill';
-import { apiClient } from '../api/client'; // Added API Client
+import { apiClient } from '../api/client'; 
 
 const Market = ({ 
   stocks, 
@@ -308,9 +308,10 @@ const Market = ({
           </div>
         )}
 
+        {/* Removed fullChain prop so the internal ATM logic handles rendering appropriately based on User Role */}
         {activeSegment === 'F&O' && (
           <div className="space-y-4">
-            <OptionChain onPlaceOrder={onPlaceOrder} stocks={optionChainStocks} fullChain={true} />
+            <OptionChain onPlaceOrder={onPlaceOrder} stocks={optionChainStocks} />
           </div>
         )}
       </div>

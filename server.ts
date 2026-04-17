@@ -682,6 +682,136 @@ async function startServer() {
     }
   );
 
+  // --- IN-MEMORY CACHE FOR RAILWAY OPTIMIZATION ---
+  const expiryCache: Record<string, { dates: string[], timestamp: number }> = {};
+  const CACHE_TTL = 1000 * 60 * 60; // 1 Hour
+
+  // --- NEW: Dynamic Expiry Discovery Endpoint ---
+  app.get("/api/option-expiries", authenticateToken, async (req: any, res, next) => {
+    try {
+      const { instrument_key } = req.query;
+      if (!instrument_key) return res.status(400).json({ error: "Missing instrument_key" });
+
+      // Return from cache if valid (Saves Upstox API limits)
+      if (expiryCache[instrument_key] && (Date.now() - expiryCache[instrument_key].timestamp < CACHE_TTL)) {
+        return res.json({ status: "success", data: expiryCache[instrument_key].dates });
+      }
+
+      const { rows } = await query("SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = 'upstox'", [req.user.id]);
+      const userToken = rows[0];
+
+      if (!userToken || !userToken.access_token) {
+        return res.status(400).json({ error: "Please connect your Upstox account to fetch live expiries." });
+      }
+
+      const decryptedToken = decrypt(String(userToken.access_token));
+      
+      // Fetch available contracts for the instrument from Upstox
+      const response = await fetch(`https://api.upstox.com/v2/option/contract?instrument_key=${encodeURIComponent(String(instrument_key))}`, {
+        headers: { "Authorization": `Bearer ${decryptedToken}`, "Accept": "application/json" }
+      });
+      
+      const data = await response.json();
+      
+      if (data.status === 'success' && data.data) {
+         // Extract unique expiry dates using a Set
+         const expirySet = new Set<string>();
+         data.data.forEach((item: any) => {
+           if (item.expiry_date) expirySet.add(item.expiry_date);
+         });
+         
+         // Sort dates closest to furthest
+         const expiries = Array.from(expirySet).sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
+         
+         // Save to cache
+         expiryCache[instrument_key] = { dates: expiries, timestamp: Date.now() };
+         
+         return res.json({ status: "success", data: expiries });
+      } else {
+         return res.status(400).json({ error: data.errors?.[0]?.message || "Failed to fetch expiries from broker." });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: "Server error fetching expiries", details: e.message });
+    }
+  });
+
+  // --- NEW: Option Chain API Endpoint (Normalized with Greeks for Story B3) ---
+  app.get("/api/option-chain", authenticateToken, async (req: any, res, next) => {
+    try {
+      const { instrument_key, expiry_date } = req.query;
+      if (!instrument_key || !expiry_date) return res.status(400).json({ error: "Missing instrument_key or expiry_date" });
+
+      const { rows } = await query("SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = 'upstox'", [req.user.id]);
+      const userToken = rows[0];
+
+      if (!userToken || !userToken.access_token) {
+        return res.status(400).json({ error: "Please connect your Upstox account to fetch option chain." });
+      }
+
+      const decryptedToken = decrypt(String(userToken.access_token));
+
+      const response = await fetch(`https://api.upstox.com/v2/option/chain?instrument_key=${encodeURIComponent(String(instrument_key))}&expiry_date=${expiry_date}`, {
+        headers: { "Authorization": `Bearer ${decryptedToken}`, "Accept": "application/json" }
+      });
+
+      const data = await response.json();
+
+      // Standardize & Normalize Response for Frontend (Including Greeks)
+      if (data.status === 'success' && data.data) {
+         // Helper function to handle nulls and scale values (Lakhs/Thousands)
+         const formatVal = (val: number | undefined, divisor: number, suffix: string) => {
+            if (val === undefined || val === null || isNaN(val)) return '-';
+            if (val === 0) return '0';
+            return (val / divisor).toFixed(1) + suffix;
+         };
+
+         const formatGreek = (val: number | undefined, decimalPlaces: number = 4) => {
+            if (val === undefined || val === null || isNaN(val)) return '-';
+            return val.toFixed(decimalPlaces);
+         };
+
+         const normalizedChain = data.data.map((item: any) => {
+            const ce = item.call_options?.market_data;
+            const pe = item.put_options?.market_data;
+            const ceGreeks = item.call_options?.option_greeks;
+            const peGreeks = item.put_options?.option_greeks;
+
+            return {
+               strike: item.strike_price,
+               ce: {
+                  ltp: ce?.ltp ?? null,
+                  perc_change: ce?.perc_change ?? null,
+                  oi_formatted: formatVal(ce?.oi, 100000, 'L'),
+                  vol_formatted: formatVal(ce?.volume, 1000, 'K'),
+                  is_active: ce?.ltp != null && ce?.ltp > 0,
+                  iv: formatGreek(ceGreeks?.iv, 2),
+                  delta: formatGreek(ceGreeks?.delta),
+                  theta: formatGreek(ceGreeks?.theta),
+                  vega: formatGreek(ceGreeks?.vega)
+               },
+               pe: {
+                  ltp: pe?.ltp ?? null,
+                  perc_change: pe?.perc_change ?? null,
+                  oi_formatted: formatVal(pe?.oi, 100000, 'L'),
+                  vol_formatted: formatVal(pe?.volume, 1000, 'K'),
+                  is_active: pe?.ltp != null && pe?.ltp > 0,
+                  iv: formatGreek(peGreeks?.iv, 2),
+                  delta: formatGreek(peGreeks?.delta),
+                  theta: formatGreek(peGreeks?.theta),
+                  vega: formatGreek(peGreeks?.vega)
+               }
+            };
+         });
+
+         return res.json({ status: "success", data: normalizedChain });
+      }
+
+      return res.json(data); // Fallback to raw error response
+    } catch (e: any) {
+      res.status(500).json({ error: "Server error fetching option chain", details: e.message });
+    }
+  });
+
   app.get("/api/portfolio", authenticateToken, async (req: any, res, next) => {
     try {
       const { rows: tokens } = await query("SELECT broker, access_token FROM user_tokens WHERE user_id = $1", [req.user.id]);
@@ -782,9 +912,10 @@ async function startServer() {
     }
   });
 
+  // --- MODIFIED: Story B4 Server-Side Translation for Order Entry ---
   app.post("/api/orders", authenticateToken, requireKyc, validate(placeOrderSchema), async (req: any, res, next) => {
       try {
-        const { symbol, type, order_type, quantity, price, product, broker } = req.body;
+        const { symbol, type, order_type, quantity, price, product, broker, expiry } = req.body;
         const userId = req.user.id;
         const { rows } = await query("SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = $2", [userId, broker]);
         const userToken = rows[0];
@@ -794,9 +925,27 @@ async function startServer() {
         const decryptedToken = decrypt(String(userToken.access_token));
         if (!decryptedToken) return res.status(500).json({ error: "Failed to decrypt broker token." });
 
+        // --- Translation Engine for Options (e.g. NIFTY 22500 CE -> NSE_FO|NIFTY24APR22500CE) ---
+        let brokerSymbol = symbol;
+        if (expiry && (symbol.endsWith(" CE") || symbol.endsWith(" PE"))) {
+            const parts = symbol.split(" ");
+            if (parts.length >= 3) {
+                const optType = parts.pop();       // "CE"
+                const strikePrice = parts.pop();   // "22500"
+                const indexName = parts.join("");  // "NIFTY" (or "BANKNIFTY" etc.)
+
+                const date = new Date(expiry);
+                const year = date.getFullYear().toString().slice(-2);
+                const month = date.toLocaleString('en-US', { month: 'short' }).toUpperCase();
+                
+                brokerSymbol = `NSE_FO|${indexName}${year}${month}${strikePrice}${optType}`;
+                logger.info(`[Order Translation] Translated friendly symbol '${symbol}' to strict broker token '${brokerSymbol}'`);
+            }
+        }
+
         try {
           const brokerService = getBrokerService(String(broker));
-          const orderRequest: OrderRequest = { symbol, type, order_type, quantity, price, product };
+          const orderRequest: OrderRequest = { symbol: brokerSymbol, type, order_type, quantity, price, product };
           const orderRes = await brokerService.placeOrder(decryptedToken, orderRequest);
 
           if (orderRes.success) {
