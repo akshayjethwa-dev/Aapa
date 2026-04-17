@@ -9,6 +9,7 @@ import ErrorBoundary from '../components/ErrorBoundary';
 import { INDEX_CONSTITUENTS, F_O_INDICES } from '../constants/marketData';
 import { MarketQuote, MarketPhase } from '../types';
 import MarketStatusPill from '../components/MarketStatusPill';
+import { apiClient } from '../api/client'; // Added API Client
 
 const Market = ({ 
   stocks, 
@@ -26,12 +27,57 @@ const Market = ({
   const [activeSegment, setActiveSegment] = useState('Watchlist');
   const [selectedStock, setSelectedStock] = useState<string | null>(initialSelectedStock || null);
   const [watchlist, setWatchlist] = useState<string[]>(['RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK']);
+  
+  // --- NEW: State for Orders and Positions ---
+  const [brokerOrders, setBrokerOrders] = useState<any[]>([]);
+  const [brokerPositions, setBrokerPositions] = useState<any[]>([]);
+  const [isFetchingData, setIsFetchingData] = useState(false);
 
   useEffect(() => {
     if (initialSelectedStock) {
       handleStockClick(initialSelectedStock);
     }
   }, [initialSelectedStock]);
+
+  // --- NEW: Fetch & Polling Logic for Orders/Positions ---
+  useEffect(() => {
+    let intervalId: any;
+
+    const fetchBrokerData = async () => {
+      if (activeSegment === 'Orders') {
+        try {
+          if (brokerOrders.length === 0) setIsFetchingData(true);
+          const res = await apiClient.get('/api/orders');
+          setBrokerOrders(res.data || []);
+        } catch (err) {
+          console.error("Failed to fetch live orders", err);
+        } finally {
+          setIsFetchingData(false);
+        }
+      } else if (activeSegment === 'Positions') {
+        try {
+          if (brokerPositions.length === 0) setIsFetchingData(true);
+          const res = await apiClient.get('/api/positions');
+          setBrokerPositions(res.data || []);
+        } catch (err) {
+          console.error("Failed to fetch live positions", err);
+        } finally {
+          setIsFetchingData(false);
+        }
+      }
+    };
+
+    fetchBrokerData();
+
+    // Setup 5-second polling only if the user is looking at the tab
+    if (activeSegment === 'Orders' || activeSegment === 'Positions') {
+      intervalId = setInterval(fetchBrokerData, 5000);
+    }
+
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [activeSegment]);
 
   const segments = ['Watchlist', 'Orders', 'Positions', 'F&O'];
 
@@ -50,7 +96,6 @@ const Market = ({
   const primaryIndices = ["NIFTY 50", "SENSEX", "BANKNIFTY", "FINNIFTY", "MIDCAP NIFTY", "SMALLCAP NIFTY"];
   const secondaryIndices = ["NIFTY IT", "NIFTY AUTO", "NIFTY PHARMA", "NIFTY METAL", "NIFTY FMCG", "NIFTY REALTY"];
 
-  // Helper to safely extract LTP for legacy components that expect numbers
   const optionChainStocks = useMemo(() => {
     const map: Record<string, number> = {};
     Object.entries(stocks).forEach(([k, v]) => {
@@ -92,7 +137,6 @@ const Market = ({
               />
             </div>
             
-            {/* Indices Quick View */}
             <div className="overflow-x-auto scrollbar-hide flex gap-2.5 py-1">
               {primaryIndices.map(index => {
                 const quote = stocks[index];
@@ -169,34 +213,98 @@ const Market = ({
           </>
         )}
 
+        {/* --- DYNAMIC ORDERS TAB --- */}
         {activeSegment === 'Orders' && (
           <div className="space-y-2.5">
             <div className="flex justify-between items-center px-1">
-              <h4 className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">Active Orders</h4>
-              <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-[8px] font-bold text-zinc-400">0</span>
+              <h4 className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">Active & History</h4>
+              <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-[8px] font-bold text-zinc-400">{brokerOrders.length}</span>
             </div>
-            <div className="bg-zinc-900/30 border border-zinc-800/50 rounded-2xl p-5 text-center">
-              <FileText className="mx-auto text-zinc-800 mb-2.5" size={32} />
-              <p className="text-[13px] font-bold text-zinc-500">No Active Orders</p>
-              <p className="text-[10px] text-zinc-700 mt-0.5">Your pending orders will appear here</p>
-            </div>
+            
+            {isFetchingData && brokerOrders.length === 0 ? (
+               <div className="text-center py-10 text-zinc-500 text-xs font-medium animate-pulse">Syncing with Broker...</div>
+            ) : brokerOrders.length === 0 ? (
+              <div className="bg-zinc-900/30 border border-zinc-800/50 rounded-2xl p-5 text-center">
+                <FileText className="mx-auto text-zinc-800 mb-2.5" size={32} />
+                <p className="text-[13px] font-bold text-zinc-500">No Orders Found</p>
+                <p className="text-[10px] text-zinc-700 mt-0.5">Your pending and completed orders will appear here</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {brokerOrders.map((order, idx) => (
+                  <div key={order.order_id || idx} className="bg-zinc-900/40 border border-zinc-800/50 rounded-xl p-3 flex justify-between items-center">
+                    <div>
+                       <div className="flex items-center gap-2">
+                         <span className={cn(
+                           "text-[9px] font-bold px-1.5 py-0.5 rounded", 
+                           order.type === 'BUY' ? "bg-emerald-500/10 text-emerald-500" : "bg-rose-500/10 text-rose-500"
+                         )}>
+                           {order.type}
+                         </span>
+                         <p className="text-[13px] font-bold text-white tracking-tight">{order.symbol}</p>
+                       </div>
+                       <p className="text-[10px] text-zinc-500 mt-1">Qty: {order.filled_quantity}/{order.quantity} • {order.order_type}</p>
+                    </div>
+                    <div className="text-right">
+                       <p className="text-[13px] font-bold text-white">{formatCurrency(order.average_price || order.price)}</p>
+                       <p className={cn(
+                         "text-[9px] font-bold uppercase mt-1", 
+                         (order.status.toLowerCase() === 'complete' || order.status.toLowerCase() === 'filled') ? "text-emerald-500" : 
+                         (order.status.toLowerCase() === 'rejected' || order.status.toLowerCase() === 'cancelled') ? "text-rose-500" : 
+                         "text-amber-500"
+                       )}>
+                         {order.status}
+                       </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
+        {/* --- DYNAMIC POSITIONS TAB --- */}
         {activeSegment === 'Positions' && (
           <div className="space-y-2.5">
-            <div className="flex bg-zinc-900/50 p-1 rounded-xl border border-zinc-800/50">
-              {['Intraday', 'Delivery'].map(tab => (
-                <button key={tab} className="flex-1 py-1.5 rounded-lg text-[9px] font-bold uppercase tracking-widest text-zinc-500 hover:text-white transition-all">
-                  {tab}
-                </button>
-              ))}
+            <div className="flex justify-between items-center px-1">
+              <h4 className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">Open Positions</h4>
+              <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-[8px] font-bold text-zinc-400">{brokerPositions.length}</span>
             </div>
-            <div className="bg-zinc-900/30 border border-zinc-800/50 rounded-2xl p-5 text-center">
-              <TrendingUp className="mx-auto text-zinc-800 mb-2.5" size={32} />
-              <p className="text-[13px] font-bold text-zinc-500">No Open Positions</p>
-              <p className="text-[10px] text-zinc-700 mt-0.5">Live P&L updates will be shown here</p>
-            </div>
+
+            {isFetchingData && brokerPositions.length === 0 ? (
+               <div className="text-center py-10 text-zinc-500 text-xs font-medium animate-pulse">Fetching positions...</div>
+            ) : brokerPositions.length === 0 ? (
+              <div className="bg-zinc-900/30 border border-zinc-800/50 rounded-2xl p-5 text-center">
+                <TrendingUp className="mx-auto text-zinc-800 mb-2.5" size={32} />
+                <p className="text-[13px] font-bold text-zinc-500">No Open Positions</p>
+                <p className="text-[10px] text-zinc-700 mt-0.5">Live P&L updates will be shown here</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {brokerPositions.map((pos, idx) => {
+                  const quantity = pos.quantity || 0;
+                  // Handle real-time current price mapped from WS tick data if available, fallback to broker last_price
+                  const ltp = stocks[pos.symbol]?.ltp || pos.current_price || 0; 
+                  const pnl = (ltp - pos.average_price) * quantity;
+                  const isProfit = pnl >= 0;
+
+                  return (
+                    <div key={idx} className="bg-zinc-900/40 border border-zinc-800/50 rounded-xl p-3 flex justify-between items-center">
+                      <div>
+                         <p className="text-[13px] font-bold text-white tracking-tight">{pos.symbol}</p>
+                         <p className="text-[10px] text-zinc-500 mt-1">Qty: {quantity} • Avg: {formatCurrency(pos.average_price)}</p>
+                      </div>
+                      <div className="text-right">
+                         <p className={cn("text-[13px] font-bold", isProfit ? "text-emerald-500" : "text-rose-500")}>
+                           {isProfit ? '+' : ''}{formatCurrency(pnl)}
+                         </p>
+                         <p className="text-[10px] text-zinc-500 mt-1">LTP: {formatCurrency(ltp)}</p>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
           </div>
         )}
 
@@ -279,27 +387,6 @@ const Market = ({
                       <p className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest mb-1">52W High</p>
                       <p className="text-sm font-bold text-white">{(ltp * 1.15).toFixed(2)}</p>
                     </div>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-12 px-2">
-                  <div className="space-y-3">
-                    <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Bid Price</p>
-                    {[1,2,3,4,5].map(i => (
-                      <div key={`bid-${i}`} className="flex justify-between text-xs font-bold">
-                        <span className="text-emerald-500">{(ltp - i * 0.5).toFixed(2)}</span>
-                        <span className="text-zinc-600">{i * 250}</span>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="space-y-3 text-right">
-                    <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Ask Price</p>
-                    {[1,2,3,4,5].map(i => (
-                      <div key={`ask-${i}`} className="flex justify-between text-xs font-bold">
-                        <span className="text-zinc-600">{i * 180}</span>
-                        <span className="text-rose-500">{(ltp + i * 0.5).toFixed(2)}</span>
-                      </div>
-                    ))}
                   </div>
                 </div>
               </div>

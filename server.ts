@@ -682,7 +682,7 @@ async function startServer() {
     }
   );
 
-app.get("/api/portfolio", authenticateToken, async (req: any, res, next) => {
+  app.get("/api/portfolio", authenticateToken, async (req: any, res, next) => {
     try {
       const { rows: tokens } = await query("SELECT broker, access_token FROM user_tokens WHERE user_id = $1", [req.user.id]);
       
@@ -723,6 +723,62 @@ app.get("/api/portfolio", authenticateToken, async (req: any, res, next) => {
 
     } catch (e: any) { 
       res.status(500).json({ error: "Failed to load portfolio", details: e.message || String(e) }); 
+    }
+  });
+
+  // --- NEW: Orders API Endpoint for Story A4 ---
+  app.get("/api/orders", authenticateToken, async (req: any, res, next) => {
+    try {
+      const { rows: tokens } = await query("SELECT broker, access_token FROM user_tokens WHERE user_id = $1", [req.user.id]);
+      let combinedOrders: any[] = [];
+
+      for (const token of tokens) {
+        if (!token.access_token) continue;
+        try {
+          const decryptedToken = decrypt(String(token.access_token));
+          if (!decryptedToken) continue;
+
+          const brokerService = getBrokerService(String(token.broker)) as any;
+          if (brokerService.getOrders) {
+            const orders = await brokerService.getOrders(decryptedToken);
+            combinedOrders = [...combinedOrders, ...orders];
+          }
+        } catch (e) {
+          logger.warn(`[Orders] ${token.broker} error:`, e);
+        }
+      }
+      
+      // Sort by latest first based on placed_at timestamp
+      combinedOrders.sort((a, b) => new Date(b.placed_at).getTime() - new Date(a.placed_at).getTime());
+      res.json(combinedOrders);
+
+    } catch (e: any) { 
+      res.status(500).json({ error: "Failed to load orders", details: e.message || String(e) }); 
+    }
+  });
+
+  // --- NEW: Dedicated Positions API Endpoint ---
+  app.get("/api/positions", authenticateToken, async (req: any, res, next) => {
+    try {
+      const { rows: tokens } = await query("SELECT broker, access_token FROM user_tokens WHERE user_id = $1", [req.user.id]);
+      let combinedPositions: any[] = [];
+
+      for (const token of tokens) {
+        if (!token.access_token) continue;
+        try {
+          const decryptedToken = decrypt(String(token.access_token));
+          if (!decryptedToken) continue;
+
+          const brokerService = getBrokerService(String(token.broker));
+          const positions = await brokerService.getPositions(decryptedToken);
+          combinedPositions = [...combinedPositions, ...positions];
+        } catch (e) {
+          logger.warn(`[Positions] ${token.broker} error:`, e);
+        }
+      }
+      res.json(combinedPositions);
+    } catch (e: any) { 
+      res.status(500).json({ error: "Failed to load positions", details: e.message || String(e) }); 
     }
   });
 

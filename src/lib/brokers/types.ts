@@ -38,4 +38,5 @@ export interface BrokerService {
   getHoldings(token: string): Promise<Holding[]>;
   getPositions(token: string): Promise<BrokerPosition[]>; // Added getPositions
   placeOrder(token: string, order: OrderRequest): Promise<OrderResponse>;
+  getOrders?(token: string): Promise<any[]>;
 }
