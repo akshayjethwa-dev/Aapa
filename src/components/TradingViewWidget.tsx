@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { AlertTriangle } from 'lucide-react';
+import { getTradingViewSymbol } from '../constants/marketData';
 
 const TradingViewWidget = React.memo(({ symbol, height = "100%" }: { symbol: string, height?: string | number }) => {
   const container = useRef<HTMLDivElement>(null);
@@ -7,13 +8,13 @@ const TradingViewWidget = React.memo(({ symbol, height = "100%" }: { symbol: str
   const [error, setError] = useState(false);
 
   useEffect(() => {
-    if (!container.current) return;
+    if (!container.current || !symbol) return;
     
     setLoading(true);
     setError(false);
     const currentContainer = container.current;
     
-    // 1. Rigorous cleanup of previous widget instance to prevent memory leaks
+    // 1. Rigorous cleanup to prevent duplicate iframes and memory leaks
     currentContainer.innerHTML = '';
     
     // 2. Create the exact DOM structure TradingView expects
@@ -23,41 +24,8 @@ const TradingViewWidget = React.memo(({ symbol, height = "100%" }: { symbol: str
     widgetContainer.style.width = '100%';
     currentContainer.appendChild(widgetContainer);
     
-    // 3. Expanded mapping for Indian Equities and Indices
-    const getTradingViewSymbol = (s: string) => {
-      // If it already has an exchange prefix, trust it
-      if (s.includes(':')) return s;
-      
-      // TradingView's FREE widget DOES NOT support Indian F&O (Options) charts.
-      // If the user clicks a CE/PE option, we gracefully fallback to showing the Underlying Spot Chart.
-      if (s.includes(' CE') || s.includes(' PE')) {
-        const parts = s.split(' ');
-        const base = parts[0] === 'NIFTY' ? 'NIFTY' : parts[0] === 'BANKNIFTY' ? 'BANKNIFTY' : parts[0];
-        return `NSE:${base}`; 
-      }
-
-      // Comprehensive mapping for Indian Indices
-      const mapping: Record<string, string> = {
-        'NIFTY 50': 'NSE:NIFTY',
-        'BANKNIFTY': 'NSE:BANKNIFTY',
-        'FINNIFTY': 'NSE:CNXFINANCE',
-        'MIDCAP NIFTY': 'NSE:NIFTY_MID_SELECT', // Nifty Midcap Select
-        'SMALLCAP NIFTY': 'NSE:CNXSMALLCAP',
-        'SENSEX': 'BSE:SENSEX',
-        'BANKEX': 'BSE:BANKEX',
-        'NIFTY IT': 'NSE:CNXIT',
-        'NIFTY AUTO': 'NSE:CNXAUTO',
-        'NIFTY PHARMA': 'NSE:CNXPHARMA',
-        'NIFTY METAL': 'NSE:CNXMETAL',
-        'NIFTY FMCG': 'NSE:CNXFMCG',
-        'NIFTY REALTY': 'NSE:CNXREALTY',
-        'NIFTY ENERGY': 'NSE:CNXENERGY',
-        'INDIA VIX': 'NSE:INDIAVIX',
-      };
-      
-      // Default fallback to NSE equity
-      return mapping[s] || `NSE:${s}`;
-    };
+    // 3. Resolve accurate TV symbol
+    const tvSymbol = getTradingViewSymbol(symbol);
 
     // 4. Safely inject the script
     const script = document.createElement("script");
@@ -74,17 +42,17 @@ const TradingViewWidget = React.memo(({ symbol, height = "100%" }: { symbol: str
 
     const config = {
       "autosize": true,
-      "symbol": getTradingViewSymbol(symbol),
+      "symbol": tvSymbol,
       "interval": "5",
       "timezone": "Asia/Kolkata",
       "theme": "dark",
       "style": "1",
-      "locale": "en",
+      "locale": "in", // Set to Indian locale
       "enable_publishing": false,
       "hide_top_toolbar": false,
       "hide_legend": false,
       "save_image": false,
-      "allow_symbol_change": false, // Lock it so it stays synced with your app's state
+      "allow_symbol_change": false, // Lock it to App's selected stock state
       "calendar": false,
       "support_host": "https://www.tradingview.com",
       "hide_side_toolbar": false,
@@ -108,12 +76,11 @@ const TradingViewWidget = React.memo(({ symbol, height = "100%" }: { symbol: str
     return () => {
       clearTimeout(overlayTimeoutId);
       if (currentContainer) {
-        currentContainer.innerHTML = '';
+        currentContainer.innerHTML = ''; // Nuke the children entirely on cleanup
       }
     };
   }, [symbol]);
 
-  // Handle local widget failure without crashing the whole screen
   if (error) {
     return (
       <div className="flex flex-col items-center justify-center bg-zinc-900/50 border border-zinc-800 rounded-2xl" style={{ height, width: '100%' }}>
@@ -129,7 +96,7 @@ const TradingViewWidget = React.memo(({ symbol, height = "100%" }: { symbol: str
       {loading && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm z-10">
           <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mb-4" />
-          <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Loading {symbol}...</p>
+          <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Loading Chart...</p>
         </div>
       )}
     </div>

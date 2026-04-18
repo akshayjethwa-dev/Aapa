@@ -136,4 +136,34 @@ export class UpstoxBrokerService implements BrokerService {
     
     throw new Error(data.errors?.[0]?.message || 'Failed to refresh Upstox token');
   }
+
+  // --- NEW: Fetch Historical Candles for Lightweight Charts ---
+  async getHistoricalCandles(
+    instrumentKey: string, 
+    interval: '1minute' | 'day' | '30minute' | 'month' = 'day', 
+    fromDate: string, // Format: YYYY-MM-DD
+    toDate: string    // Format: YYYY-MM-DD
+  ): Promise<any[]> {
+    // encodeURIComponent is crucial here because instrument tokens contain a '|' (e.g., NSE_EQ|INE123...)
+    const endpoint = `https://api.upstox.com/v2/historical-candle/${encodeURIComponent(instrumentKey)}/${interval}/${toDate}/${fromDate}`;
+    
+    const response = await fetch(endpoint, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Upstox HTTP error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    
+    if (data.status === 'success' && data.data?.candles) {
+      return data.data.candles; // Returns array of arrays: [timestamp, open, high, low, close, volume, oi]
+    }
+    
+    return [];
+  }
 }

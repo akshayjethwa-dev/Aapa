@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Search, Filter, ArrowUpRight, ArrowDownRight, TrendingUp, Activity, Newspaper, Calendar, Zap, ChevronRight, FileText, Plus } from 'lucide-react';
 import { formatCurrency, cn } from '../lib/utils';
-import TradingViewWidget from '../components/TradingViewWidget';
+import UpstoxNativeChart from '../components/UpstoxNativeChart';
 import Sparkline from '../components/Sparkline';
 import OptionChain from '../components/OptionChain';
 import ErrorBoundary from '../components/ErrorBoundary';
@@ -10,7 +10,6 @@ import { INDEX_CONSTITUENTS, F_O_INDICES } from '../constants/marketData';
 import { MarketQuote, MarketPhase } from '../types';
 import MarketStatusPill from '../components/MarketStatusPill';
 import { apiClient } from '../api/client'; 
-import TradingTerminal from '../components/TradingTerminal';
 
 const Market = ({ 
   stocks, 
@@ -29,7 +28,7 @@ const Market = ({
   const [selectedStock, setSelectedStock] = useState<string | null>(initialSelectedStock || null);
   const [watchlist, setWatchlist] = useState<string[]>(['RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK']);
   
-  // --- NEW: State for Orders and Positions ---
+  // --- State for Orders and Positions ---
   const [brokerOrders, setBrokerOrders] = useState<any[]>([]);
   const [brokerPositions, setBrokerPositions] = useState<any[]>([]);
   const [isFetchingData, setIsFetchingData] = useState(false);
@@ -40,7 +39,7 @@ const Market = ({
     }
   }, [initialSelectedStock]);
 
-  // --- NEW: Fetch & Polling Logic for Orders/Positions ---
+  // --- Fetch & Polling Logic for Orders/Positions ---
   useEffect(() => {
     let intervalId: any;
 
@@ -104,6 +103,27 @@ const Market = ({
     });
     return map;
   }, [stocks]);
+
+  // --- Helper to map symbols to Upstox Instrument Tokens ---
+  const getUpstoxInstrumentKey = (symbol: string) => {
+    // 1. If it already has a pipe, it's likely a formatted token
+    if (symbol.includes('|')) return symbol;
+    
+    // 2. Check if your state manager holds the exact token (e.g., ISIN)
+    const quote = stocks[symbol];
+    if (quote && typeof quote !== 'number' && quote.instrument_token) {
+      return quote.instrument_token;
+    }
+
+    // 3. Fallback standard formatting
+    if (primaryIndices.includes(symbol) || secondaryIndices.includes(symbol)) {
+      // e.g., NSE_INDEX|Nifty 50
+      return `NSE_INDEX|${symbol}`;
+    }
+    
+    // Fallback for equities (e.g., NSE_EQ|RELIANCE)
+    return `NSE_EQ|${symbol}`;
+  };
 
   return (
     <div className="space-y-4 pb-20">
@@ -214,7 +234,7 @@ const Market = ({
           </>
         )}
 
-        {/* --- DYNAMIC ORDERS TAB --- */}
+        {/* --- ORDERS TAB --- */}
         {activeSegment === 'Orders' && (
           <div className="space-y-2.5">
             <div className="flex justify-between items-center px-1">
@@ -264,7 +284,7 @@ const Market = ({
           </div>
         )}
 
-        {/* --- DYNAMIC POSITIONS TAB --- */}
+        {/* --- POSITIONS TAB --- */}
         {activeSegment === 'Positions' && (
           <div className="space-y-2.5">
             <div className="flex justify-between items-center px-1">
@@ -284,7 +304,6 @@ const Market = ({
               <div className="space-y-2">
                 {brokerPositions.map((pos, idx) => {
                   const quantity = pos.quantity || 0;
-                  // Handle real-time current price mapped from WS tick data if available, fallback to broker last_price
                   const ltp = stocks[pos.symbol]?.ltp || pos.current_price || 0; 
                   const pnl = (ltp - pos.average_price) * quantity;
                   const isProfit = pnl >= 0;
@@ -309,7 +328,7 @@ const Market = ({
           </div>
         )}
 
-        {/* Removed fullChain prop so the internal ATM logic handles rendering appropriately based on User Role */}
+        {/* F&O TAB */}
         {activeSegment === 'F&O' && (
           <div className="space-y-4">
             <OptionChain onPlaceOrder={onPlaceOrder} stocks={optionChainStocks} />
@@ -363,10 +382,10 @@ const Market = ({
 
                 <div className="h-80 bg-zinc-900/50 rounded-4xl border border-zinc-800/50 relative overflow-hidden">
                   <ErrorBoundary>
-                    {/* Replaced TradingViewWidget with TradingTerminal */}
-                    <TradingTerminal 
-                      instrumentKey={selectedStock} 
-                      // Optionally update the local selected stock price if you have state for it
+                    {/* NEW: Replaced external free TradingView widget with internal Upstox API lightweight chart */}
+                    <UpstoxNativeChart 
+                      symbol={selectedStock} 
+                      instrumentToken={getUpstoxInstrumentKey(selectedStock)} 
                     />
                   </ErrorBoundary>
                 </div>
