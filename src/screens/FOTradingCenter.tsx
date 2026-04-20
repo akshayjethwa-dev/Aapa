@@ -31,7 +31,6 @@ const FOTradingCenter = ({
   const [positions, setPositions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Manages the state for the OrderWindow modal
   const [orderConfig, setOrderConfig] = useState<OrderConfig | null>(null);
 
   useEffect(() => {
@@ -40,7 +39,8 @@ const FOTradingCenter = ({
     
     const fetchPositions = async () => {
       try {
-        const res = await apiClient.get('/api/portfolio/positions');
+        // FIX: Corrected endpoint from '/api/portfolio/positions' to '/api/positions'
+        const res = await apiClient.get('/api/positions');
         const data = res.data;
         setPositions(Array.isArray(data) ? data : []);
       } catch (err) {
@@ -174,9 +174,7 @@ const FOTradingCenter = ({
         </div>
       </div>
 
-      {/* ================================================================= */}
-      {/* NEW: OPTION CHAIN INTEGRATION */}
-      {/* ================================================================= */}
+      {/* Option Chain */}
       <div className="px-4 pt-2">
         <OptionChain 
           stocks={stocks} 
@@ -391,18 +389,16 @@ const FOTradingCenter = ({
           </motion.div>
         )}
 
-        {/* ================================================================= */}
-        {/* NEW: ORDER WINDOW MODAL TRIGGERED BY OPTION CHAIN */}
-        {/* ================================================================= */}
+        {/* Order Window */}
         {orderConfig && (
           <OrderWindow 
             config={orderConfig}
             onClose={() => setOrderConfig(null)}
             onOrderPlaced={() => {
                setOrderConfig(null);
-               // Wait a moment for Upstox execution, then force refresh positions
+               // FIX: Corrected endpoint here as well
                setTimeout(() => {
-                 apiClient.get('/api/portfolio/positions').then(res => {
+                 apiClient.get('/api/positions').then(res => {
                     setPositions(Array.isArray(res.data) ? res.data : []);
                  });
                }, 1500);

@@ -1203,7 +1203,6 @@ async function startServer() {
 
       let root;
       try {
-        // FIX 1: Point protobuf to the project root instead of the compiled dist folder
         const protoPath = path.join(process.cwd(), "MarketDataFeed.proto");
         root = await protobuf.load(protoPath);
       } catch (protoErr: any) {
@@ -1211,7 +1210,6 @@ async function startServer() {
         return;
       }
       
-      // FIX 2: Use the exact namespace defined in your specific .proto file
       const FeedResponse = root.lookupType("com.upstox.marketdatafeederv3udapi.rpc.proto.FeedResponse");
 
       upstoxMarketWs = new WebSocket(authData.data.authorized_redirect_uri);
@@ -1230,7 +1228,12 @@ async function startServer() {
           }
         };
         
-        upstoxMarketWs?.send(Buffer.from(JSON.stringify(requestPayload)));
+        // FIX: Add 1-second delay before subscribing to prevent race-condition disconnects
+        setTimeout(() => {
+           if (upstoxMarketWs && upstoxMarketWs.readyState === WebSocket.OPEN) {
+              upstoxMarketWs.send(Buffer.from(JSON.stringify(requestPayload)));
+           }
+        }, 1000);
       });
 
       upstoxMarketWs.on("message", (data: any) => {
@@ -1246,7 +1249,6 @@ async function startServer() {
           
           if (payload.feeds) {
             Object.entries(payload.feeds).forEach(([key, feedData]: [string, any]) => {
-              
               const price = 
                 feedData?.fullFeed?.marketFF?.ltpc?.ltp || 
                 feedData?.fullFeed?.indexFF?.ltpc?.ltp || 
@@ -1258,11 +1260,11 @@ async function startServer() {
                 if (symbol && allSymbols.includes(symbol)) {
                   const prevClose = marketData[symbol]?.prevClose || price;
                   marketData[symbol] = {
-      ...marketData[symbol],
-      ltp: price,
-      day_change: price - prevClose,
-      day_change_pct: prevClose ? ((price - prevClose) / prevClose) * 100 : 0
-    };
+                    ...marketData[symbol],
+                    ltp: price,
+                    day_change: price - prevClose,
+                    day_change_pct: prevClose ? ((price - prevClose) / prevClose) * 100 : 0
+                  };
                   updated = true;
                 }
               }
@@ -1283,13 +1285,15 @@ async function startServer() {
         }
       });
 
-      upstoxMarketWs.on("close", () => {
-        logger.warn("[Upstox WS] Market Data Closed. Reconnecting in 5s...");
+      // FIX: Improved error/close logging to reveal Upstox internal codes
+      upstoxMarketWs.on("close", (code, reason) => {
+        logger.warn(`[Upstox WS] Market Data Closed. Code: ${code}, Reason: ${reason?.toString() || 'Unknown'}. Reconnecting in 5s...`);
         setTimeout(() => initMarketDataFeed(token, userId), 5000);
       });
 
-      upstoxMarketWs.on("error", (err) => {
-        logger.error("[Upstox WS] Market WS Error:", err);
+      upstoxMarketWs.on("error", (err: any) => {
+        // Expose the actual error message rather than a blank object
+        logger.error(`[Upstox WS] Market WS Error: ${err.message || String(err)}`);
       });
 
     } catch (err) {
