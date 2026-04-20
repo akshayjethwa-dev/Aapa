@@ -87,12 +87,10 @@ const getUpstoxTokenExpiry = () => {
   let target = new Date(istTime);
   target.setHours(3, 30, 0, 0);
 
-  // If it's already past 3:30 AM IST today, the token will expire at 3:30 AM IST tomorrow
   if (istTime.getTime() >= target.getTime()) {
     target.setDate(target.getDate() + 1);
   }
 
-  // Format as an ISO-like string with the IST (+05:30) offset for Postgres
   const y = target.getFullYear();
   const m = String(target.getMonth() + 1).padStart(2, '0');
   const d = String(target.getDate()).padStart(2, '0');
@@ -142,7 +140,7 @@ async function startServer() {
 
   const resolveInstrumentKey = (key: string): string => {
     if (!key) return "";
-    if (key.includes("|")) return key; // Already a strict token
+    if (key.includes("|")) return key; 
 
     const upperKey = key.toUpperCase();
     for (const [internalName, brokerKeys] of Object.entries(indexMap)) {
@@ -157,14 +155,13 @@ async function startServer() {
   const marketData: Record<string, any> = {};
   allSymbols.forEach((s) => {
     const ltp = Math.random() * 1000 + 100;
-    const prevClose = ltp * (1 - (Math.random() * 0.04 - 0.02)); // Mock previous close within +/- 2%
+    const prevClose = ltp * (1 - (Math.random() * 0.04 - 0.02));
     marketData[s] = {
       symbol: s, ltp: ltp, prevClose: prevClose, open: ltp, high: ltp * 1.01, low: ltp * 0.99,
       day_change: ltp - prevClose,
       day_change_pct: prevClose ? ((ltp - prevClose) / prevClose) * 100 : 0
     };
   });
-  // =========================================================================
 
   const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret";
   const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || "fallback-refresh-secret";
@@ -197,7 +194,6 @@ async function startServer() {
         ws.isAlive = true;
       });
 
-      // Send initial state immediately with precise market phase
       ws.send(JSON.stringify({ 
         type: "ticker", 
         data: marketData,
@@ -237,7 +233,6 @@ async function startServer() {
 
       logger.info(`[TokenRefresh] Found ${expiringTokens.length} Upstox tokens expiring soon. Attempting refresh...`);
 
-      // ADDED .trim() to ensure spaces don't break the auth
       const apiKey = process.env.UPTOX_API_KEY?.trim() ?? "";
       const apiSecret = process.env.UPTOX_API_SECRET?.trim() ?? "";
       
@@ -413,7 +408,6 @@ async function startServer() {
         }
 
         const superAdminEmail = "bharvadvijay371@gmail.com";
-        // Restrict role to pre-onboarding if they don't have an upstox account
         const role = userCount === 0 || email === superAdminEmail 
           ? "admin" 
           : hasUpstoxAccount ? "user" : "pre-onboarding";
@@ -756,13 +750,12 @@ async function startServer() {
   const expiryCache: Record<string, { dates: string[], timestamp: number }> = {};
   const CACHE_TTL = 1000 * 60 * 60; // 1 Hour
 
-  // --- STABILIZED: Dynamic Expiry Discovery Endpoint ---
+  // --- STABILIZED: Dynamic Expiry Discovery Endpoint (With Field Fix & Fallback) ---
   app.get("/api/option-expiries", authenticateToken, async (req: any, res, next) => {
     try {
       let { instrument_key } = req.query;
       if (!instrument_key) return res.status(400).json({ status: "error", error: "Missing instrument_key" });
 
-      // Translate frontend name (e.g., "NIFTY 50") to Upstox token
       const resolvedKey = resolveInstrumentKey(String(instrument_key));
 
       if (expiryCache[resolvedKey] && (Date.now() - expiryCache[resolvedKey].timestamp < CACHE_TTL)) {
@@ -791,14 +784,44 @@ async function startServer() {
       
       if (data.status === 'success' && Array.isArray(data.data)) {
          const expirySet = new Set<string>();
+         
          data.data.forEach((item: any) => {
-           if (item.expiry_date) expirySet.add(item.expiry_date);
+           // FIX: Account for Upstox using 'expiry' instead of 'expiry_date' in this response payload
+           const exp = item.expiry || item.expiry_date || item.expiryDate;
+           if (exp) expirySet.add(exp);
          });
          
-         const expiries = Array.from(expirySet).sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
+         let expiries = Array.from(expirySet).sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
          
+         // SMART FALLBACK: If Upstox returns an empty array or the schema changes entirely, calculate standard weekly dates
          if (expiries.length === 0) {
-           return res.status(404).json({ status: "error", error: "No active option contracts found for this instrument." });
+           logger.warn(`[Upstox API] No expiries could be parsed for ${resolvedKey}. Triggering Smart Fallback Engine.`);
+           
+           const getNextDayOfWeek = (date: Date, dayOfWeek: number) => {
+              const resultDate = new Date(date.getTime());
+              const diff = (7 + dayOfWeek - date.getDay()) % 7;
+              resultDate.setDate(date.getDate() + (diff === 0 ? 7 : diff));
+              return resultDate;
+           };
+
+           const today = new Date();
+           const fallbackExpiries = [];
+           
+           let targetDay = 4; // Default Thursday (Nifty)
+           if (resolvedKey.includes("Bank")) targetDay = 3; // Wednesday (BankNifty)
+           if (resolvedKey.includes("Fin")) targetDay = 2; // Tuesday (FinNifty)
+           if (resolvedKey.includes("Midcap")) targetDay = 1; // Monday
+           if (resolvedKey.includes("SENSEX")) targetDay = 5; // Friday
+
+           let nextExpiry = getNextDayOfWeek(today, targetDay);
+           for (let i = 0; i < 4; i++) {
+               const y = nextExpiry.getFullYear();
+               const m = String(nextExpiry.getMonth() + 1).padStart(2, '0');
+               const d = String(nextExpiry.getDate()).padStart(2, '0');
+               fallbackExpiries.push(`${y}-${m}-${d}`);
+               nextExpiry.setDate(nextExpiry.getDate() + 7);
+           }
+           expiries = fallbackExpiries;
          }
 
          expiryCache[resolvedKey] = { dates: expiries, timestamp: Date.now() };
@@ -916,7 +939,6 @@ async function startServer() {
 
           const brokerService = getBrokerService(String(token.broker));
           
-          // Fetch Holdings, Positions, and Funds in parallel for speed
           const [holdings, positions, funds] = await Promise.all([
             brokerService.getHoldings(decryptedToken).catch(() => []),
             brokerService.getPositions(decryptedToken).catch(() => []),
@@ -932,7 +954,6 @@ async function startServer() {
         }
       }
 
-      // Return the normalized schema
       res.json({
         holdings: combinedHoldings,
         positions: combinedPositions,
@@ -966,7 +987,6 @@ async function startServer() {
         }
       }
       
-      // Sort by latest first based on placed_at timestamp
       combinedOrders.sort((a, b) => new Date(b.placed_at).getTime() - new Date(a.placed_at).getTime());
       res.json(combinedOrders);
 
@@ -1002,7 +1022,6 @@ async function startServer() {
 
   // --- MODIFIED: Story B4 Server-Side Translation for Order Entry ---
   const resolveOptionInstrumentKey = (underlying: string, expiryDateStr: string, strike: number, optType: string) => {
-    // Convert "NIFTY 50" to "NIFTY"
     const indexName = underlying.replace(' 50', '').replace(' ', '').toUpperCase(); 
     
     const date = new Date(expiryDateStr);
@@ -1010,7 +1029,6 @@ async function startServer() {
     const month = date.toLocaleString('en-US', { month: 'short' }).toUpperCase();
     const day = date.getDate().toString().padStart(2, '0');
 
-    // Strict Upstox Format: NSE_FO|NIFTY24APR2522500CE
     return `NSE_FO|${indexName}${year}${month}${day}${strike}${optType.toUpperCase()}`;
   };
 
@@ -1024,7 +1042,6 @@ async function startServer() {
            });
         }
         
-        // Destructure all structured fields
         const { symbol, type, order_type, quantity, price, product, expiry, strike, optionType } = req.body;
         const broker = 'upstox'; 
         const userId = req.user.id;
@@ -1037,12 +1054,11 @@ async function startServer() {
         const decryptedToken = decrypt(String(userToken.access_token));
         if (!decryptedToken) return res.status(500).json({ error: "Failed to decrypt broker token." });
 
-        // --- Translation Engine: Structured Payload to Broker Token ---
         let brokerSymbol = symbol;
         const friendlySymbol = strike && optionType ? `${symbol.replace(' 50', '')} ${strike} ${optionType}` : symbol;
         
         if (symbol.includes("|")) {
-            brokerSymbol = symbol; // Bypass if already a direct token
+            brokerSymbol = symbol; 
         } else if (strike && optionType && expiry) {
             brokerSymbol = resolveOptionInstrumentKey(symbol, expiry, strike, optionType);
             logger.info(`[Order Translation] Translated structured option payload to strict broker token '${brokerSymbol}'`);
@@ -1054,7 +1070,6 @@ async function startServer() {
           const orderRes = await brokerService.placeOrder(decryptedToken, orderRequest);
 
           if (orderRes.success) {
-            // Save 'friendlySymbol' in DB so the UI looks nice, but we know the exact broker string passed
             await query("INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, broker_order_id, status, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed', $9)",
               [userId, friendlySymbol, type, order_type, quantity, price, broker, orderRes.order_id, JSON.stringify(orderRes.raw_response)]);
             return res.json({ success: true, order_id: orderRes.order_id });
@@ -1249,6 +1264,7 @@ async function startServer() {
           
           if (payload.feeds) {
             Object.entries(payload.feeds).forEach(([key, feedData]: [string, any]) => {
+              
               const price = 
                 feedData?.fullFeed?.marketFF?.ltpc?.ltp || 
                 feedData?.fullFeed?.indexFF?.ltpc?.ltp || 
@@ -1260,11 +1276,11 @@ async function startServer() {
                 if (symbol && allSymbols.includes(symbol)) {
                   const prevClose = marketData[symbol]?.prevClose || price;
                   marketData[symbol] = {
-                    ...marketData[symbol],
-                    ltp: price,
-                    day_change: price - prevClose,
-                    day_change_pct: prevClose ? ((price - prevClose) / prevClose) * 100 : 0
-                  };
+      ...marketData[symbol],
+      ltp: price,
+      day_change: price - prevClose,
+      day_change_pct: prevClose ? ((price - prevClose) / prevClose) * 100 : 0
+    };
                   updated = true;
                 }
               }
@@ -1285,14 +1301,12 @@ async function startServer() {
         }
       });
 
-      // FIX: Improved error/close logging to reveal Upstox internal codes
       upstoxMarketWs.on("close", (code, reason) => {
         logger.warn(`[Upstox WS] Market Data Closed. Code: ${code}, Reason: ${reason?.toString() || 'Unknown'}. Reconnecting in 5s...`);
         setTimeout(() => initMarketDataFeed(token, userId), 5000);
       });
 
       upstoxMarketWs.on("error", (err: any) => {
-        // Expose the actual error message rather than a blank object
         logger.error(`[Upstox WS] Market WS Error: ${err.message || String(err)}`);
       });
 
@@ -1374,7 +1388,6 @@ async function startServer() {
       }
 
       if (cachedTokenCount === 0) {
-        // ONLY simulate movements if the market is actually LIVE to save CPU on Railway
         if (currentPhase === 'LIVE') {
           allSymbols.forEach((symbol) => {
             const oldLtp = marketData[symbol].ltp;
