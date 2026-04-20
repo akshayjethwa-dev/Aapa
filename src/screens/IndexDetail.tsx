@@ -10,7 +10,7 @@ import FullChartModal from '../components/FullChartModal';
 
 const IndexDetail = ({ indexName, stocks, onClose, onPlaceOrder }: { 
   indexName: string, 
-  stocks: Record<string, number>, 
+  stocks: Record<string, any>, 
   onClose: () => void,
   onPlaceOrder: (config: any) => void
 }) => {
@@ -26,7 +26,10 @@ const IndexDetail = ({ indexName, stocks, onClose, onPlaceOrder }: {
   
   const isFO = F_O_INDICES.includes(indexName) || indexName === 'SENSEX';
   const constituents = INDEX_CONSTITUENTS[indexName] || [];
-  const spotPrice = stocks[indexName] || 0;
+  
+  // Safe extraction allowing for both direct number props and complex quote objects
+  const quote = stocks[indexName];
+  const spotPrice = typeof quote === 'number' ? quote : (quote?.ltp || 0);
   
   const high = spotPrice * 1.005;
   const low = spotPrice * 0.992;
@@ -69,7 +72,6 @@ const IndexDetail = ({ indexName, stocks, onClose, onPlaceOrder }: {
     atmRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
 
-  // Simulate LTP updates for flashing effect
   const [ltpUpdates, setLtpUpdates] = useState<Record<number, boolean>>({});
   useEffect(() => {
     const interval = setInterval(() => {
@@ -96,7 +98,6 @@ const IndexDetail = ({ indexName, stocks, onClose, onPlaceOrder }: {
       exit={{ x: '100%' }}
       className="fixed inset-0 z-70 bg-zinc-50 flex flex-col text-zinc-900"
     >
-      {/* Institutional Header */}
       <div className="px-4 py-2.5 border-b border-zinc-200 flex items-center justify-between bg-white sticky top-0 z-60">
         <div className="flex items-center gap-3">
           <button onClick={onClose} className="p-1.5 -ml-1.5 rounded-full hover:bg-zinc-100 text-zinc-600 transition-colors">
@@ -148,7 +149,6 @@ const IndexDetail = ({ indexName, stocks, onClose, onPlaceOrder }: {
       </AnimatePresence>
 
       <div className="flex-1 overflow-y-auto pb-20 scrollbar-hide flex flex-col bg-white" ref={scrollRef}>
-        {/* Day High/Low - Minimalist */}
         <div className="px-4 py-1.5 bg-zinc-50/50 border-b border-zinc-100 flex justify-center gap-6">
           <div className="flex items-center gap-2">
             <span className="text-[8px] font-bold text-zinc-400 uppercase tracking-widest">Day High</span>
@@ -162,7 +162,6 @@ const IndexDetail = ({ indexName, stocks, onClose, onPlaceOrder }: {
 
         {isFO && activeTab === 'Option Chain' ? (
           <div className="flex-1 flex flex-col relative">
-            {/* Table Header */}
             <div className="grid grid-cols-[1fr_90px_1fr] border-b border-zinc-100 bg-white sticky top-0 z-30">
               <div className="py-2 text-center border-r border-zinc-100">
                 <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-widest">Call Price</span>
@@ -175,7 +174,6 @@ const IndexDetail = ({ indexName, stocks, onClose, onPlaceOrder }: {
               </div>
             </div>
 
-            {/* Option Chain Rows */}
             <div className="divide-y divide-zinc-50 relative">
               {loadingChain ? (
                 <div className="py-20 text-center">
@@ -204,7 +202,6 @@ const IndexDetail = ({ indexName, stocks, onClose, onPlaceOrder }: {
                         isATM ? "bg-emerald-50/30" : "hover:bg-zinc-50/50"
                       )}
                     >
-                      {/* ATM Full Width Line */}
                       {isATM && (
                         <div className="absolute inset-x-0 top-0 h-px bg-emerald-500/50 z-20" />
                       )}
@@ -268,7 +265,6 @@ const IndexDetail = ({ indexName, stocks, onClose, onPlaceOrder }: {
                         </span>
                       </div>
 
-                      {/* Floating ATM Label - Only on ATM row */}
                       {isATM && (
                         <div className="absolute left-1/2 top-0 -translate-x-1/2 -translate-y-1/2 z-50">
                           <div className="bg-black text-white px-3 py-1 rounded-full shadow-xl flex items-center gap-2 whitespace-nowrap border border-white/10">
@@ -296,32 +292,40 @@ const IndexDetail = ({ indexName, stocks, onClose, onPlaceOrder }: {
           </div>
         ) : (
           <div className="space-y-5 bg-zinc-50 min-h-full pt-3">
-            {/* Constituents List - Light Theme */}
             <div className="px-5 space-y-2.5">
               <h3 className="text-[9px] font-bold text-zinc-400 uppercase tracking-widest ml-1">Constituents</h3>
-              {constituents.map(symbol => (
-                <div key={symbol} className="bg-white border border-zinc-200 rounded-xl p-3.5 flex justify-between items-center shadow-sm">
-                  <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-xl bg-zinc-100 flex items-center justify-center font-bold text-[11px] text-zinc-400">
-                      {symbol.substring(0, 2)}
+              {constituents.map(symbol => {
+                // Dynamically fetch from passed stocks prop 
+                const cQuote = stocks[symbol];
+                const cLtp = typeof cQuote === 'number' ? cQuote : (cQuote?.ltp || 2500);
+                const cChangePct = cQuote?.day_change_pct || 0;
+                const isPositive = cChangePct >= 0;
+
+                return (
+                  <div key={symbol} className="bg-white border border-zinc-200 rounded-xl p-3.5 flex justify-between items-center shadow-sm">
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-zinc-100 flex items-center justify-center font-bold text-[11px] text-zinc-400">
+                        {symbol.substring(0, 2)}
+                      </div>
+                      <div>
+                        <p className="text-[13px] font-bold text-zinc-900 tracking-tight">{symbol}</p>
+                        <p className="text-[9px] font-bold text-zinc-400 uppercase">NSE</p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="text-[13px] font-bold text-zinc-900 tracking-tight">{symbol}</p>
-                      <p className="text-[9px] font-bold text-zinc-400 uppercase">NSE</p>
+                    <div className="text-right">
+                      <p className="text-[13px] font-bold text-zinc-900">{formatCurrency(cLtp)}</p>
+                      <p className={cn("text-[9px] font-bold", isPositive ? "text-emerald-600" : "text-rose-600")}>
+                        {isPositive ? '+' : ''}{cChangePct.toFixed(2)}%
+                      </p>
                     </div>
                   </div>
-                  <div className="text-right">
-                    <p className="text-[13px] font-bold text-zinc-900">{formatCurrency(stocks[symbol] || 2500)}</p>
-                    <p className="text-[9px] font-bold text-emerald-600">+1.45%</p>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
       </div>
 
-      {/* Simplified Bottom Navigation for Index Detail */}
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-zinc-200 p-3.5 flex gap-2.5 z-60">
         <AnimatePresence mode="wait">
           {selectedStrike ? (

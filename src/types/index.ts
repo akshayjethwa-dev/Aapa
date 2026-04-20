@@ -5,15 +5,15 @@ export interface MarketQuote {
   open: number;
   high: number;
   low: number;
-  change: number;
-  changePercent: number;
+  day_change: number;     // Standardized from 'change'
+  day_change_pct: number; // Standardized from 'changePercent'
 }
 
 export interface Stock {
   symbol: string;
   price: number;
-  change: number;
-  changePercent: number;
+  day_change: number;     // Standardized
+  day_change_pct: number; // Standardized
 }
 
 export interface Position {
@@ -23,13 +23,17 @@ export interface Position {
   avgPrice?: number;
   average_price?: number;
   ltp: number;
-  change?: number;
+  day_change?: number;     // Standardized for daily instrument performance
+  day_change_pct?: number; // Standardized for daily instrument performance
 }
 
 export interface Holding {
   symbol: string;
   quantity: number;
   average_price: number;
+  ltp?: number;
+  day_change?: number;     // Standardized
+  day_change_pct?: number; // Standardized
 }
 
 export interface Transaction {

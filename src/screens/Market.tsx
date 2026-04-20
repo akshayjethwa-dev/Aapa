@@ -69,7 +69,6 @@ const Market = ({
 
     fetchBrokerData();
 
-    // Setup 5-second polling only if the user is looking at the tab
     if (activeSegment === 'Orders' || activeSegment === 'Positions') {
       intervalId = setInterval(fetchBrokerData, 5000);
     }
@@ -104,30 +103,23 @@ const Market = ({
     return map;
   }, [stocks]);
 
-  // --- Helper to map symbols to Upstox Instrument Tokens ---
   const getUpstoxInstrumentKey = (symbol: string) => {
-    // 1. If it already has a pipe, it's likely a formatted token
     if (symbol.includes('|')) return symbol;
     
-    // 2. Check if your state manager holds the exact token (e.g., ISIN)
     const quote = stocks[symbol];
     if (quote && typeof quote !== 'number' && quote.instrument_token) {
       return quote.instrument_token;
     }
 
-    // 3. Fallback standard formatting
     if (primaryIndices.includes(symbol) || secondaryIndices.includes(symbol)) {
-      // e.g., NSE_INDEX|Nifty 50
       return `NSE_INDEX|${symbol}`;
     }
     
-    // Fallback for equities (e.g., NSE_EQ|RELIANCE)
     return `NSE_EQ|${symbol}`;
   };
 
   return (
     <div className="space-y-4 pb-20">
-      {/* Segmented Tabs & Market Status */}
       <div className="px-4 pt-1.5 flex justify-between items-center gap-2">
         <div className="bg-zinc-900/50 p-1 rounded-xl flex gap-1 border border-zinc-800/50 flex-1">
           {segments.map(segment => (
@@ -162,7 +154,8 @@ const Market = ({
               {primaryIndices.map(index => {
                 const quote = stocks[index];
                 const ltp = typeof quote === 'number' ? quote : (quote?.ltp || 0);
-                const changePct = quote?.changePercent;
+                // Standardized field usage
+                const changePct = quote?.day_change_pct;
                 const isPositive = changePct !== undefined && changePct >= 0;
 
                 return (
@@ -198,7 +191,8 @@ const Market = ({
                 .filter(([s]) => !primaryIndices.includes(s) && !secondaryIndices.includes(s))
                 .map(([symbol, quote]) => {
                   const ltp = typeof quote === 'number' ? quote : (quote?.ltp || 0);
-                  const changePct = quote?.changePercent;
+                  // Standardized field usage
+                  const changePct = quote?.day_change_pct;
                   const isPositive = changePct !== undefined && changePct >= 0;
 
                   return (
@@ -341,8 +335,9 @@ const Market = ({
         {selectedStock && (() => {
           const quote = stocks[selectedStock];
           const ltp = typeof quote === 'number' ? quote : (quote?.ltp || 0);
-          const change = quote?.change || 0;
-          const changePct = quote?.changePercent || 0;
+          // Standardized field usage
+          const change = quote?.day_change || 0;
+          const changePct = quote?.day_change_pct || 0;
           const isPositive = change >= 0;
 
           return (
@@ -382,7 +377,6 @@ const Market = ({
 
                 <div className="h-80 bg-zinc-900/50 rounded-4xl border border-zinc-800/50 relative overflow-hidden">
                   <ErrorBoundary>
-                    {/* NEW: Replaced external free TradingView widget with internal Upstox API lightweight chart */}
                     <UpstoxNativeChart 
                       symbol={selectedStock} 
                       instrumentToken={getUpstoxInstrumentKey(selectedStock)} 

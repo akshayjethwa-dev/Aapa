@@ -18,14 +18,20 @@ export class UpstoxBrokerService implements BrokerService {
     });
     const data = await response.json();
     if (data.status === 'success') {
-      return data.data.map((h: any) => ({
-        symbol: h.trading_symbol,
-        quantity: h.quantity,
-        average_price: h.average_price,
-        current_price: h.last_price,
-        close_price: h.close_price, 
-        broker: 'Upstox'
-      }));
+      return data.data.map((h: any) => {
+        const ltp = h.last_price || 0;
+        const close_price = h.close_price || ltp; 
+        return {
+          symbol: h.trading_symbol,
+          quantity: h.quantity,
+          average_price: h.average_price,
+          current_price: ltp,
+          close_price: close_price,
+          day_change: ltp - close_price,
+          day_change_pct: close_price ? ((ltp - close_price) / close_price) * 100 : 0,
+          broker: 'Upstox'
+        };
+      });
     }
     throw new Error(data.errors?.[0]?.message || 'Failed to fetch Upstox holdings');
   }
@@ -36,15 +42,21 @@ export class UpstoxBrokerService implements BrokerService {
     });
     const data = await response.json();
     if (data.status === 'success') {
-      return data.data.map((p: any) => ({
-        symbol: p.trading_symbol,
-        quantity: p.quantity,
-        average_price: p.average_price,
-        current_price: p.last_price,
-        close_price: p.close_price, 
-        product: p.product,
-        broker: 'Upstox'
-      }));
+      return data.data.map((p: any) => {
+        const ltp = p.last_price || 0;
+        const close_price = p.close_price || ltp;
+        return {
+          symbol: p.trading_symbol,
+          quantity: p.quantity,
+          average_price: p.average_price,
+          current_price: ltp,
+          close_price: close_price, 
+          day_change: ltp - close_price,
+          day_change_pct: close_price ? ((ltp - close_price) / close_price) * 100 : 0,
+          product: p.product,
+          broker: 'Upstox'
+        };
+      });
     }
     throw new Error(data.errors?.[0]?.message || 'Failed to fetch Upstox positions');
   }

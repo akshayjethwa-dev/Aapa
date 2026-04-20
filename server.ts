@@ -997,14 +997,9 @@ async function startServer() {
     const ltp = Math.random() * 1000 + 100;
     const prevClose = ltp * (1 - (Math.random() * 0.04 - 0.02)); // Mock previous close within +/- 2%
     marketData[s] = {
-      symbol: s,
-      ltp: ltp,
-      prevClose: prevClose,
-      open: ltp,
-      high: ltp * 1.01,
-      low: ltp * 0.99,
-      change: ltp - prevClose,
-      changePercent: ((ltp - prevClose) / prevClose) * 100
+    symbol: s, ltp: ltp, prevClose: prevClose, open: ltp, high: ltp * 1.01, low: ltp * 0.99,
+    day_change: ltp - prevClose,
+    day_change_pct: prevClose ? ((ltp - prevClose) / prevClose) * 100 : 0
     };
   });
 
@@ -1121,11 +1116,11 @@ async function startServer() {
                 const symbol = reverseMap[key] || (key.includes('|') ? key.split('|')[1] : null);
                 if (symbol && allSymbols.includes(symbol)) {
                   marketData[symbol] = {
-                    ...marketData[symbol],
-                    symbol, ltp, prevClose, open, high, low,
-                    change: ltp - prevClose,
-                    changePercent: prevClose ? ((ltp - prevClose) / prevClose) * 100 : 0
-                  };
+      ...marketData[symbol],
+      symbol, ltp, prevClose, open, high, low,
+      day_change: ltp - prevClose,
+      day_change_pct: prevClose ? ((ltp - prevClose) / prevClose) * 100 : 0
+    };
                   updated = true;
                 }
               }
@@ -1221,11 +1216,11 @@ async function startServer() {
                 if (symbol && allSymbols.includes(symbol)) {
                   const prevClose = marketData[symbol]?.prevClose || price;
                   marketData[symbol] = {
-                    ...marketData[symbol],
-                    ltp: price,
-                    change: price - prevClose,
-                    changePercent: prevClose ? ((price - prevClose) / prevClose) * 100 : 0
-                  };
+      ...marketData[symbol],
+      ltp: price,
+      day_change: price - prevClose,
+      day_change_pct: prevClose ? ((price - prevClose) / prevClose) * 100 : 0
+    };
                   updated = true;
                 }
               }
@@ -1341,8 +1336,8 @@ async function startServer() {
             const prevClose = marketData[symbol].prevClose;
             
             marketData[symbol].ltp = newLtp;
-            marketData[symbol].change = newLtp - prevClose;
-            marketData[symbol].changePercent = ((newLtp - prevClose) / prevClose) * 100;
+            marketData[symbol].day_change = newLtp - prevClose;
+    marketData[symbol].day_change_pct = prevClose ? ((newLtp - prevClose) / prevClose) * 100 : 0;
           });
         }
         

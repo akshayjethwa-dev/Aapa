@@ -12,7 +12,9 @@ export interface Holding {
   quantity: number;
   average_price: number;
   current_price: number;
-  close_price: number; // Added for Day PnL
+  close_price: number; 
+  day_change: number;     // NEW
+  day_change_pct: number; // NEW
   broker: string;
 }
 
@@ -21,7 +23,9 @@ export interface BrokerPosition {
   quantity: number;
   average_price: number;
   current_price: number;
-  close_price: number; // Added for Day PnL
+  close_price: number; 
+  day_change: number;     // NEW
+  day_change_pct: number; // NEW
   product: string;
   broker: string;
 }
@@ -36,7 +40,7 @@ export interface OrderResponse {
 export interface BrokerService {
   getFunds(token: string): Promise<number>;
   getHoldings(token: string): Promise<Holding[]>;
-  getPositions(token: string): Promise<BrokerPosition[]>; // Added getPositions
+  getPositions(token: string): Promise<BrokerPosition[]>;
   placeOrder(token: string, order: OrderRequest): Promise<OrderResponse>;
   getOrders?(token: string): Promise<any[]>;
 }
