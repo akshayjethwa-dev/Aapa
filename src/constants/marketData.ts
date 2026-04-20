@@ -14,7 +14,7 @@ export const TRADING_VIEW_SYMBOL_MAP: Record<string, string> = {
   'NIFTY 50': 'NSE:NIFTY',
   'BANKNIFTY': 'NSE:BANKNIFTY',
   'FINNIFTY': 'NSE:CNXFINANCE',
-  'MIDCAP NIFTY': 'NSE:MIDCPNIFTY', // Better accuracy for Midcap on TV
+  'MIDCAP NIFTY': 'NSE:MIDCPNIFTY',
   'SMALLCAP NIFTY': 'NSE:CNXSMALLCAP',
   'SENSEX': 'BSE:SENSEX',
   'BANKEX': 'BSE:BANKEX',
@@ -29,18 +29,33 @@ export const TRADING_VIEW_SYMBOL_MAP: Record<string, string> = {
 };
 
 export const getTradingViewSymbol = (s: string): string => {
-  if (!s) return 'NSE:NIFTY'; // Safe fallback
-  if (s.includes(':')) return s;
+  if (!s) {
+    console.warn('[Chart Warning] No symbol provided to widget, defaulting to NSE:NIFTY');
+    return 'NSE:NIFTY';
+  }
   
-  // TradingView's FREE widget does not support live F&O Indian options.
+  if (s.includes(':')) return s; // E.g., if already passed as "BSE:RELIANCE"
+  
+  // 1. Handle F&O Options (TradingView free widget does not support live F&O Indian options)
   // We extract the underlying base index to show the spot chart instead of breaking.
   if (s.includes(' CE') || s.includes(' PE')) {
     const parts = s.split(' ');
-    // Ex: "NIFTY 22000 CE" -> base is "NIFTY"
     const base = parts[0] === 'NIFTY' ? 'NIFTY 50' : parts[0]; 
-    return TRADING_VIEW_SYMBOL_MAP[base] || `NSE:${base}`;
+    const mappedBase = TRADING_VIEW_SYMBOL_MAP[base];
+    
+    if (!mappedBase) {
+      console.info(`[Chart Fallback] Option base '${base}' mapped to NSE:${base}`);
+      return `NSE:${base}`;
+    }
+    return mappedBase;
   }
   
-  // Return mapped symbol or default to NSE equity
-  return TRADING_VIEW_SYMBOL_MAP[s] || `NSE:${s}`;
+  // 2. Exact match for Indices
+  if (TRADING_VIEW_SYMBOL_MAP[s]) {
+    return TRADING_VIEW_SYMBOL_MAP[s];
+  }
+  
+  // 3. Fallback for Equities (e.g., RELIANCE -> NSE:RELIANCE)
+  console.info(`[Chart Fallback] Equity '${s}' mapped to NSE:${s}`);
+  return `NSE:${s}`;
 };

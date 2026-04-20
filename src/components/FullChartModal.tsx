@@ -55,7 +55,7 @@ const FullChartModal = ({ instrument, onClose }: { instrument: any, onClose: () 
       </div>
 
       {/* Chart Area - Now using Real Data via TradingTerminal */}
-      <div className="flex-1 relative bg-black">
+      <div className="flex-1 relative bg-black min-h-100 w-full flex flex-col">
         <ErrorBoundary>
           <TradingTerminal 
             instrumentKey={instrument.symbol} 

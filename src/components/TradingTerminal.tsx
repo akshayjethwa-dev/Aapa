@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import LiveChart, { LiveChartRef } from './LiveChart';
 import { apiClient } from '../api/client';
-import { Time } from 'lightweight-charts'; // Import Time type
+import { Time } from 'lightweight-charts';
 
 const TradingTerminal = ({ 
   instrumentKey, 
@@ -27,7 +27,7 @@ const TradingTerminal = ({
         
         if (response.data && response.data.candles) {
           const formattedData = response.data.candles.map((c: any) => ({
-            // Fix 2: Explicitly cast the calculated number to the branded Time type
+            // Explicitly cast the calculated number to the branded Time type
             time: (Math.floor(new Date(c.timestamp).getTime() / 1000)) as Time, 
             open: c.open,
             high: c.high,
@@ -47,7 +47,7 @@ const TradingTerminal = ({
           const tickData = JSON.parse(event.data); 
           
           if (tickData.instrumentKey === instrumentKey) {
-            // Fix 3: Explicitly cast the current tick timestamp as Time
+            // Explicitly cast the current tick timestamp as Time
             chartRef.current?.updateTick({
               time: Math.floor(Date.now() / 1000) as Time, 
               open: tickData.open,
@@ -74,22 +74,30 @@ const TradingTerminal = ({
     return () => {
       if (ws) ws.close();
     };
-  }, [instrumentKey]);
+  }, [instrumentKey, onPriceUpdate]); // Added onPriceUpdate to dependencies just to be React-strict
 
   return (
-    <div className="w-full h-full relative">
+    // FIX: Added flex-1 and min-h-[400px] to ensure the canvas never collapses to 0-height
+    <div className="flex-1 w-full h-full relative min-h-100 flex flex-col">
       {loading && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/50 backdrop-blur-sm z-10">
            <div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mb-2" />
            <p className="text-[10px] text-zinc-400 uppercase tracking-widest font-bold">Syncing Data...</p>
         </div>
       )}
+      
       {error && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10 text-rose-500 text-xs font-bold">
-          {error}
+        <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
+          <div className="bg-rose-500/10 border border-rose-500/20 px-4 py-2 rounded-xl text-rose-500 text-xs font-bold">
+             {error}
+          </div>
         </div>
       )}
-      <LiveChart ref={chartRef} symbol={instrumentKey} />
+      
+      {/* Wrapper to ensure the chart binds strictly to the parent bounds */}
+      <div className="absolute inset-0">
+         <LiveChart ref={chartRef} symbol={instrumentKey} />
+      </div>
     </div>
   );
 };
