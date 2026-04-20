@@ -1,8 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { createChart, ColorType, IChartApi, ISeriesApi } from 'lightweight-charts';
+import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickSeries, Time } from 'lightweight-charts';
 import { AlertTriangle } from 'lucide-react';
-// Assuming you have a function to call Upstox API
-import { getHistoricalCandles } from '../lib/brokers/upstox'; 
+import { UpstoxBrokerService } from '../lib/brokers/upstox'; 
 
 interface UpstoxNativeChartProps {
   symbol: string;
@@ -40,8 +39,8 @@ const UpstoxNativeChart: React.FC<UpstoxNativeChartProps> = ({ symbol, instrumen
 
     chartRef.current = chart;
 
-    // 2. Add Candlestick Series
-    const candlestickSeries = chart.addCandlestickSeries({
+    // 2. Add Candlestick Series using the v5 syntax
+    const candlestickSeries = chart.addSeries(CandlestickSeries, {
       upColor: '#10B981', // emerald-500
       downColor: '#EF4444', // red-500
       borderVisible: false,
@@ -68,14 +67,14 @@ const UpstoxNativeChart: React.FC<UpstoxNativeChartProps> = ({ symbol, instrumen
         setLoading(true);
         setError(false);
         
-        // Example: Fetching 'day' candles for the last 1 month from Upstox
-        // You will need to implement getHistoricalCandles in your upstox.ts file
+        // Fetching 'day' candles for the last 1 month from Upstox
         const toDate = new Date();
         const fromDate = new Date();
         fromDate.setMonth(fromDate.getMonth() - 1);
         
-        // This expects your Upstox API wrapper to return data formatted for the chart
-        const rawData = await getHistoricalCandles(
+        // Instantiate the broker service to use the class method
+        const broker = new UpstoxBrokerService();
+        const rawData = await broker.getHistoricalCandles(
           instrumentToken, 
           'day', 
           fromDate.toISOString().split('T')[0], 
@@ -84,15 +83,16 @@ const UpstoxNativeChart: React.FC<UpstoxNativeChartProps> = ({ symbol, instrumen
 
         // Map Upstox response to Lightweight Charts format
         const formattedData = rawData.map((candle: any) => ({
-          time: new Date(candle[0]).getTime() / 1000, // Unix timestamp in seconds
-          open: candle[1],
-          high: candle[2],
-          low: candle[3],
-          close: candle[4],
+          // Cast the resulting number explicitly to the lightweight-charts Time type
+          time: (new Date(candle[0]).getTime() / 1000) as Time, 
+          open: Number(candle[1]),
+          high: Number(candle[2]),
+          low: Number(candle[3]),
+          close: Number(candle[4]),
         }));
 
         // Sort chronologically as required by the library
-        formattedData.sort((a, b) => a.time - b.time);
+        formattedData.sort((a, b) => (a.time as number) - (b.time as number));
 
         candlestickSeries.setData(formattedData);
         chart.timeScale().fitContent();
