@@ -175,8 +175,9 @@ async function startServer() {
 
       logger.info(`[TokenRefresh] Found ${expiringTokens.length} Upstox tokens expiring soon. Attempting refresh...`);
 
-      const apiKey = process.env.UPTOX_API_KEY ?? "";
-      const apiSecret = process.env.UPTOX_API_SECRET ?? "";
+      // ADDED .trim() to ensure spaces don't break the auth
+      const apiKey = process.env.UPTOX_API_KEY?.trim() ?? "";
+      const apiSecret = process.env.UPTOX_API_SECRET?.trim() ?? "";
       
       if (!apiKey || !apiSecret) {
           logger.warn("[TokenRefresh] UPTOX_API_KEY or UPTOX_API_SECRET is missing. Cannot refresh tokens.");
@@ -240,7 +241,7 @@ async function startServer() {
   );
 
   const allowedOrigins = [
-    process.env.VITE_APP_URL || "https://aapacapital.com",
+    process.env.VITE_APP_URL?.trim() || "https://aapacapital.com",
     "https://aapa-production.up.railway.app", 
     "http://localhost:3000",
     "http://localhost:5173", 
@@ -577,8 +578,9 @@ async function startServer() {
   });
 
   app.get("/api/auth/uptox/url", authenticateToken, (req: any, res) => {
-    const apiKey = process.env.UPTOX_API_KEY ?? "";
-    const redirectUri = process.env.UPTOX_REDIRECT_URI ?? "";
+    // ADDED .trim() to ensure spaces don't break the auth
+    const apiKey = process.env.UPTOX_API_KEY?.trim() ?? "";
+    const redirectUri = process.env.UPTOX_REDIRECT_URI?.trim() ?? "";
 
     if (!apiKey || !redirectUri) return res.status(500).json({ error: "Upstox API Key or Redirect URI is missing in .env." });
 
@@ -591,11 +593,12 @@ async function startServer() {
     const { code, state } = req.query;
     if (!code) return res.status(400).send("No code provided.");
 
-    const apiKey = process.env.UPTOX_API_KEY ?? "";
-    const apiSecret = process.env.UPTOX_API_SECRET ?? "";
-    const redirectUri = process.env.UPTOX_REDIRECT_URI ?? "";
+    // ADDED .trim() to ensure spaces don't break the auth
+    const apiKey = process.env.UPTOX_API_KEY?.trim() ?? "";
+    const apiSecret = process.env.UPTOX_API_SECRET?.trim() ?? "";
+    const redirectUri = process.env.UPTOX_REDIRECT_URI?.trim() ?? "";
 
-    const frontendTargetOrigin = process.env.VITE_APP_URL || "*";
+    const frontendTargetOrigin = process.env.VITE_APP_URL?.trim() || "*";
 
     const renderHtmlResponse = (isSuccess: boolean, message: string, payload: any) => {
       return `
@@ -619,7 +622,11 @@ async function startServer() {
 
     try {
       const params = new URLSearchParams({
-        code: String(code), client_id: apiKey, client_secret: apiSecret, redirect_uri: redirectUri, grant_type: "authorization_code",
+        code: String(code), 
+        client_id: apiKey, 
+        client_secret: apiSecret, 
+        redirect_uri: redirectUri, 
+        grant_type: "authorization_code",
       });
 
       const response = await fetch("https://api.upstox.com/v2/login/authorization/token", {
@@ -1058,7 +1065,7 @@ async function startServer() {
       const userToken = rows[0];
       
       if (!userToken || !userToken.access_token) {
-        logger.warn("[MarketData] No Upstox token found in DB. Falling back to Demo Mode.");
+        logger.warn("[MarketData] No Upstox token found in DB.");
         return;
       }
 
@@ -1228,7 +1235,7 @@ async function startServer() {
           if (updated) {
             const wsPayload = JSON.stringify({ 
               type: "ticker", 
-              data: marketData,
+              data: marketData, 
               marketPhase: getMarketPhase() 
             });
             wss.clients.forEach((c) => { if (c.readyState === WebSocket.OPEN) c.send(wsPayload); });
