@@ -39,7 +39,6 @@ const FOTradingCenter = ({
     
     const fetchPositions = async () => {
       try {
-        // FIX: Corrected endpoint from '/api/portfolio/positions' to '/api/positions'
         const res = await apiClient.get('/api/positions');
         const data = res.data;
         setPositions(Array.isArray(data) ? data : []);
@@ -67,8 +66,12 @@ const FOTradingCenter = ({
     }
   };
 
+  // FIX: Safely calculate P&L accounting for Upstox naming conventions
   const totalPnL = positions.reduce((acc, pos) => {
-    return acc + (pos.ltp - pos.avgPrice) * pos.quantity;
+    const ltp = pos.ltp ?? pos.current_price ?? 0;
+    const avg = pos.avgPrice ?? pos.average_price ?? 0;
+    const qty = pos.quantity || 0;
+    return acc + (ltp - avg) * qty;
   }, 0);
 
   const margins = [
@@ -200,8 +203,14 @@ const FOTradingCenter = ({
              </div>
           ) : (
             positions.map((pos, i) => {
-              const positionPnl = (pos.ltp - pos.avgPrice) * pos.quantity;
-              const dayPnl = (pos.day_change ?? 0) * pos.quantity;
+              // FIX: Safe property extraction
+              const ltp = pos.ltp ?? pos.current_price ?? 0;
+              const avg = pos.avgPrice ?? pos.average_price ?? 0;
+              const qty = pos.quantity || 0;
+              const type = pos.type ?? pos.product ?? 'Unknown';
+
+              const positionPnl = (ltp - avg) * qty;
+              const dayPnl = (pos.day_change ?? 0) * qty;
               const isPositionProfit = positionPnl >= 0;
               const isDayProfit = dayPnl >= 0;
 
@@ -211,7 +220,7 @@ const FOTradingCenter = ({
                     <div className="absolute inset-0 bg-zinc-900 flex justify-end items-stretch">
                       <div className="flex h-full">
                         <button 
-                          onClick={() => setSlTgtModal({ index: i, ...pos })}
+                          onClick={() => setSlTgtModal({ index: i, symbol: pos.symbol, avgPrice: avg })}
                           className="px-3 bg-blue-600 text-white flex flex-col items-center justify-center gap-1 transition-colors hover:bg-blue-700"
                         >
                           <Target size={12} />
@@ -253,13 +262,13 @@ const FOTradingCenter = ({
                           <p className="text-[12px] font-black text-white tracking-tight">{pos.symbol}</p>
                           <span className={cn(
                             "px-1 py-0.5 rounded text-[7px] font-black uppercase tracking-tighter",
-                            pos.type === 'Intraday' ? "bg-amber-500/10 text-amber-500" : "bg-blue-500/10 text-blue-500"
-                          )}>{pos.type}</span>
+                            type.toLowerCase() === 'intraday' || type === 'I' ? "bg-amber-500/10 text-amber-500" : "bg-blue-500/10 text-blue-500"
+                          )}>{type}</span>
                         </div>
                         <div className="flex items-center gap-1.5 mt-1">
-                          <p className="text-[8px] font-bold text-zinc-500 uppercase">{pos.quantity} Qty</p>
+                          <p className="text-[8px] font-bold text-zinc-500 uppercase">{qty} Qty</p>
                           <span className="w-1 h-1 rounded-full bg-zinc-800" />
-                          <p className="text-[8px] font-bold text-zinc-500 uppercase">Avg {formatCurrency(pos.avgPrice)}</p>
+                          <p className="text-[8px] font-bold text-zinc-500 uppercase">Avg {formatCurrency(avg)}</p>
                         </div>
                       </div>
                       
@@ -284,7 +293,7 @@ const FOTradingCenter = ({
                           <div className="text-right">
                             <p className="text-[7px] font-bold text-zinc-500 uppercase tracking-widest leading-none mb-0.5">LTP</p>
                             <p className="text-[9px] font-bold text-white leading-none">
-                              {formatCurrency(pos.ltp)}
+                              {formatCurrency(ltp)}
                               <span className={cn("ml-1", (pos.day_change_pct ?? 0) >= 0 ? "text-emerald-500" : "text-rose-500")}>
                                 ({(pos.day_change_pct ?? 0) >= 0 ? '+' : ''}{(pos.day_change_pct ?? 0).toFixed(2)}%)
                               </span>
@@ -297,11 +306,11 @@ const FOTradingCenter = ({
                     <div className="flex gap-2.5 pt-2 border-t border-zinc-800/50 mt-1">
                       <div className="flex items-center gap-1">
                         <div className="w-1 h-1 rounded-full bg-rose-500/40" />
-                        <span className="text-[8px] font-bold text-zinc-600 uppercase">SL: {formatCurrency(pos.avgPrice * 0.95)}</span>
+                        <span className="text-[8px] font-bold text-zinc-600 uppercase">SL: {formatCurrency(avg * 0.95)}</span>
                       </div>
                       <div className="flex items-center gap-1">
                         <div className="w-1 h-1 rounded-full bg-emerald-500/40" />
-                        <span className="text-[8px] font-bold text-zinc-600 uppercase">Tgt: {formatCurrency(pos.avgPrice * 1.15)}</span>
+                        <span className="text-[8px] font-bold text-zinc-600 uppercase">Tgt: {formatCurrency(avg * 1.15)}</span>
                       </div>
                     </div>
 
@@ -396,7 +405,6 @@ const FOTradingCenter = ({
             onClose={() => setOrderConfig(null)}
             onOrderPlaced={() => {
                setOrderConfig(null);
-               // FIX: Corrected endpoint here as well
                setTimeout(() => {
                  apiClient.get('/api/positions').then(res => {
                     setPositions(Array.isArray(res.data) ? res.data : []);

@@ -34,7 +34,6 @@ const OrderWindow = ({
   const [price, setPrice] = useState<number | string>(config.price || 0);
   const [loading, setLoading] = useState(false);
 
-  // Clean format for the UI (e.g. "NIFTY 22500 CE" or just "RELIANCE")
   const displaySymbol = config.strike 
     ? `${config.symbol.replace(' 50', '')} ${config.strike} ${config.optionType}`
     : config.symbol.replace(' 50', '');
@@ -48,7 +47,6 @@ const OrderWindow = ({
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        // NEW: Sending strict structured payload to backend
         body: JSON.stringify({
           broker: 'upstox',
           symbol: config.symbol, 
@@ -116,7 +114,10 @@ const OrderWindow = ({
               {config.side} {displaySymbol}
             </h2>
             <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">
-              {config.expiry || 'Equity • NSE'}
+              {/* FIX: Safe Expiry parsing */}
+              {config.expiry && !isNaN(new Date(config.expiry).getTime())
+                ? new Date(config.expiry).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }).toUpperCase()
+                : config.expiry || 'Equity • NSE'}
             </p>
           </div>
         </div>
@@ -155,7 +156,12 @@ const OrderWindow = ({
             </div>
             <div>
               <p className="text-[9px] font-bold text-zinc-600 uppercase tracking-widest mb-1">Expiry</p>
-              <p className="text-xs font-bold text-white">{new Date(config.expiry!).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }).toUpperCase()}</p>
+              <p className="text-xs font-bold text-white">
+                {/* FIX: Safe Expiry parsing */}
+                {config.expiry && !isNaN(new Date(config.expiry).getTime())
+                  ? new Date(config.expiry).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }).toUpperCase()
+                  : config.expiry || '-'}
+              </p>
             </div>
           </div>
         )}
