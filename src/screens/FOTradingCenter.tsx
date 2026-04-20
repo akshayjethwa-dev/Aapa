@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, TrendingUp, ArrowUpRight, ArrowDownRight, Layers, ChevronDown, Zap, MousePointer2, Activity, BarChart3, Target, ArrowRightLeft, XCircle, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, TrendingUp, ArrowUpRight, ArrowDownRight, Layers, ChevronDown, Zap, MousePointer2, Activity, BarChart3, Target, ArrowRightLeft, XCircle, ShieldCheck, AlertCircle } from 'lucide-react';
 import { formatCurrency, cn } from '../lib/utils';
 import TradingViewWidget from '../components/TradingViewWidget';
 import OptionChain from '../components/OptionChain';
-import OrderWindow, { OrderConfig } from './OrderWindow'; // <-- Imported OrderWindow and Interface
+import OrderWindow, { OrderConfig } from './OrderWindow';
 import { useAuthStore } from '../store/authStore';
 import { F_O_INDICES } from '../constants/marketData';
 import { toast } from 'sonner';
@@ -15,16 +15,12 @@ import { apiClient } from '../api/client';
 const FOTradingCenter = ({ 
   stocks, 
   onOpenOptionChain,
-  onConnectAngel,
   onConnectUptox,
-  isConnectingAngel,
   isConnectingUptox
 }: { 
   stocks: Record<string, number>, 
   onOpenOptionChain: () => void,
-  onConnectAngel: () => void,
   onConnectUptox: () => void,
-  isConnectingAngel: boolean,
   isConnectingUptox: boolean
 }) => {
   const { user } = useAuthStore();
@@ -35,7 +31,6 @@ const FOTradingCenter = ({
   const [positions, setPositions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // --- STORY B4: Order Config State ---
   const [orderConfig, setOrderConfig] = useState<OrderConfig | null>(null);
 
   useEffect(() => {
@@ -84,8 +79,35 @@ const FOTradingCenter = ({
 
   return (
     <div className="space-y-4 pb-24">
+      {/* Onboarding Requirement Banner */}
+      {user?.role === 'pre-onboarding' && (
+        <div className="px-4 pt-4">
+          <div className="bg-rose-500/10 border border-rose-500/30 rounded-2xl p-4 flex flex-col gap-3 relative overflow-hidden">
+             <div className="absolute top-0 right-0 p-2 opacity-10">
+               <AlertCircle size={48} className="text-rose-500" />
+             </div>
+             <div>
+               <h3 className="text-xs font-black text-rose-500 uppercase tracking-widest flex items-center gap-1">
+                 <AlertCircle size={14} /> Action Required
+               </h3>
+               <p className="text-[10px] font-bold text-zinc-400 mt-1">
+                 You selected that you don't have an Upstox account. Trading is restricted until you open one.
+               </p>
+             </div>
+             <a 
+               href="https://upstox.com/open-demat-account/" 
+               target="_blank" 
+               rel="noopener noreferrer" 
+               className="bg-rose-500 hover:bg-rose-600 text-black text-[10px] font-black py-2.5 rounded-xl transition-all uppercase tracking-widest text-center z-10"
+             >
+               Complete Upstox Opening
+             </a>
+          </div>
+        </div>
+      )}
+
       {/* Broker Connection for Users */}
-      {!user?.is_angelone_connected && !user?.is_uptox_connected && user?.role !== 'user' && (
+      {!user?.is_uptox_connected && user?.role !== 'user' && user?.role !== 'pre-onboarding' && (
         <div className="px-4 pt-4">
           <div className="bg-zinc-900/40 border border-zinc-800/50 rounded-2xl p-6 space-y-4">
             <div className="flex items-center gap-3">
@@ -94,24 +116,16 @@ const FOTradingCenter = ({
               </div>
               <div>
                 <h3 className="text-sm font-black text-white uppercase tracking-tight">Connect Your Broker</h3>
-                <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Link account to start F&O trading</p>
+                <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Link Upstox to start F&O trading</p>
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <button 
-                onClick={onConnectAngel}
-                disabled={isConnectingAngel}
-                className="bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-xl py-3 px-4 flex flex-col items-center gap-2 transition-all disabled:opacity-50"
-              >
-                <span className="text-[10px] font-black text-white uppercase tracking-widest">Angel One</span>
-                <span className="text-[8px] font-bold text-emerald-500 uppercase">Link Now</span>
-              </button>
+            <div className="flex justify-center mt-2">
               <button 
                 onClick={onConnectUptox}
                 disabled={isConnectingUptox}
-                className="bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-xl py-3 px-4 flex flex-col items-center gap-2 transition-all disabled:opacity-50"
+                className="w-full bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-xl py-3 px-4 flex flex-col items-center gap-2 transition-all disabled:opacity-50"
               >
-                <span className="text-[10px] font-black text-white uppercase tracking-widest">Uptox</span>
+                <span className="text-[10px] font-black text-white uppercase tracking-widest">Upstox</span>
                 <span className="text-[8px] font-bold text-emerald-500 uppercase">Link Now</span>
               </button>
             </div>
@@ -159,7 +173,7 @@ const FOTradingCenter = ({
         </div>
       </div>
 
-      {/* Live Positions with Swipe */}
+      {/* Live Positions */}
       <div className="px-4 space-y-2.5">
         <div className="flex justify-between items-center">
           <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-500 flex items-center gap-2">
@@ -172,7 +186,6 @@ const FOTradingCenter = ({
         <div className="space-y-2.5">
           {positions.map((pos, i) => (
             <div key={pos.symbol} className="relative overflow-hidden rounded-xl group">
-              {/* Action Panel (Revealed on Swipe) - Only for Admin */}
               {user?.role === 'admin' && (
                 <div className="absolute inset-0 bg-zinc-900 flex justify-end items-stretch">
                   <div className="flex h-full">
@@ -204,7 +217,6 @@ const FOTradingCenter = ({
                 </div>
               )}
 
-              {/* Position Card */}
               <motion.div 
                 drag={user?.role === 'admin' ? "x" : false}
                 dragConstraints={{ left: -150, right: 0 }}
@@ -245,7 +257,6 @@ const FOTradingCenter = ({
                   </div>
                 </div>
 
-                {/* Risk Management Indicators */}
                 <div className="flex gap-2.5 pt-2 border-t border-zinc-800/50">
                   <div className="flex items-center gap-1">
                     <div className="w-1 h-1 rounded-full bg-rose-500/40" />
@@ -257,7 +268,6 @@ const FOTradingCenter = ({
                   </div>
                 </div>
 
-                {/* Visible Exit Button for Users */}
                 {user?.role === 'user' && (
                   <div className="pt-2">
                     <button 
@@ -277,7 +287,6 @@ const FOTradingCenter = ({
         </div>
       </div>
 
-      {/* GTT & Risk Controls */}
       <div className="px-4 space-y-2.5">
         <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-500 flex items-center gap-2">
           <ShieldCheck size={12} />
@@ -341,7 +350,6 @@ const FOTradingCenter = ({
           </motion.div>
         )}
 
-        {/* --- STORY B4: Render OrderWindow when OptionChain triggers it --- */}
         {orderConfig && (
           <OrderWindow 
             config={orderConfig}

@@ -1,18 +1,17 @@
-import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, Zap, AlertCircle, Target, XCircle, ChevronRight } from 'lucide-react';
+import React, { useState } from 'react';
+import { motion } from 'framer-motion';
+import { ChevronRight } from 'lucide-react';
 import { toast } from 'sonner';
 import { formatCurrency, cn } from '../lib/utils';
 import { useAuthStore } from '../store/authStore';
 
-// --- STORY B4: Formalized Data Contract ---
 export interface OrderConfig {
   side: 'BUY' | 'SELL';
-  symbol: string;      // e.g., "NIFTY 22500 CE" or "RELIANCE"
-  strike?: number;     // e.g., 22500
+  symbol: string;      
+  strike?: number;     
   optionType?: 'CE' | 'PE';
-  expiry?: string;     // e.g., "2024-04-18"
-  price: number;       // e.g., 145.20
+  expiry?: string;     
+  price: number;       
 }
 
 const OrderWindow = ({ 
@@ -34,13 +33,8 @@ const OrderWindow = ({
   const [product, setProduct] = useState('Intraday');
   const [price, setPrice] = useState<number | string>(config.price || 0);
   const [loading, setLoading] = useState(false);
-  const [broker, setBroker] = useState(user?.is_uptox_connected ? 'uptox' : user?.is_angelone_connected ? 'angelone' : 'uptox');
 
   const handlePlaceOrder = async () => {
-    if (isDemoMode) {
-      toast.error('Trading is disabled in Demo Mode');
-      return;
-    }
 
     setLoading(true);
     try {
@@ -51,14 +45,14 @@ const OrderWindow = ({
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          broker,
-          symbol: config.symbol, // Passes "NIFTY 22500 CE" directly
+          broker: 'upstox', // Hardcoded to Upstox exclusively
+          symbol: config.symbol, 
           type: config.side.toLowerCase(),
           order_type: orderType.toLowerCase(),
           quantity: parseInt(quantity.toString()),
           price: orderType === 'Market' ? config.price : parseFloat(price.toString()),
           product: product.toLowerCase(),
-          expiry: config.expiry // Critical for backend Upstox translation
+          expiry: config.expiry 
         })
       });
       const data = await res.json();
@@ -70,10 +64,23 @@ const OrderWindow = ({
         return;
       }
 
+      if (res.status === 403 && data.requires_upstox) {
+        onClose();
+        toast.error(
+          <div className="flex flex-col gap-2">
+            <span className="font-bold text-rose-500">Action Required</span>
+            <span className="text-xs">{data.message}</span>
+            <a href="https://upstox.com/open-demat-account/" target="_blank" rel="noopener noreferrer" className="mt-2 bg-emerald-500 text-black px-3 py-1.5 rounded-lg text-xs font-black uppercase text-center w-full">Open Account Now</a>
+          </div>,
+          { duration: 6000 }
+        );
+        return;
+      }
+
       if (data.success) {
         onOrderPlaced();
         onClose();
-        toast.success(`Order placed successfully via ${broker === 'uptox' ? 'Uptox' : 'Angel One'}!`);
+        toast.success(`Order placed successfully via Upstox!`);
       } else {
         toast.error(data.error || 'Order failed');
       }
@@ -83,11 +90,6 @@ const OrderWindow = ({
       setLoading(false);
     }
   };
-
-  const connectedBrokers = [
-    { id: 'uptox', name: 'Uptox', connected: user?.is_uptox_connected },
-    { id: 'angelone', name: 'Angel One', connected: user?.is_angelone_connected }
-  ].filter(b => b.connected);
 
   return (
     <motion.div 
@@ -119,32 +121,19 @@ const OrderWindow = ({
       </div>
 
       <div className="flex-1 p-6 space-y-8 overflow-y-auto">
-        {/* Broker Selection */}
+        {/* Status indicator instead of selection */}
         <div className="space-y-3">
-          <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest ml-1">Select Broker</p>
-          <div className="flex gap-2">
-            {connectedBrokers.length > 0 ? (
-              connectedBrokers.map(b => (
-                <button
-                  key={b.id}
-                  onClick={() => setBroker(b.id)}
-                  className={cn(
-                    "flex-1 py-3 rounded-xl text-[10px] font-bold uppercase tracking-widest border transition-all",
-                    broker === b.id 
-                      ? "bg-emerald-500/10 border-emerald-500 text-emerald-500" 
-                      : "bg-zinc-900/30 border-zinc-800/50 text-zinc-500 hover:border-zinc-700"
-                  )}
-                >
-                  {b.name}
-                </button>
-              ))
-            ) : (
-              <div className="w-full p-4 bg-rose-500/5 border border-rose-500/10 rounded-xl text-center">
-                <p className="text-[10px] font-bold text-rose-500 uppercase tracking-widest">No Broker Connected</p>
-                <p className="text-[8px] text-zinc-600 mt-1 uppercase tracking-widest">Connect a broker in the 'More' tab to trade</p>
-              </div>
-            )}
-          </div>
+          <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest ml-1">Executing Broker</p>
+          {user?.is_uptox_connected ? (
+            <div className="w-full py-3 rounded-xl text-[10px] font-bold uppercase tracking-widest border bg-emerald-500/10 border-emerald-500 text-emerald-500 text-center">
+              Upstox Connected
+            </div>
+          ) : (
+            <div className="w-full p-4 bg-rose-500/5 border border-rose-500/10 rounded-xl text-center">
+              <p className="text-[10px] font-bold text-rose-500 uppercase tracking-widest">No Broker Connected</p>
+              <p className="text-[8px] text-zinc-600 mt-1 uppercase tracking-widest">Connect Upstox in the 'More' tab to trade</p>
+            </div>
+          )}
         </div>
 
         {config.strike && (
@@ -226,27 +215,16 @@ const OrderWindow = ({
             ))}
           </div>
         </div>
-
-        <div className="bg-zinc-900/20 border border-zinc-800/30 rounded-2xl p-4 flex justify-between items-center">
-          <div>
-            <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Approx Margin</p>
-            <p className="text-sm font-bold text-white">{formatCurrency((Number(quantity) || 0) * (orderType === 'Market' ? config.price : Number(price) || 0))}</p>
-          </div>
-          <div className="text-right">
-            <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Available</p>
-            <p className="text-sm font-bold text-emerald-500">₹1,25,000.00</p>
-          </div>
-        </div>
       </div>
 
       <div className="p-6 bg-black border-t border-zinc-900">
         <button 
           onClick={handlePlaceOrder}
-          disabled={loading || connectedBrokers.length === 0 || isDemoMode}
+          disabled={loading || !user?.is_uptox_connected || isDemoMode}
           className={cn(
             "w-full font-black py-5 rounded-2xl transition-all shadow-xl uppercase text-xs tracking-widest",
             config.side === 'BUY' ? "bg-emerald-500 text-black shadow-emerald-500/10" : "bg-rose-500 text-black shadow-rose-500/10",
-            (loading || connectedBrokers.length === 0 || isDemoMode) && "opacity-50 cursor-not-allowed"
+            (loading || !user?.is_uptox_connected || isDemoMode) && "opacity-50 cursor-not-allowed"
           )}
         >
           {loading ? 'Processing...' : isDemoMode ? 'Disabled in Demo Mode' : `${config.side} ${config.symbol.replace(' 50', '')}`}

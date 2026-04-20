@@ -11,9 +11,7 @@ const More = ({
   setActiveTab, 
   setComplianceType, 
   setStocks,
-  onConnectAngel,
   onConnectUptox,
-  isConnectingAngel,
   isConnectingUptox,
   debugInfo,
   isRefreshing,
@@ -23,9 +21,7 @@ const More = ({
   setActiveTab: (t: string) => void, 
   setComplianceType: (t: string) => void, 
   setStocks: (s: Record<string, number>) => void,
-  onConnectAngel: () => void,
   onConnectUptox: () => void,
-  isConnectingAngel: boolean,
   isConnectingUptox: boolean,
   debugInfo: any,
   isRefreshing: boolean,
@@ -104,14 +100,6 @@ const More = ({
         { icon: Wallet, label: 'Funds & Withdrawals', status: '', color: 'text-blue-500' },
         { 
           icon: Zap, 
-          label: 'Connect Angel One', 
-          status: user?.is_angelone_connected ? 'Linked' : 'Not Linked', 
-          color: user?.is_angelone_connected ? 'text-emerald-500' : 'text-zinc-500',
-          action: user?.is_angelone_connected ? undefined : onConnectAngel,
-          loading: isConnectingAngel
-        },
-        { 
-          icon: Zap, 
           label: 'Connect Upstox', 
           status: user?.is_uptox_connected ? 'Linked' : 'Not Linked', 
           color: user?.is_uptox_connected ? 'text-emerald-500' : 'text-zinc-500',
@@ -182,7 +170,6 @@ const More = ({
                 <button 
                   key={iIdx} 
                   onClick={item.action}
-                  // FIX: Matched the label to 'Connect Upstox'
                   disabled={item.loading || (item.label === 'Connect Upstox' && user?.is_uptox_connected)}
                   className="w-full bg-zinc-900/30 hover:bg-zinc-900/60 border border-zinc-800/30 rounded-2xl p-4 flex justify-between items-center transition-all group disabled:opacity-50"
                 >
@@ -213,7 +200,6 @@ const More = ({
                       >
                         <FileText size={14} />
                       </div>
-                    // FIX: Matched the label to 'Connect Upstox'
                     ) : !user?.is_uptox_connected && item.label === 'Connect Upstox' ? (
                       <div className="bg-emerald-500 text-black px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">Link</div>
                     ) : (

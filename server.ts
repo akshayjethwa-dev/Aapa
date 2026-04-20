@@ -139,7 +139,6 @@ async function startServer() {
       ws.send(JSON.stringify({ 
         type: "ticker", 
         data: marketData,
-        isSimulated: false,
         marketPhase: getMarketPhase() 
       }));
 
@@ -333,9 +332,10 @@ async function startServer() {
 
   app.post("/api/auth/register", validate(registerSchema), async (req, res, next) => {
       try {
-        let { email, mobile, password } = req.body || {};
+        let { email, mobile, password, has_upstox } = req.body || {};
         email = email?.toString().toLowerCase().trim();
         mobile = mobile?.toString().trim();
+        const hasUpstoxAccount = has_upstox === true;
 
         logger.info(`[Auth] Registration attempt for email: ${email}`);
         const hashedPassword = await bcrypt.hash(String(password), 10);
@@ -350,11 +350,14 @@ async function startServer() {
         }
 
         const superAdminEmail = "bharvadvijay371@gmail.com";
-        const role = userCount === 0 || email === superAdminEmail ? "admin" : "user";
+        // Restrict role to pre-onboarding if they don't have an upstox account
+        const role = userCount === 0 || email === superAdminEmail 
+          ? "admin" 
+          : hasUpstoxAccount ? "user" : "pre-onboarding";
 
         const { rows: inserted } = await query(
-          "INSERT INTO users (email, mobile, password, role, terms_accepted_at) VALUES ($1, $2, $3, $4, NOW()) RETURNING id",
-          [email, mobile, hashedPassword, role]
+          "INSERT INTO users (email, mobile, password, role, has_upstox_account, terms_accepted_at) VALUES ($1, $2, $3, $4, $5, NOW()) RETURNING id",
+          [email, mobile, hashedPassword, role, hasUpstoxAccount]
         );
 
         logger.info(`[Auth] Registration successful for user ID: ${inserted[0].id} with role: ${role}`);
@@ -545,7 +548,7 @@ async function startServer() {
   app.get("/api/user/profile", authenticateToken, async (req: any, res, next) => {
     try {
       const { rows: userRows } = await query(
-        "SELECT id, email, mobile, role, kyc_status, is_kyc_approved, balance FROM users WHERE id = $1",
+        "SELECT id, email, mobile, role, kyc_status, is_kyc_approved, balance, has_upstox_account FROM users WHERE id = $1",
         [req.user.id]
       );
       const user = userRows[0];
@@ -558,6 +561,7 @@ async function startServer() {
       const userToken = tokenRows[0];
       let balance = parseFloat(user?.balance) || 0;
 
+      // ... (keep the rest of the existing upstox balance fetching logic)
       if (userToken && userToken.access_token) {
         try {
           const decryptedToken = decrypt(String(userToken.access_token));
@@ -915,7 +919,15 @@ async function startServer() {
   // --- MODIFIED: Story B4 Server-Side Translation for Order Entry ---
   app.post("/api/orders", authenticateToken, requireKyc, validate(placeOrderSchema), async (req: any, res, next) => {
       try {
-        const { symbol, type, order_type, quantity, price, product, broker, expiry } = req.body;
+        const { rows: userRows } = await query("SELECT has_upstox_account, role FROM users WHERE id = $1", [req.user.id]);
+        if (!userRows[0]?.has_upstox_account && userRows[0]?.role !== 'admin') {
+           return res.status(403).json({ 
+             requires_upstox: true, 
+             message: "You must complete Upstox account opening to place orders." 
+           });
+        }
+        const { symbol, type, order_type, quantity, price, product, expiry } = req.body;
+        const broker = 'upstox'; // Exclusively route to Upstox
         const userId = req.user.id;
         const { rows } = await query("SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = $2", [userId, broker]);
         const userToken = rows[0];
@@ -1116,7 +1128,6 @@ async function startServer() {
               const wsPayload = JSON.stringify({ 
                 type: "ticker", 
                 data: marketData, 
-                isSimulated: false,
                 marketPhase: getMarketPhase()
               });
               wss.clients.forEach((c) => { if (c.readyState === WebSocket.OPEN) c.send(wsPayload); });
@@ -1217,8 +1228,7 @@ async function startServer() {
           if (updated) {
             const wsPayload = JSON.stringify({ 
               type: "ticker", 
-              data: marketData, 
-              isSimulated: false,
+              data: marketData,
               marketPhase: getMarketPhase() 
             });
             wss.clients.forEach((c) => { if (c.readyState === WebSocket.OPEN) c.send(wsPayload); });
@@ -1332,7 +1342,6 @@ async function startServer() {
         const payload = JSON.stringify({ 
           type: "ticker", 
           data: marketData, 
-          isSimulated: true,
           marketPhase: currentPhase 
         });
         wss.clients.forEach((c) => {
@@ -1342,7 +1351,6 @@ async function startServer() {
         const payload = JSON.stringify({ 
           type: "ticker", 
           data: marketData, 
-          isSimulated: false,
           marketPhase: currentPhase 
         });
         wss.clients.forEach((c) => {

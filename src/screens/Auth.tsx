@@ -35,7 +35,10 @@ const Auth = () => {
     setIsLoading(true);
     console.log(`[Auth] Submitting ${isLogin ? 'login' : 'registration'} form...`);
     const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
-    const body = isLogin ? { login: email, password } : { email, mobile, password };
+    // PASS has_upstox STATE TO BACKEND
+    const body = isLogin 
+      ? { login: email, password } 
+      : { email, mobile, password, has_upstox: hasUpstox };
 
     try {
       const res = await apiClient.post(endpoint, body);

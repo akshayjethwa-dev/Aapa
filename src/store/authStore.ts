@@ -4,10 +4,10 @@ import { apiClient } from '../api/client';
 interface User {
   id: number;
   email: string;
-  role: string;
+  role: string; // 'admin', 'user', or 'pre-onboarding'
   balance: number;
   is_uptox_connected?: boolean;
-  is_angelone_connected?: boolean;
+  has_upstox_account?: boolean;
 }
 
 interface AuthState {
@@ -17,7 +17,6 @@ interface AuthState {
   setIsWsConnected: (status: boolean) => void;
   setAuth: (user: User, token: string) => void;
   logout: () => void;
-  // NEW: refreshUser fetches the latest profile and updates the store
   refreshUser: () => Promise<void>;
 }
 
@@ -60,7 +59,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ user: null, token: null, isWsConnected: false });
     window.location.href = '/';
   },
-  // NEW: Fetches the latest user profile from server and updates store + localStorage
   refreshUser: async () => {
     const { token, setAuth } = get();
     if (!token) return;

@@ -48,36 +48,15 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedStockFromSearch, setSelectedStockFromSearch] = useState<string | null>(null);
 
-  const [isDemoMode, setIsDemoMode] = useState(false); 
   const [marketPhase, setMarketPhase] = useState<MarketPhase>('CLOSED');
 
-  const [isConnectingAngel, setIsConnectingAngel] = useState(false);
   const [isConnectingUptox, setIsConnectingUptox] = useState(false);
-  const [angelForm, setAngelForm] = useState({ clientCode: '', password: '', totp: '' });
-  const [showAngelLogin, setShowAngelLogin] = useState(false);
   const [debugInfo, setDebugInfo] = useState<any>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttemptsRef = useRef(0);
-
-  const handleConnectAngel = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsConnectingAngel(true);
-    try {
-      await apiClient.post('/api/auth/angelone/login', angelForm);
-      toast.success('Angel One connected successfully!');
-      setShowAngelLogin(false);
-      
-      const pRes = await apiClient.get('/api/user/profile');
-      setAuth(pRes.data, token as string);
-    } catch (e: any) {
-      toast.error(e.response?.data?.error || 'Angel One login failed');
-    } finally {
-      setIsConnectingAngel(false);
-    }
-  };
 
   // =========================================================================
   // UPSTOX CONNECTION TRIGGER
@@ -142,10 +121,25 @@ function App() {
   }, [activeTab]);
 
   useEffect(() => {
-    if (token && user?.role === 'admin' && activeTab === 'dashboard') {
-      setActiveTab('admin');
+    if (token && user) {
+      if (user.role === 'admin' && activeTab === 'dashboard') {
+        setActiveTab('admin');
+      } 
+      // Force non-admins without Upstox connection to the connect screen
+      else if (
+        user.role !== 'admin' && 
+        !user.is_uptox_connected && 
+        activeTab !== 'kyc' && 
+        activeTab !== 'more' // Allow them to access 'more' to logout if needed
+      ) {
+        setActiveTab('kyc');
+      } 
+      // Auto-redirect to dashboard once connected
+      else if (user.role !== 'admin' && user.is_uptox_connected && activeTab === 'kyc') {
+        setActiveTab('dashboard');
+      }
     }
-  }, [token, user?.role]);
+  }, [token, user, activeTab]);
 
   const openOptionChain = (index: string = 'NIFTY 50') => {
     setSelectedIndex(index);
@@ -276,9 +270,6 @@ function App() {
           if (message.type === 'ticker') {
             setStocks(message.data);
             
-            if (message.isSimulated !== undefined) {
-              setIsDemoMode(message.isSimulated);
-            }
             if (message.marketPhase) {
               setMarketPhase(message.marketPhase);
             }
@@ -340,13 +331,6 @@ function App() {
       <Header onProfileClick={() => setActiveTab('more')} onSearchClick={() => setIsSearchOpen(true)} />
 
       <main className="max-w-md mx-auto pt-20 pb-24">
-        {isDemoMode && (
-          <div className="bg-amber-500 text-black py-2 px-4 text-center font-bold text-[10px] uppercase tracking-widest shadow-lg shadow-amber-500/20 z-50 relative">
-            <AlertCircle size={14} className="inline mr-2 -mt-0.5" />
-            DEMO MODE - Prices are simulated. Connect broker to trade.
-          </div>
-        )}
-        
         <AnimatePresence mode="wait">
           {activeTab === 'dashboard' && (
             <Dashboard 
@@ -371,52 +355,42 @@ function App() {
           {activeTab === 'fo' && (
             <div className="space-y-6">
               <OptionChain onPlaceOrder={setOrderConfig} stocks={stocks} fullChain={false} />
-              <FOTradingCenter key="fo" stocks={stocks} onOpenOptionChain={() => openOptionChain()} onConnectAngel={() => setShowAngelLogin(true)} onConnectUptox={handleConnectUptox} isConnectingAngel={isConnectingAngel} isConnectingUptox={isConnectingUptox} />
+              <FOTradingCenter 
+                key="fo" 
+                stocks={stocks} 
+                onOpenOptionChain={() => openOptionChain()} 
+                onConnectUptox={handleConnectUptox} 
+                isConnectingUptox={isConnectingUptox} 
+              />
             </div>
           )}
           {activeTab === 'portfolio' && <Portfolio key="portfolio" stocks={stocks} />}
           {activeTab === 'onboarding' && <Onboarding key="onboarding" onComplete={() => setActiveTab('dashboard')} />}
           {activeTab === 'admin' && <AdminPanel key="admin" onBack={() => setActiveTab('dashboard')} />}
           {activeTab === 'more' && (
-            <More key="more" activeTab={activeTab} setActiveTab={setActiveTab} setComplianceType={setComplianceType} setStocks={setStocks} onConnectAngel={() => setShowAngelLogin(true)} onConnectUptox={handleConnectUptox} isConnectingAngel={isConnectingAngel} isConnectingUptox={isConnectingUptox} debugInfo={debugInfo} isRefreshing={isRefreshing} onForceRefresh={handleForceRefresh} />
+            <More 
+              key="more" 
+              activeTab={activeTab} 
+              setActiveTab={setActiveTab} 
+              setComplianceType={setComplianceType} 
+              setStocks={setStocks} 
+              onConnectUptox={handleConnectUptox} 
+              isConnectingUptox={isConnectingUptox} 
+              debugInfo={debugInfo} 
+              isRefreshing={isRefreshing} 
+              onForceRefresh={handleForceRefresh} 
+            />
           )}
           {activeTab === 'compliance' && <ComplianceDetail key="compliance" type={complianceType} onBack={() => setActiveTab('more')} />}
-          {activeTab === 'kyc' && <KycVerification key="kyc" onBack={() => setActiveTab('dashboard')} />}
+          {activeTab === 'kyc' && (
+            <KycVerification 
+              key="kyc" 
+              onConnectUptox={handleConnectUptox} 
+              isConnectingUptox={isConnectingUptox} 
+            />
+          )}
         </AnimatePresence>
       </main>
-
-      {/* Angel One Login Modal */}
-      <AnimatePresence>
-        {showAngelLogin && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-200 bg-black/90 backdrop-blur-md flex items-center justify-center p-6">
-            <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} className="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-[2.5rem] p-8 space-y-6">
-              <div className="flex justify-between items-center">
-                <h3 className="text-xl font-black text-white uppercase tracking-tighter">Angel One Login</h3>
-                <button onClick={() => setShowAngelLogin(false)} className="p-2 text-zinc-500 hover:text-white">
-                  <LogOut size={20} className="rotate-90" />
-                </button>
-              </div>
-              <form onSubmit={handleConnectAngel} className="space-y-4">
-                <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest ml-1">Client Code</label>
-                  <input type="text" required value={angelForm.clientCode} onChange={(e) => setAngelForm({ ...angelForm, clientCode: e.target.value })} className="w-full bg-black border border-zinc-800 rounded-2xl px-5 py-4 text-sm text-white focus:border-emerald-500 transition-colors" placeholder="e.g. V123456" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest ml-1">Password</label>
-                  <input type="password" required value={angelForm.password} onChange={(e) => setAngelForm({ ...angelForm, password: e.target.value })} className="w-full bg-black border border-zinc-800 rounded-2xl px-5 py-4 text-sm text-white focus:border-emerald-500 transition-colors" placeholder="••••••••" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest ml-1">TOTP / OTP</label>
-                  <input type="text" required value={angelForm.totp} onChange={(e) => setAngelForm({ ...angelForm, totp: e.target.value })} className="w-full bg-black border border-zinc-800 rounded-2xl px-5 py-4 text-sm text-white focus:border-emerald-500 transition-colors" placeholder="6-digit code" />
-                </div>
-                <button type="submit" disabled={isConnectingAngel} className="w-full bg-emerald-500 text-black font-black py-4 rounded-2xl text-xs uppercase tracking-widest hover:bg-emerald-600 transition-all shadow-xl shadow-emerald-500/20 disabled:opacity-50">
-                  {isConnectingAngel ? 'Connecting...' : 'Link Account'}
-                </button>
-              </form>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
 
       <AnimatePresence mode="wait">
         {isSearchOpen && (
@@ -474,7 +448,7 @@ function App() {
           </motion.div>
         )}
 
-        {orderConfig && <OrderWindow key="order-window" config={orderConfig} onClose={() => setOrderConfig(null)} onOrderPlaced={() => {}} isDemoMode={isDemoMode} onKycRequired={() => { setOrderConfig(null); setActiveTab('kyc'); }} />}
+        {orderConfig && <OrderWindow key="order-window" config={orderConfig} onClose={() => setOrderConfig(null)} onOrderPlaced={() => {}} onKycRequired={() => { setOrderConfig(null); setActiveTab('kyc'); }} />}
         {overviewIndex && <IndexOverview key="index-overview" indexName={overviewIndex} stocks={stocks} onClose={() => setOverviewIndex(null)} onOpenOptionChain={() => { setSelectedIndex(overviewIndex); setOverviewIndex(null); }} />}
         {selectedIndex && <IndexDetail key="index-detail" indexName={selectedIndex} stocks={stocks} onClose={() => setSelectedIndex(null)} onPlaceOrder={setOrderConfig} />}
       </AnimatePresence>
