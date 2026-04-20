@@ -18,7 +18,7 @@ const Dashboard = ({
   onProfileClick,
   marketPhase = 'CLOSED'
 }: { 
-  stocks: Record<string, number>, 
+  stocks: Record<string, any>, 
   onMarketClick: () => void, 
   onIndexClick: (index: string) => void, 
   onProfileClick: () => void,
@@ -53,7 +53,6 @@ const Dashboard = ({
   useEffect(() => {
     fetchPortfolio();
     
-    // Listen for the custom real-time event dispatched by App.tsx WebSockets
     const handlePortfolioUpdate = () => {
       console.log("Real-time update triggered: Fetching fresh portfolio...");
       fetchPortfolio();
@@ -69,7 +68,6 @@ const Dashboard = ({
   const handleUpstoxConnect = async () => {
     setIsConnecting(true);
     
-    // 🚀 FIX: Open popup immediately to bypass Safari/Chrome popup blockers
     const width = 500, height = 700;
     const left = window.screen.width / 2 - width / 2;
     const top = window.screen.height / 2 - height / 2;
@@ -84,8 +82,6 @@ const Dashboard = ({
         authWindow?.close();
         toast.error(error || 'Upstox configuration missing on server');
       }
-      // Note: We intentionally removed the polling logic. 
-      // App.tsx handles the 'UPTOX_AUTH_SUCCESS' message, refreshes state, and toasts.
     } catch (err: any) {
       authWindow?.close();
       toast.error('Failed to initialize Upstox connection.');
@@ -111,15 +107,14 @@ const Dashboard = ({
   const totalInvested = holdings.reduce((acc, curr) => acc + curr.quantity * curr.average_price, 0);
 
   const currentValue = holdings.reduce((acc, curr) => {
-    const ltp = stocks[curr.symbol] || curr.current_price || curr.average_price;
+    const quote = stocks[curr.symbol];
+    const ltp = typeof quote === 'number' ? quote : (quote?.ltp || curr.current_price || curr.average_price);
     return acc + curr.quantity * ltp;
   }, 0);
 
-  const dayPnL = positions.reduce((acc, curr) => acc + (curr.pnl || 0), 0);
   const totalPnL = currentValue - totalInvested;
   const totalPnLPercent = totalInvested > 0 ? (totalPnL / totalInvested) * 100 : 0;
   
-  // Tie the live data indicator to our precise market phase
   const isDataLive = marketPhase === 'LIVE';
 
   const primaryIndices = ["NIFTY 50", "SENSEX", "BANKNIFTY", "FINNIFTY", "MIDCAP NIFTY", "SMALLCAP NIFTY"];
@@ -162,9 +157,19 @@ const Dashboard = ({
   const sortedGainersLosers = useMemo(() => {
     const list = Object.entries(stocks)
       .filter(([s]) => !primaryIndices.includes(s) && !secondaryIndices.includes(s))
-      .map(([symbol, price]) => ({ symbol, price, change: 0 }));
+      .map(([symbol, quote]) => {
+        const price = typeof quote === 'number' ? quote : (quote?.ltp || 0);
+        const change = typeof quote === 'number' ? 0 : (quote?.day_change_pct || 0);
+        return { symbol, price, change };
+      });
+      
+    if (gainerLoserTab === 'Gainers') {
+      list.sort((a, b) => b.change - a.change);
+    } else {
+      list.sort((a, b) => a.change - b.change);
+    }
     return list.slice(0, 5);
-  }, [stocks, primaryIndices, secondaryIndices]);
+  }, [stocks, primaryIndices, secondaryIndices, gainerLoserTab]);
 
   return (
     <div className="space-y-5 pb-20">
@@ -176,31 +181,38 @@ const Dashboard = ({
           <MarketStatusPill phase={marketPhase} />
         </div>
         <div className="px-5 overflow-x-auto scrollbar-hide flex gap-3 py-2">
-          {[...primaryIndices, ...secondaryIndices].map(index => (
-            <motion.div
-              key={index}
-              whileHover={{ y: -2 }}
-              onClick={() => onIndexClick(index)}
-              className="min-w-37.5 bg-zinc-900/40 border border-zinc-800/50 rounded-2xl pt-3 pb-4 px-4 flex flex-col gap-2 cursor-pointer"
-            >
-              <div className="flex justify-between items-start">
-                <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">{index}</span>
-                <Sparkline color={stocks[index] > (index.includes('SENSEX') ? 70000 : 20000) ? '#10b981' : '#ef4444'} />
-              </div>
-              <div>
-                <p className="text-lg font-black tracking-tight text-white">{stocks[index]?.toLocaleString('en-IN', { minimumFractionDigits: 2 }) || '---'}</p>
-                <div className="flex items-center gap-1.5 mt-0.5">
-                  <div className={cn(
-                    "flex items-center gap-0.5 px-1.5 py-0.5 rounded-md text-[10px] font-bold",
-                    stocks[index] > (index.includes('SENSEX') ? 70000 : 20000) ? "bg-emerald-500/10 text-emerald-500" : "bg-rose-500/10 text-rose-500"
-                  )}>
-                    {stocks[index] > (index.includes('SENSEX') ? 70000 : 20000) ? <ArrowUpRight size={10} /> : <ArrowDownRight size={10} />}
-                    <span>+1.24%</span>
+          {[...primaryIndices, ...secondaryIndices].map(index => {
+            const quote = stocks[index];
+            const ltp = typeof quote === 'number' ? quote : (quote?.ltp || 0);
+            const changePct = typeof quote === 'number' ? 0 : (quote?.day_change_pct || 0);
+            const isPositive = changePct >= 0;
+
+            return (
+              <motion.div
+                key={index}
+                whileHover={{ y: -2 }}
+                onClick={() => onIndexClick(index)}
+                className="min-w-37.5 bg-zinc-900/40 border border-zinc-800/50 rounded-2xl pt-3 pb-4 px-4 flex flex-col gap-2 cursor-pointer"
+              >
+                <div className="flex justify-between items-start">
+                  <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">{index}</span>
+                  <Sparkline color={isPositive ? '#10b981' : '#ef4444'} />
+                </div>
+                <div>
+                  <p className="text-lg font-black tracking-tight text-white">{ltp ? ltp.toLocaleString('en-IN', { minimumFractionDigits: 2 }) : '---'}</p>
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <div className={cn(
+                      "flex items-center gap-0.5 px-1.5 py-0.5 rounded-md text-[10px] font-bold",
+                      isPositive ? "bg-emerald-500/10 text-emerald-500" : "bg-rose-500/10 text-rose-500"
+                    )}>
+                      {isPositive ? <ArrowUpRight size={10} /> : <ArrowDownRight size={10} />}
+                      <span>{isPositive ? '+' : ''}{changePct.toFixed(2)}%</span>
+                    </div>
                   </div>
                 </div>
-              </div>
-            </motion.div>
-          ))}
+              </motion.div>
+            );
+          })}
         </div>
       </div>
 
@@ -270,7 +282,8 @@ const Dashboard = ({
                   Holdings ({holdings.length} stocks)
                 </p>
                 {holdings.slice(0, 3).map(h => {
-                  const ltp = stocks[h.symbol] || h.current_price || h.average_price;
+                  const quote = stocks[h.symbol];
+                  const ltp = typeof quote === 'number' ? quote : (quote?.ltp || h.current_price || h.average_price);
                   const pnl = (ltp - h.average_price) * h.quantity;
                   return (
                     <div key={h.symbol} className="flex justify-between items-center">
@@ -307,38 +320,44 @@ const Dashboard = ({
             <span className="text-[8px] font-bold text-zinc-700">{positions.length} Active</span>
           </div>
           <div className="space-y-2.5">
-            {positions.map((pos, i) => (
-              <div key={pos.symbol} className="bg-zinc-900/30 border border-zinc-800/50 rounded-2xl p-4 space-y-3">
-                <div className="flex justify-between items-start">
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <p className="text-sm font-bold text-white tracking-tight">{pos.symbol}</p>
-                      <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-[8px] font-bold text-zinc-500 uppercase">{pos.type}</span>
+            {positions.map((pos, i) => {
+              const quote = stocks[pos.symbol];
+              const ltp = typeof quote === 'number' ? quote : (quote?.ltp || pos.current_price || pos.average_price);
+              const pnl = (ltp - (pos.avgPrice || pos.average_price)) * pos.quantity;
+
+              return (
+                <div key={pos.symbol} className="bg-zinc-900/30 border border-zinc-800/50 rounded-2xl p-4 space-y-3">
+                  <div className="flex justify-between items-start">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-bold text-white tracking-tight">{pos.symbol}</p>
+                        <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-[8px] font-bold text-zinc-500 uppercase">{pos.type}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <p className="text-[10px] font-bold text-zinc-500 uppercase">{pos.quantity} Qty</p>
+                        <span className="w-1 h-1 rounded-full bg-zinc-800" />
+                        <p className="text-[10px] font-bold text-zinc-500 uppercase">Avg {formatCurrency(pos.avgPrice || pos.average_price)}</p>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <p className="text-[10px] font-bold text-zinc-500 uppercase">{pos.quantity} Qty</p>
-                      <span className="w-1 h-1 rounded-full bg-zinc-800" />
-                      <p className="text-[10px] font-bold text-zinc-500 uppercase">Avg {formatCurrency(pos.avgPrice || pos.average_price)}</p>
+                    <div className="text-right">
+                      <p className={cn("text-sm font-black tracking-tighter", pnl >= 0 ? "text-emerald-500" : "text-rose-500")}>
+                        {formatCurrency(pnl)}
+                      </p>
+                      <p className="text-[10px] font-bold text-zinc-500 mt-1">LTP: <span className="text-white">{formatCurrency(ltp)}</span></p>
                     </div>
                   </div>
-                  <div className="text-right">
-                    <p className={cn("text-sm font-black tracking-tighter", (pos.ltp - (pos.avgPrice || pos.average_price)) >= 0 ? "text-emerald-500" : "text-rose-500")}>
-                      {formatCurrency((pos.ltp - (pos.avgPrice || pos.average_price)) * pos.quantity)}
-                    </p>
-                    <p className="text-[10px] font-bold text-zinc-500 mt-1">LTP: <span className="text-white">{formatCurrency(pos.ltp)}</span></p>
-                  </div>
+                  <button
+                    onClick={() => handleExit(i)}
+                    className={cn(
+                      "w-full py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all",
+                      confirmExit === i ? "bg-rose-500 text-black" : "bg-rose-500/10 text-rose-500 hover:bg-rose-500/20 border border-rose-500/20"
+                    )}
+                  >
+                    {confirmExit === i ? 'Confirm Exit' : 'Exit Position'}
+                  </button>
                 </div>
-                <button
-                  onClick={() => handleExit(i)}
-                  className={cn(
-                    "w-full py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all",
-                    confirmExit === i ? "bg-rose-500 text-black" : "bg-rose-500/10 text-rose-500 hover:bg-rose-500/20 border border-rose-500/20"
-                  )}
-                >
-                  {confirmExit === i ? 'Confirm Exit' : 'Exit Position'}
-                </button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}

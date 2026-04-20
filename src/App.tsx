@@ -4,7 +4,7 @@ import { Toaster, toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
 import { LogOut, ChevronRight, Search, AlertCircle } from 'lucide-react';
 import { useAuthStore } from './store/authStore';
-import { formatCurrency } from './lib/utils';
+import { formatCurrency, cn } from './lib/utils';
 import { apiClient } from './api/client';
 
 import Navbar from './components/Navbar';
@@ -66,18 +66,15 @@ function App() {
     
     setIsConnectingUptox(true);
     try {
-      // 1. Get the authorization URL from the backend
       const res = await apiClient.get('/api/auth/uptox/url');
       const data = res.data;
 
       if (data.url) {
-        // 2. Calculate popup position to center it
         const width = 500;
         const height = 700;
         const left = window.screen.width / 2 - width / 2;
         const top = window.screen.height / 2 - height / 2;
 
-        // 3. Open the Upstox login page in a popup window
         window.open(
           data.url,
           'UpstoxLogin',
@@ -125,16 +122,14 @@ function App() {
       if (user.role === 'admin' && activeTab === 'dashboard') {
         setActiveTab('admin');
       } 
-      // Force non-admins without Upstox connection to the connect screen
       else if (
         user.role !== 'admin' && 
         !user.is_uptox_connected && 
         activeTab !== 'kyc' && 
-        activeTab !== 'more' // Allow them to access 'more' to logout if needed
+        activeTab !== 'more' 
       ) {
         setActiveTab('kyc');
       } 
-      // Auto-redirect to dashboard once connected
       else if (user.role !== 'admin' && user.is_uptox_connected && activeTab === 'kyc') {
         setActiveTab('dashboard');
       }
@@ -176,7 +171,6 @@ function App() {
   // =========================================================================
   useEffect(() => {
     const handleMessage = async (event: MessageEvent) => {
-      // Security: ensure the message is from our own domain
       const allowedOrigins = [
         window.location.origin,
         import.meta.env.VITE_APP_URL
@@ -190,7 +184,6 @@ function App() {
         try {
           const { token: uptoxToken, refresh_token: uptoxRefreshToken } = data;
 
-          // If fallback tokens were returned instead of the backend saving them, save them now
           if (uptoxToken) {
             await apiClient.post('/api/auth/uptox/save-token', {
               access_token: uptoxToken,
@@ -198,10 +191,8 @@ function App() {
             });
           }
           
-          // Wait a brief moment to ensure backend saved properly
           await new Promise(r => setTimeout(r, 600));
           
-          // Refresh user profile to fetch updated is_uptox_connected and balance
           const profileRes = await apiClient.get('/api/user/profile');
           if (profileRes.data?.id) {
             setAuth(profileRes.data, token as string);
@@ -211,11 +202,11 @@ function App() {
           console.error('Failed to finalize Upstox connection', e);
           toast.error('Failed to finalize Upstox connection. Please try again.');
         } finally {
-          setIsConnectingUptox(false); // Stop loading state
+          setIsConnectingUptox(false); 
         }
       } else if (data?.type === 'UPTOX_AUTH_ERROR') {
         toast.error(data.error?.message || 'Upstox connection failed or was cancelled.');
-        setIsConnectingUptox(false); // Stop loading state
+        setIsConnectingUptox(false); 
       }
     };
 
@@ -224,7 +215,7 @@ function App() {
   }, [token, setAuth]);
 
   // =========================================================================
-  // GLOBAL WEBSOCKET CONNECTION (Prices & Portfolio Events)
+  // GLOBAL WEBSOCKET CONNECTION
   // =========================================================================
   useEffect(() => {
     if (!token) return;
@@ -253,11 +244,9 @@ function App() {
         try {
           const message = JSON.parse(event.data);
 
-          // Handle Broken Broker Session
           if (message.type === 'broker_disconnected') {
             if (message.broker === 'upstox') {
               toast.error('Upstox session expired. Please reconnect.');
-              // Fetch latest profile here instead of relying on the local user state
               apiClient.get('/api/user/profile').then(res => {
                   if (isComponentMounted && res.data?.id) {
                      setAuth(res.data, freshToken);
@@ -266,7 +255,6 @@ function App() {
             }
           }
 
-          // Handle Live Market Feed
           if (message.type === 'ticker') {
             setStocks(message.data);
             
@@ -275,12 +263,10 @@ function App() {
             }
           }
 
-          // Handle Live Upstox Order/Portfolio Updates
           if (message.type === 'order_update') {
              const statusStr = message.data.status ? String(message.data.status).toUpperCase() : 'UPDATED';
              toast.info(`Upstox Order: ${statusStr}`, { description: `Order ID: ${message.data.order_id}` });
              
-             // Auto-refresh the user's funds/balance globally when an order executes
              apiClient.get('/api/user/profile').then(res => {
                  if (res.data?.id && isComponentMounted) {
                     setAuth(res.data, freshToken);
@@ -308,8 +294,6 @@ function App() {
       isComponentMounted = false;
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       if (wsRef.current) {
-        // Silently remove the event listener to prevent infinite reconnect loops
-        // and avoid throwing the browser error when closing a connecting socket.
         wsRef.current.onclose = null;
         wsRef.current.close();
       }
@@ -408,9 +392,10 @@ function App() {
             <div className="flex-1 overflow-y-auto space-y-4">
               {filteredStocks.length > 0 ? (
                 filteredStocks.map((symbol: string) => {
-                  // Make sure we extract the LTP properly if the stock object is full MarketQuote
                   const stockData = stocks[symbol];
                   const ltp = typeof stockData === 'number' ? stockData : (stockData?.ltp || 0);
+                  const changePct = typeof stockData === 'number' ? 0 : (stockData?.day_change_pct || 0);
+                  const isPositive = changePct >= 0;
 
                   return (
                     <div key={symbol} onClick={() => { setIsSearchOpen(false); setSelectedStockFromSearch(symbol); setActiveTab('market'); }} className="bg-zinc-900/40 border border-zinc-800/50 rounded-2xl p-4 flex justify-between items-center cursor-pointer hover:bg-zinc-900 transition-colors">
@@ -425,7 +410,9 @@ function App() {
                       </div>
                       <div className="text-right">
                         <p className="text-sm font-bold text-white">{formatCurrency(ltp)}</p>
-                        <p className="text-[10px] font-bold text-emerald-500">+1.24%</p>
+                        <p className={cn("text-[10px] font-bold", isPositive ? "text-emerald-500" : "text-rose-500")}>
+                          {isPositive ? '+' : ''}{changePct.toFixed(2)}%
+                        </p>
                       </div>
                     </div>
                   );
