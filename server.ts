@@ -104,6 +104,68 @@ async function startServer() {
   const server = http.createServer(app);
   const wss = new WebSocketServer({ server });
 
+  // =========================================================================
+  // --- SYMBOL MAPPINGS & MARKET DATA INITIALIZATION ---
+  // =========================================================================
+  const primaryIndices = ["NIFTY 50", "SENSEX", "BANKNIFTY", "FINNIFTY", "MIDCAP NIFTY", "SMALLCAP NIFTY"];
+  const secondaryIndices = ["NIFTY IT", "NIFTY AUTO", "NIFTY PHARMA", "NIFTY METAL", "NIFTY FMCG", "NIFTY REALTY"];
+  const stocks = ["RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "BHARTIARTL", "SBIN", "LICI", "ITC", "HINDUNILVR"];
+  const allSymbols = [...primaryIndices, ...secondaryIndices, ...stocks];
+
+  const stockISINMap: Record<string, string> = {
+    "RELIANCE": "NSE_EQ|INE002A01018",
+    "TCS": "NSE_EQ|INE467B01029",
+    "HDFCBANK": "NSE_EQ|INE040A01034",
+    "INFY": "NSE_EQ|INE009A01021",
+    "ICICIBANK": "NSE_EQ|INE090A01021",
+    "BHARTIARTL": "NSE_EQ|INE397D01024",
+    "SBIN": "NSE_EQ|INE062A01020",
+    "LICI": "NSE_EQ|INE511Q01029",
+    "ITC": "NSE_EQ|INE154A01025",
+    "HINDUNILVR": "NSE_EQ|INE030A01027"
+  };
+
+  const indexMap: Record<string, string[]> = {
+    "NIFTY 50": ["NSE_INDEX|Nifty 50", "NSE_INDEX|NIFTY 50"],
+    BANKNIFTY: ["NSE_INDEX|Nifty Bank", "NSE_INDEX|NIFTY BANK"],
+    FINNIFTY: ["NSE_INDEX|Nifty Fin Service", "NSE_INDEX|NIFTY FIN SERVICE"],
+    "MIDCAP NIFTY": ["NSE_INDEX|Nifty Midcap 100", "NSE_INDEX|NIFTY MIDCAP 100"],
+    SENSEX: ["BSE_INDEX|SENSEX", "BSE_INDEX|Sensex"],
+    "SMALLCAP NIFTY": ["NSE_INDEX|Nifty Smallcap 100", "NSE_INDEX|NIFTY SMALLCAP 100"],
+    "NIFTY IT": ["NSE_INDEX|Nifty IT", "NSE_INDEX|NIFTY IT"],
+    "NIFTY AUTO": ["NSE_INDEX|Nifty Auto", "NSE_INDEX|NIFTY AUTO"],
+    "NIFTY PHARMA": ["NSE_INDEX|Nifty Pharma", "NSE_INDEX|NIFTY PHARMA"],
+    "NIFTY METAL": ["NSE_INDEX|Nifty Metal", "NSE_INDEX|NIFTY METAL"],
+    "NIFTY FMCG": ["NSE_INDEX|Nifty FMCG", "NSE_INDEX|NIFTY FMCG"],
+    "NIFTY REALTY": ["NSE_INDEX|Nifty Realty", "NSE_INDEX|NIFTY REALTY"],
+  };
+
+  const resolveInstrumentKey = (key: string): string => {
+    if (!key) return "";
+    if (key.includes("|")) return key; // Already a strict token
+
+    const upperKey = key.toUpperCase();
+    for (const [internalName, brokerKeys] of Object.entries(indexMap)) {
+      if (internalName.toUpperCase() === upperKey && brokerKeys.length > 0) {
+        return brokerKeys[0]; 
+      }
+    }
+    if (stockISINMap[upperKey]) return stockISINMap[upperKey];
+    return key; 
+  };
+
+  const marketData: Record<string, any> = {};
+  allSymbols.forEach((s) => {
+    const ltp = Math.random() * 1000 + 100;
+    const prevClose = ltp * (1 - (Math.random() * 0.04 - 0.02)); // Mock previous close within +/- 2%
+    marketData[s] = {
+      symbol: s, ltp: ltp, prevClose: prevClose, open: ltp, high: ltp * 1.01, low: ltp * 0.99,
+      day_change: ltp - prevClose,
+      day_change_pct: prevClose ? ((ltp - prevClose) / prevClose) * 100 : 0
+    };
+  });
+  // =========================================================================
+
   const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret";
   const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || "fallback-refresh-secret";
 
@@ -562,7 +624,6 @@ async function startServer() {
       const userToken = tokenRows[0];
       let balance = parseFloat(user?.balance) || 0;
 
-      // ... (keep the rest of the existing upstox balance fetching logic)
       if (userToken && userToken.access_token) {
         try {
           const decryptedToken = decrypt(String(userToken.access_token));
@@ -578,7 +639,6 @@ async function startServer() {
   });
 
   app.get("/api/auth/uptox/url", authenticateToken, (req: any, res) => {
-    // ADDED .trim() to ensure spaces don't break the auth
     const apiKey = process.env.UPTOX_API_KEY?.trim() ?? "";
     const redirectUri = process.env.UPTOX_REDIRECT_URI?.trim() ?? "";
 
@@ -593,7 +653,6 @@ async function startServer() {
     const { code, state } = req.query;
     if (!code) return res.status(400).send("No code provided.");
 
-    // ADDED .trim() to ensure spaces don't break the auth
     const apiKey = process.env.UPTOX_API_KEY?.trim() ?? "";
     const apiSecret = process.env.UPTOX_API_SECRET?.trim() ?? "";
     const redirectUri = process.env.UPTOX_REDIRECT_URI?.trim() ?? "";
@@ -697,79 +756,92 @@ async function startServer() {
   const expiryCache: Record<string, { dates: string[], timestamp: number }> = {};
   const CACHE_TTL = 1000 * 60 * 60; // 1 Hour
 
-  // --- NEW: Dynamic Expiry Discovery Endpoint ---
+  // --- STABILIZED: Dynamic Expiry Discovery Endpoint ---
   app.get("/api/option-expiries", authenticateToken, async (req: any, res, next) => {
     try {
-      const { instrument_key } = req.query;
-      if (!instrument_key) return res.status(400).json({ error: "Missing instrument_key" });
+      let { instrument_key } = req.query;
+      if (!instrument_key) return res.status(400).json({ status: "error", error: "Missing instrument_key" });
 
-      // Return from cache if valid (Saves Upstox API limits)
-      if (expiryCache[instrument_key] && (Date.now() - expiryCache[instrument_key].timestamp < CACHE_TTL)) {
-        return res.json({ status: "success", data: expiryCache[instrument_key].dates });
+      // Translate frontend name (e.g., "NIFTY 50") to Upstox token
+      const resolvedKey = resolveInstrumentKey(String(instrument_key));
+
+      if (expiryCache[resolvedKey] && (Date.now() - expiryCache[resolvedKey].timestamp < CACHE_TTL)) {
+        return res.json({ status: "success", data: expiryCache[resolvedKey].dates });
       }
 
       const { rows } = await query("SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = 'upstox'", [req.user.id]);
       const userToken = rows[0];
 
       if (!userToken || !userToken.access_token) {
-        return res.status(400).json({ error: "Please connect your Upstox account to fetch live expiries." });
+        return res.status(400).json({ status: "error", error: "Please connect your Upstox account to fetch live expiries." });
       }
 
       const decryptedToken = decrypt(String(userToken.access_token));
       
-      // Fetch available contracts for the instrument from Upstox
-      const response = await fetch(`https://api.upstox.com/v2/option/contract?instrument_key=${encodeURIComponent(String(instrument_key))}`, {
+      const response = await fetch(`https://api.upstox.com/v2/option/contract?instrument_key=${encodeURIComponent(resolvedKey)}`, {
         headers: { "Authorization": `Bearer ${decryptedToken}`, "Accept": "application/json" }
       });
       
+      if (!response.ok) {
+        logger.error(`[Upstox API] Expiry fetch failed with HTTP ${response.status} for ${resolvedKey}`);
+        return res.status(response.status).json({ status: "error", error: "Broker API unavailable. Please try again later." });
+      }
+
       const data = await response.json();
       
-      if (data.status === 'success' && data.data) {
-         // Extract unique expiry dates using a Set
+      if (data.status === 'success' && Array.isArray(data.data)) {
          const expirySet = new Set<string>();
          data.data.forEach((item: any) => {
            if (item.expiry_date) expirySet.add(item.expiry_date);
          });
          
-         // Sort dates closest to furthest
          const expiries = Array.from(expirySet).sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
          
-         // Save to cache
-         expiryCache[instrument_key] = { dates: expiries, timestamp: Date.now() };
-         
+         if (expiries.length === 0) {
+           return res.status(404).json({ status: "error", error: "No active option contracts found for this instrument." });
+         }
+
+         expiryCache[resolvedKey] = { dates: expiries, timestamp: Date.now() };
          return res.json({ status: "success", data: expiries });
       } else {
-         return res.status(400).json({ error: data.errors?.[0]?.message || "Failed to fetch expiries from broker." });
+         logger.warn(`[Upstox API] Unexpected data format for expiries:`, data);
+         return res.status(400).json({ status: "error", error: data.errors?.[0]?.message || "Failed to fetch expiries." });
       }
     } catch (e: any) {
-      res.status(500).json({ error: "Server error fetching expiries", details: e.message });
+      logger.error("[Option Expiries] Server Exception:", e);
+      res.status(500).json({ status: "error", error: "Server error fetching expiries", details: e.message });
     }
   });
 
-  // --- NEW: Option Chain API Endpoint (Normalized with Greeks for Story B3) ---
+  // --- STABILIZED: Option Chain API Endpoint (Sorted & Normalized) ---
   app.get("/api/option-chain", authenticateToken, async (req: any, res, next) => {
     try {
-      const { instrument_key, expiry_date } = req.query;
-      if (!instrument_key || !expiry_date) return res.status(400).json({ error: "Missing instrument_key or expiry_date" });
+      let { instrument_key, expiry_date } = req.query;
+      if (!instrument_key || !expiry_date) return res.status(400).json({ status: "error", error: "Missing instrument_key or expiry_date" });
+
+      const resolvedKey = resolveInstrumentKey(String(instrument_key));
 
       const { rows } = await query("SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = 'upstox'", [req.user.id]);
       const userToken = rows[0];
 
       if (!userToken || !userToken.access_token) {
-        return res.status(400).json({ error: "Please connect your Upstox account to fetch option chain." });
+        return res.status(400).json({ status: "error", error: "Please connect your Upstox account to fetch option chain." });
       }
 
       const decryptedToken = decrypt(String(userToken.access_token));
 
-      const response = await fetch(`https://api.upstox.com/v2/option/chain?instrument_key=${encodeURIComponent(String(instrument_key))}&expiry_date=${expiry_date}`, {
+      const response = await fetch(`https://api.upstox.com/v2/option/chain?instrument_key=${encodeURIComponent(resolvedKey)}&expiry_date=${expiry_date}`, {
         headers: { "Authorization": `Bearer ${decryptedToken}`, "Accept": "application/json" }
       });
 
+      if (!response.ok) {
+        logger.error(`[Upstox API] Chain fetch failed: HTTP ${response.status} for ${resolvedKey} / ${expiry_date}`);
+        return res.status(response.status).json({ status: "error", error: "Broker API rate limited or unavailable." });
+      }
+
       const data = await response.json();
 
-      // Standardize & Normalize Response for Frontend (Including Greeks)
-      if (data.status === 'success' && data.data) {
-         // Helper function to handle nulls and scale values (Lakhs/Thousands)
+      if (data.status === 'success' && Array.isArray(data.data)) {
          const formatVal = (val: number | undefined, divisor: number, suffix: string) => {
             if (val === undefined || val === null || isNaN(val)) return '-';
             if (val === 0) return '0';
@@ -814,12 +886,17 @@ async function startServer() {
             };
          });
 
+         // STRICT SORTING: Always guarantee strikes are sorted ascending for the UI
+         normalizedChain.sort((a: any, b: any) => a.strike - b.strike);
+
          return res.json({ status: "success", data: normalizedChain });
       }
 
-      return res.json(data); // Fallback to raw error response
+      logger.warn(`[Upstox API] Malformed chain data for ${resolvedKey} / ${expiry_date}`, data);
+      return res.status(400).json({ status: "error", error: data.errors?.[0]?.message || "Failed to normalize option chain." });
     } catch (e: any) {
-      res.status(500).json({ error: "Server error fetching option chain", details: e.message });
+      logger.error("[Option Chain] Server Exception:", e);
+      res.status(500).json({ status: "error", error: "Server error fetching option chain", details: e.message });
     }
   });
 
@@ -924,6 +1001,19 @@ async function startServer() {
   });
 
   // --- MODIFIED: Story B4 Server-Side Translation for Order Entry ---
+  const resolveOptionInstrumentKey = (underlying: string, expiryDateStr: string, strike: number, optType: string) => {
+    // Convert "NIFTY 50" to "NIFTY"
+    const indexName = underlying.replace(' 50', '').replace(' ', '').toUpperCase(); 
+    
+    const date = new Date(expiryDateStr);
+    const year = date.getFullYear().toString().slice(-2);
+    const month = date.toLocaleString('en-US', { month: 'short' }).toUpperCase();
+    const day = date.getDate().toString().padStart(2, '0');
+
+    // Strict Upstox Format: NSE_FO|NIFTY24APR2522500CE
+    return `NSE_FO|${indexName}${year}${month}${day}${strike}${optType.toUpperCase()}`;
+  };
+
   app.post("/api/orders", authenticateToken, requireKyc, validate(placeOrderSchema), async (req: any, res, next) => {
       try {
         const { rows: userRows } = await query("SELECT has_upstox_account, role FROM users WHERE id = $1", [req.user.id]);
@@ -933,9 +1023,12 @@ async function startServer() {
              message: "You must complete Upstox account opening to place orders." 
            });
         }
-        const { symbol, type, order_type, quantity, price, product, expiry } = req.body;
-        const broker = 'upstox'; // Exclusively route to Upstox
+        
+        // Destructure all structured fields
+        const { symbol, type, order_type, quantity, price, product, expiry, strike, optionType } = req.body;
+        const broker = 'upstox'; 
         const userId = req.user.id;
+        
         const { rows } = await query("SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = $2", [userId, broker]);
         const userToken = rows[0];
 
@@ -944,22 +1037,15 @@ async function startServer() {
         const decryptedToken = decrypt(String(userToken.access_token));
         if (!decryptedToken) return res.status(500).json({ error: "Failed to decrypt broker token." });
 
-        // --- Translation Engine for Options (e.g. NIFTY 22500 CE -> NSE_FO|NIFTY24APR22500CE) ---
+        // --- Translation Engine: Structured Payload to Broker Token ---
         let brokerSymbol = symbol;
-        if (expiry && (symbol.endsWith(" CE") || symbol.endsWith(" PE"))) {
-            const parts = symbol.split(" ");
-            if (parts.length >= 3) {
-                const optType = parts.pop();       // "CE"
-                const strikePrice = parts.pop();   // "22500"
-                const indexName = parts.join("");  // "NIFTY" (or "BANKNIFTY" etc.)
-
-                const date = new Date(expiry);
-                const year = date.getFullYear().toString().slice(-2);
-                const month = date.toLocaleString('en-US', { month: 'short' }).toUpperCase();
-                
-                brokerSymbol = `NSE_FO|${indexName}${year}${month}${strikePrice}${optType}`;
-                logger.info(`[Order Translation] Translated friendly symbol '${symbol}' to strict broker token '${brokerSymbol}'`);
-            }
+        const friendlySymbol = strike && optionType ? `${symbol.replace(' 50', '')} ${strike} ${optionType}` : symbol;
+        
+        if (symbol.includes("|")) {
+            brokerSymbol = symbol; // Bypass if already a direct token
+        } else if (strike && optionType && expiry) {
+            brokerSymbol = resolveOptionInstrumentKey(symbol, expiry, strike, optionType);
+            logger.info(`[Order Translation] Translated structured option payload to strict broker token '${brokerSymbol}'`);
         }
 
         try {
@@ -968,68 +1054,24 @@ async function startServer() {
           const orderRes = await brokerService.placeOrder(decryptedToken, orderRequest);
 
           if (orderRes.success) {
+            // Save 'friendlySymbol' in DB so the UI looks nice, but we know the exact broker string passed
             await query("INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, broker_order_id, status, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed', $9)",
-              [userId, symbol, type, order_type, quantity, price, broker, orderRes.order_id, JSON.stringify(orderRes.raw_response)]);
+              [userId, friendlySymbol, type, order_type, quantity, price, broker, orderRes.order_id, JSON.stringify(orderRes.raw_response)]);
             return res.json({ success: true, order_id: orderRes.order_id });
           } else {
             const errorMsg = orderRes.error || "Order failed";
             await query("INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8, $9)",
-              [userId, symbol, type, order_type, quantity, price, broker, errorMsg, JSON.stringify(orderRes.raw_response)]);
+              [userId, friendlySymbol, type, order_type, quantity, price, broker, errorMsg, JSON.stringify(orderRes.raw_response)]);
             return res.status(400).json({ error: errorMsg });
           }
         } catch (e: any) {
           await query("INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8, $9)",
-            [userId, symbol, type, order_type, quantity, price, broker, e.message, JSON.stringify({ error: e.message })]);
+            [userId, friendlySymbol, type, order_type, quantity, price, broker, e.message, JSON.stringify({ error: e.message })]);
           throw new Error(`${broker} API Error`);
         }
       } catch (e) { next(e); }
     }
   );
-
-  const primaryIndices = ["NIFTY 50", "SENSEX", "BANKNIFTY", "FINNIFTY", "MIDCAP NIFTY", "SMALLCAP NIFTY"];
-  const secondaryIndices = ["NIFTY IT", "NIFTY AUTO", "NIFTY PHARMA", "NIFTY METAL", "NIFTY FMCG", "NIFTY REALTY"];
-  const stocks = ["RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "BHARTIARTL", "SBIN", "LICI", "ITC", "HINDUNILVR"];
-  const allSymbols = [...primaryIndices, ...secondaryIndices, ...stocks];
-
-  const marketData: Record<string, any> = {};
-  
-  allSymbols.forEach((s) => {
-    const ltp = Math.random() * 1000 + 100;
-    const prevClose = ltp * (1 - (Math.random() * 0.04 - 0.02)); // Mock previous close within +/- 2%
-    marketData[s] = {
-    symbol: s, ltp: ltp, prevClose: prevClose, open: ltp, high: ltp * 1.01, low: ltp * 0.99,
-    day_change: ltp - prevClose,
-    day_change_pct: prevClose ? ((ltp - prevClose) / prevClose) * 100 : 0
-    };
-  });
-
-  const stockISINMap: Record<string, string> = {
-    "RELIANCE": "NSE_EQ|INE002A01018",
-    "TCS": "NSE_EQ|INE467B01029",
-    "HDFCBANK": "NSE_EQ|INE040A01034",
-    "INFY": "NSE_EQ|INE009A01021",
-    "ICICIBANK": "NSE_EQ|INE090A01021",
-    "BHARTIARTL": "NSE_EQ|INE397D01024",
-    "SBIN": "NSE_EQ|INE062A01020",
-    "LICI": "NSE_EQ|INE511Q01029",
-    "ITC": "NSE_EQ|INE154A01025",
-    "HINDUNILVR": "NSE_EQ|INE030A01027"
-  };
-
-  const indexMap: Record<string, string[]> = {
-    "NIFTY 50": ["NSE_INDEX|Nifty 50", "NSE_INDEX|NIFTY 50"],
-    BANKNIFTY: ["NSE_INDEX|Nifty Bank", "NSE_INDEX|NIFTY BANK"],
-    FINNIFTY: ["NSE_INDEX|Nifty Fin Service", "NSE_INDEX|NIFTY FIN SERVICE"],
-    "MIDCAP NIFTY": ["NSE_INDEX|Nifty Midcap 100", "NSE_INDEX|NIFTY MIDCAP 100"],
-    SENSEX: ["BSE_INDEX|SENSEX", "BSE_INDEX|Sensex"],
-    "SMALLCAP NIFTY": ["NSE_INDEX|Nifty Smallcap 100", "NSE_INDEX|NIFTY SMALLCAP 100"],
-    "NIFTY IT": ["NSE_INDEX|Nifty IT", "NSE_INDEX|NIFTY IT"],
-    "NIFTY AUTO": ["NSE_INDEX|Nifty Auto", "NSE_INDEX|NIFTY AUTO"],
-    "NIFTY PHARMA": ["NSE_INDEX|Nifty Pharma", "NSE_INDEX|NIFTY PHARMA"],
-    "NIFTY METAL": ["NSE_INDEX|Nifty Metal", "NSE_INDEX|NIFTY METAL"],
-    "NIFTY FMCG": ["NSE_INDEX|Nifty FMCG", "NSE_INDEX|NIFTY FMCG"],
-    "NIFTY REALTY": ["NSE_INDEX|Nifty Realty", "NSE_INDEX|NIFTY REALTY"],
-  };
 
   // =========================================================================
   // UPSTOX WEBSOCKET INTEGRATION FOR LIVE DATA (MARKET & PORTFOLIO)

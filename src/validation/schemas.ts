@@ -18,14 +18,15 @@ export const placeOrderSchema = z.object({
   symbol: z.string().min(1, 'Trading symbol is required'),
   type: z.enum(['BUY', 'SELL', 'buy', 'sell']),
   order_type: z.enum(['MARKET', 'LIMIT', 'SL', 'SL-M', 'market', 'limit', 'sl', 'sl-m']),
-  // We use coerce to allow numbers passed as strings in the JSON body
   quantity: z.coerce.number().int().positive('Quantity must be greater than zero'),
   price: z.coerce.number().nonnegative('Price cannot be negative').optional().default(0),
   product: z.string().optional().default('I'),
   broker: z.enum(['upstox', 'angelone']).optional().default('upstox'),
   
-  // --- NEW: Added for Story B4 (Server-side translation of option contracts) ---
+  // --- NEW: Structured Fields for Options ---
   expiry: z.string().optional(), 
+  strike: z.coerce.number().optional(),
+  optionType: z.enum(['CE', 'PE', 'ce', 'pe']).optional()
 });
 
 export const angelOneLoginSchema = z.object({

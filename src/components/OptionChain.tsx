@@ -1,11 +1,10 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, RefreshCw, Activity, TrendingDown, Layers } from 'lucide-react';
+import { ChevronDown, RefreshCw, Activity, TrendingDown, Layers, AlertTriangle } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useAuthStore } from '../store/authStore';
 import { apiClient } from '../api/client';
 
-// Updated Interface matching Normalized Backend Data with Greeks
 interface OptionData {
   strike: number;
   ce: { ltp: number | null; perc_change: number | null; oi_formatted: string; vol_formatted: string; is_active: boolean; iv: string; delta: string; theta: string; vega: string; };
@@ -14,7 +13,7 @@ interface OptionData {
 
 interface OptionChainProps {
   onPlaceOrder?: (config: any) => void;
-  stocks?: Record<string, number>; // Must contain spot prices e.g. { "NIFTY 50": 22400.50 }
+  stocks?: Record<string, number>;
   fullChain?: boolean;
 }
 
@@ -26,9 +25,8 @@ const OptionChain: React.FC<OptionChainProps> = ({ onPlaceOrder, stocks = {}, fu
   
   const [options, setOptions] = useState<OptionData[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null); // NEW: Error state
   const [selectedStrike, setSelectedStrike] = useState<{ strike: number; type: 'CE' | 'PE'; price: number } | null>(null);
-  
-  // New State for Option Greeks Toggle
   const [showGreeks, setShowGreeks] = useState(false);
 
   const { token, user } = useAuthStore();
@@ -39,52 +37,71 @@ const OptionChain: React.FC<OptionChainProps> = ({ onPlaceOrder, stocks = {}, fu
     'FINNIFTY': 'NSE_INDEX|Nifty Fin Service'
   };
 
-  // 1. Fetch Dynamic Expiries
-  useEffect(() => {
-    const fetchExpiries = async () => {
-      if (!token) return;
-      setIsExpiriesLoading(true);
-      try {
-        const instrumentKey = indexMap[symbol] || `NSE_INDEX|${symbol}`;
-        const response = await apiClient.get(`/api/option-expiries?instrument_key=${encodeURIComponent(instrumentKey)}`);
-        
-        if (response.data.status === 'success' && response.data.data.length > 0) {
-          setExpiries(response.data.data);
-          setExpiry(response.data.data[0]); 
-        }
-      } catch (e) {
-        console.error("Failed to fetch expiries", e);
-      } finally {
-        setIsExpiriesLoading(false);
+  // 1. Fetch Dynamic Expiries (Refactored to be callable manually)
+  const fetchExpiries = useCallback(async () => {
+    if (!token) return;
+    setIsExpiriesLoading(true);
+    setError(null); // Clear previous errors
+    try {
+      const instrumentKey = indexMap[symbol] || `NSE_INDEX|${symbol}`;
+      const response = await apiClient.get(`/api/option-expiries?instrument_key=${encodeURIComponent(instrumentKey)}`);
+      
+      if (response.data.status === 'success' && response.data.data.length > 0) {
+        setExpiries(response.data.data);
+        setExpiry(response.data.data[0]); 
+      } else {
+        setError(response.data.error || "Failed to load expiries");
       }
-    };
-    fetchExpiries();
+    } catch (e: any) {
+      console.error("Failed to fetch expiries", e);
+      setError(e.response?.data?.error || "Server connection failed while loading expiries.");
+    } finally {
+      setIsExpiriesLoading(false);
+    }
   }, [symbol, token]);
 
-  // 2. Fetch Normalized Option Chain Data with Greeks
-  useEffect(() => {
-    const fetchData = async () => {
-      if (!token || !expiry) return; 
-      setLoading(true);
-      try {
-        const instrumentKey = indexMap[symbol] || `NSE_INDEX|${symbol}`;
-        const response = await apiClient.get(`/api/option-chain?instrument_key=${encodeURIComponent(instrumentKey)}&expiry_date=${expiry}`);
-        const data = response.data; 
-        
-        if (data.status === 'success' && data.data) {
-          setOptions(data.data);
-        }
-      } catch (e) {
-        console.error("Failed to fetch option chain", e);
-      } finally {
-        setLoading(false);
+  // 2. Fetch Normalized Option Chain Data (Refactored)
+  const fetchOptionChain = useCallback(async (isSilentRefresh = false) => {
+    if (!token || !expiry) return; 
+    
+    // Only show hard loading state if we don't have background data yet
+    if (!isSilentRefresh || options.length === 0) {
+        setLoading(true);
+    }
+    
+    try {
+      const instrumentKey = indexMap[symbol] || `NSE_INDEX|${symbol}`;
+      const response = await apiClient.get(`/api/option-chain?instrument_key=${encodeURIComponent(instrumentKey)}&expiry_date=${expiry}`);
+      const data = response.data; 
+      
+      if (data.status === 'success' && data.data) {
+        setOptions(data.data);
+        setError(null); // Clear errors on success
+      } else {
+        setError(data.error || "Failed to load option chain data.");
       }
-    };
+    } catch (e: any) {
+      console.error("Failed to fetch option chain", e);
+      setError(e.response?.data?.error || "Server connection failed. Could not reach broker.");
+    } finally {
+      setLoading(false);
+    }
+  }, [symbol, expiry, token, options.length]);
 
-    fetchData();
-    const interval = setInterval(fetchData, 5000);
-    return () => clearInterval(interval);
-  }, [symbol, expiry, token]);
+  // Handle Initial Load & Dependencies
+  useEffect(() => {
+    setOptions([]); // Clear old options when symbol changes
+    fetchExpiries();
+  }, [fetchExpiries]);
+
+  // Handle Chain Fetching & Polling
+  useEffect(() => {
+    if (expiry && !error) {
+        fetchOptionChain();
+        const interval = setInterval(() => fetchOptionChain(true), 5000);
+        return () => clearInterval(interval);
+    }
+  }, [fetchOptionChain, expiry, error]);
 
   // 3. ATM Filtering Logic
   const filteredOptions = useMemo(() => {
@@ -121,7 +138,7 @@ const OptionChain: React.FC<OptionChainProps> = ({ onPlaceOrder, stocks = {}, fu
     if (!selectedStrike || !onPlaceOrder) return;
     onPlaceOrder({
       side,
-      symbol, // FIX: Pass just the base symbol (e.g. "NIFTY") so OrderWindow handles the rest
+      symbol,
       strike: selectedStrike.strike,
       optionType: selectedStrike.type,
       expiry,
@@ -134,6 +151,15 @@ const OptionChain: React.FC<OptionChainProps> = ({ onPlaceOrder, stocks = {}, fu
     if (!dateString) return '';
     const date = new Date(dateString);
     return date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).toUpperCase();
+  };
+
+  const handleManualRetry = () => {
+      setError(null);
+      if (expiries.length === 0) {
+          fetchExpiries();
+      } else {
+          fetchOptionChain();
+      }
   };
 
   return (
@@ -150,7 +176,11 @@ const OptionChain: React.FC<OptionChainProps> = ({ onPlaceOrder, stocks = {}, fu
               <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Live Derivatives Data</p>
             </div>
           </div>
-          <button className="p-2 rounded-xl bg-zinc-900 text-zinc-400 hover:text-white transition-colors">
+          <button 
+            onClick={() => fetchOptionChain()}
+            disabled={loading}
+            className="p-2 rounded-xl bg-zinc-900 text-zinc-400 hover:text-white transition-colors disabled:opacity-50"
+          >
             <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
           </button>
         </div>
@@ -208,8 +238,8 @@ const OptionChain: React.FC<OptionChainProps> = ({ onPlaceOrder, stocks = {}, fu
       </div>
 
       {/* Option Chain Table */}
-      <div className="bg-zinc-900/20 border border-zinc-800/30 rounded-2xl overflow-hidden">
-        <div className="overflow-x-auto scrollbar-hide">
+      <div className="bg-zinc-900/20 border border-zinc-800/30 rounded-2xl overflow-hidden min-h-75">
+        <div className="overflow-x-auto scrollbar-hide h-full">
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-zinc-900/50 border-b border-zinc-800/50">
@@ -225,10 +255,63 @@ const OptionChain: React.FC<OptionChainProps> = ({ onPlaceOrder, stocks = {}, fu
                 <th className="px-2 py-1.5 text-center w-1/5">OI</th>
               </tr>
             </thead>
+            
+            {/* DYNAMIC TBODY: Handles Error, Loading, and Data States */}
             <tbody className="divide-y divide-zinc-800/30">
-              {filteredOptions.map((opt, idx) => (
+              
+              {/* STATE: Error Occurred */}
+              {error ? (
+                <tr>
+                  <td colSpan={5} className="py-16">
+                    <div className="flex flex-col items-center justify-center text-center px-4">
+                      <div className="w-12 h-12 rounded-full bg-rose-500/10 flex items-center justify-center mb-3">
+                        <AlertTriangle size={24} className="text-rose-500" />
+                      </div>
+                      <p className="text-sm font-bold text-zinc-300 mb-1">Option Chain Unavailable</p>
+                      <p className="text-[11px] text-zinc-500 max-w-62.5 mb-4">{error}</p>
+                      <button 
+                        onClick={handleManualRetry}
+                        className="px-6 py-2 bg-zinc-800 hover:bg-zinc-700 text-white font-bold rounded-xl text-xs transition-colors"
+                      >
+                        Retry Connection
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ) : 
+              
+              /* STATE: Initial Loading (Skeleton) */
+              loading && options.length === 0 ? (
+                Array.from({ length: 5 }).map((_, i) => (
+                  <tr key={i} className="animate-pulse">
+                    <td className="px-2 py-4 border-r border-zinc-800/50">
+                      <div className="h-3 bg-zinc-800/50 rounded w-8 mx-auto"></div>
+                    </td>
+                    <td className="px-2 py-4 border-r border-zinc-800/50">
+                      <div className="flex flex-col items-center gap-1">
+                        <div className="h-4 bg-zinc-800/80 rounded w-10"></div>
+                        <div className="h-2 bg-zinc-800/40 rounded w-6"></div>
+                      </div>
+                    </td>
+                    <td className="px-2 py-4 bg-zinc-900/50">
+                      <div className="h-4 bg-zinc-700/50 rounded w-12 mx-auto"></div>
+                    </td>
+                    <td className="px-2 py-4 border-l border-zinc-800/50">
+                       <div className="flex flex-col items-center gap-1">
+                        <div className="h-4 bg-zinc-800/80 rounded w-10"></div>
+                        <div className="h-2 bg-zinc-800/40 rounded w-6"></div>
+                      </div>
+                    </td>
+                    <td className="px-2 py-4 border-l border-zinc-800/50">
+                       <div className="h-3 bg-zinc-800/50 rounded w-8 mx-auto"></div>
+                    </td>
+                  </tr>
+                ))
+              ) : 
+              
+              /* STATE: Data Loaded Successfully */
+              filteredOptions.map((opt, idx) => (
                 <React.Fragment key={idx}>
-                  {/* Primary Data Row */}
                   <tr className="group hover:bg-zinc-900/40 transition-colors">
                     <td className="px-2 py-3 text-center text-[10px] text-zinc-500 font-medium">
                       {opt.ce.oi_formatted}
@@ -253,7 +336,6 @@ const OptionChain: React.FC<OptionChainProps> = ({ onPlaceOrder, stocks = {}, fu
                       )}
                     </td>
 
-                    {/* Strike Price */}
                     <td className="px-2 py-3 text-center bg-zinc-900/50">
                       <span className="text-[11px] font-black text-zinc-400">{opt.strike}</span>
                     </td>

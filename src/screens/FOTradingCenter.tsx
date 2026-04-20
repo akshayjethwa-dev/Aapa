@@ -31,6 +31,7 @@ const FOTradingCenter = ({
   const [positions, setPositions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // Manages the state for the OrderWindow modal
   const [orderConfig, setOrderConfig] = useState<OrderConfig | null>(null);
 
   useEffect(() => {
@@ -78,7 +79,7 @@ const FOTradingCenter = ({
   ];
 
   return (
-    <div className="space-y-4 pb-24">
+    <div className="space-y-6 pb-24">
       {/* Onboarding Requirement Banner */}
       {user?.role === 'pre-onboarding' && (
         <div className="px-4 pt-4">
@@ -173,6 +174,16 @@ const FOTradingCenter = ({
         </div>
       </div>
 
+      {/* ================================================================= */}
+      {/* NEW: OPTION CHAIN INTEGRATION */}
+      {/* ================================================================= */}
+      <div className="px-4 pt-2">
+        <OptionChain 
+          stocks={stocks} 
+          onPlaceOrder={(config) => setOrderConfig(config)} 
+        />
+      </div>
+
       {/* Live Positions */}
       <div className="px-4 space-y-2.5">
         <div className="flex justify-between items-center">
@@ -184,131 +195,136 @@ const FOTradingCenter = ({
         </div>
         
         <div className="space-y-2.5">
-          {positions.map((pos, i) => {
-            // --- Day vs Position P&L Calculations ---
-            const positionPnl = (pos.ltp - pos.avgPrice) * pos.quantity;
-            const dayPnl = (pos.day_change ?? 0) * pos.quantity;
-            const isPositionProfit = positionPnl >= 0;
-            const isDayProfit = dayPnl >= 0;
+          {positions.length === 0 ? (
+             <div className="bg-zinc-900/30 border border-zinc-800/50 rounded-2xl p-8 text-center">
+               <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">No active positions</p>
+               <p className="text-[8px] text-zinc-600 mt-1">Tap a strike price in the Option Chain to place an order</p>
+             </div>
+          ) : (
+            positions.map((pos, i) => {
+              const positionPnl = (pos.ltp - pos.avgPrice) * pos.quantity;
+              const dayPnl = (pos.day_change ?? 0) * pos.quantity;
+              const isPositionProfit = positionPnl >= 0;
+              const isDayProfit = dayPnl >= 0;
 
-            return (
-              <div key={pos.symbol} className="relative overflow-hidden rounded-xl group">
-                {user?.role === 'admin' && (
-                  <div className="absolute inset-0 bg-zinc-900 flex justify-end items-stretch">
-                    <div className="flex h-full">
-                      <button 
-                        onClick={() => setSlTgtModal({ index: i, ...pos })}
-                        className="px-3 bg-blue-600 text-white flex flex-col items-center justify-center gap-1 transition-colors hover:bg-blue-700"
-                      >
-                        <Target size={12} />
-                        <span className="text-[7px] font-black uppercase">SL/Tgt</span>
-                      </button>
-                      <button 
-                        onClick={() => setActiveChart(pos)}
-                        className="px-3 bg-zinc-800 text-white flex flex-col items-center justify-center gap-1 transition-colors hover:bg-zinc-700"
-                      >
-                        <BarChart3 size={12} />
-                        <span className="text-[7px] font-black uppercase">Chart</span>
-                      </button>
-                      <button 
-                        onClick={() => handleExit(i)}
-                        className={cn(
-                          "px-4 flex flex-col items-center justify-center gap-1 transition-all duration-300",
-                          confirmExit === i ? "bg-rose-500 text-black scale-105" : "bg-rose-600 text-white hover:bg-rose-700"
-                        )}
-                      >
-                        <XCircle size={14} />
-                        <span className="text-[7px] font-black uppercase">{confirmExit === i ? 'Confirm' : 'Exit'}</span>
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                <motion.div 
-                  drag={user?.role === 'admin' ? "x" : false}
-                  dragConstraints={{ left: -150, right: 0 }}
-                  dragElastic={0.1}
-                  className={cn(
-                    "relative bg-zinc-900/60 border border-zinc-800/50 p-3.5 space-y-2.5 z-10",
-                    user?.role === 'admin' ? "cursor-grab active:cursor-grabbing" : ""
-                  )}
-                >
-                  <div className="flex justify-between items-start">
-                    <div className="space-y-0.5">
-                      <div className="flex items-center gap-1.5">
-                        <p className="text-[12px] font-black text-white tracking-tight">{pos.symbol}</p>
-                        <span className={cn(
-                          "px-1 py-0.5 rounded text-[7px] font-black uppercase tracking-tighter",
-                          pos.type === 'Intraday' ? "bg-amber-500/10 text-amber-500" : "bg-blue-500/10 text-blue-500"
-                        )}>{pos.type}</span>
+              return (
+                <div key={pos.symbol} className="relative overflow-hidden rounded-xl group">
+                  {user?.role === 'admin' && (
+                    <div className="absolute inset-0 bg-zinc-900 flex justify-end items-stretch">
+                      <div className="flex h-full">
+                        <button 
+                          onClick={() => setSlTgtModal({ index: i, ...pos })}
+                          className="px-3 bg-blue-600 text-white flex flex-col items-center justify-center gap-1 transition-colors hover:bg-blue-700"
+                        >
+                          <Target size={12} />
+                          <span className="text-[7px] font-black uppercase">SL/Tgt</span>
+                        </button>
+                        <button 
+                          onClick={() => setActiveChart(pos)}
+                          className="px-3 bg-zinc-800 text-white flex flex-col items-center justify-center gap-1 transition-colors hover:bg-zinc-700"
+                        >
+                          <BarChart3 size={12} />
+                          <span className="text-[7px] font-black uppercase">Chart</span>
+                        </button>
+                        <button 
+                          onClick={() => handleExit(i)}
+                          className={cn(
+                            "px-4 flex flex-col items-center justify-center gap-1 transition-all duration-300",
+                            confirmExit === i ? "bg-rose-500 text-black scale-105" : "bg-rose-600 text-white hover:bg-rose-700"
+                          )}
+                        >
+                          <XCircle size={14} />
+                          <span className="text-[7px] font-black uppercase">{confirmExit === i ? 'Confirm' : 'Exit'}</span>
+                        </button>
                       </div>
-                      <div className="flex items-center gap-1.5 mt-1">
-                        <p className="text-[8px] font-bold text-zinc-500 uppercase">{pos.quantity} Qty</p>
-                        <span className="w-1 h-1 rounded-full bg-zinc-800" />
-                        <p className="text-[8px] font-bold text-zinc-500 uppercase">Avg {formatCurrency(pos.avgPrice)}</p>
-                      </div>
-                    </div>
-                    
-                    {/* Clear Separation of Total vs Day P&L */}
-                    <div className="flex flex-col items-end">
-                      <div className="flex items-center gap-2 justify-end mb-1.5">
-                        <Sparkline color={isPositionProfit ? '#10b981' : '#ef4444'} />
-                        <div className="text-right">
-                          <p className="text-[8px] font-bold text-zinc-500 uppercase tracking-widest leading-none mb-0.5">Total P&L</p>
-                          <p className={cn("text-sm font-black tracking-tighter leading-none", isPositionProfit ? "text-emerald-500" : "text-rose-500")}>
-                            {isPositionProfit ? '+' : ''}{formatCurrency(positionPnl)}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2.5 justify-end mt-0.5">
-                        <div className="text-right">
-                          <p className="text-[7px] font-bold text-zinc-500 uppercase tracking-widest leading-none mb-0.5">Day P&L</p>
-                          <p className={cn("text-[9px] font-bold leading-none", isDayProfit ? "text-emerald-500" : "text-rose-500")}>
-                            {isDayProfit ? '+' : ''}{formatCurrency(dayPnl)}
-                          </p>
-                        </div>
-                        <div className="h-4 w-px bg-zinc-800/80"></div>
-                        <div className="text-right">
-                          <p className="text-[7px] font-bold text-zinc-500 uppercase tracking-widest leading-none mb-0.5">LTP</p>
-                          <p className="text-[9px] font-bold text-white leading-none">
-                            {formatCurrency(pos.ltp)}
-                            <span className={cn("ml-1", (pos.day_change_pct ?? 0) >= 0 ? "text-emerald-500" : "text-rose-500")}>
-                              ({(pos.day_change_pct ?? 0) >= 0 ? '+' : ''}{(pos.day_change_pct ?? 0).toFixed(2)}%)
-                            </span>
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex gap-2.5 pt-2 border-t border-zinc-800/50 mt-1">
-                    <div className="flex items-center gap-1">
-                      <div className="w-1 h-1 rounded-full bg-rose-500/40" />
-                      <span className="text-[8px] font-bold text-zinc-600 uppercase">SL: {formatCurrency(pos.avgPrice * 0.95)}</span>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <div className="w-1 h-1 rounded-full bg-emerald-500/40" />
-                      <span className="text-[8px] font-bold text-zinc-600 uppercase">Tgt: {formatCurrency(pos.avgPrice * 1.15)}</span>
-                    </div>
-                  </div>
-
-                  {user?.role === 'user' && (
-                    <div className="pt-2">
-                      <button 
-                        onClick={() => handleExit(i)}
-                        className={cn(
-                          "w-full py-2 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all",
-                          confirmExit === i ? "bg-rose-500 text-black" : "bg-rose-500/10 text-rose-500 border border-rose-500/20"
-                        )}
-                      >
-                        {confirmExit === i ? 'Confirm Exit' : 'Exit Position'}
-                      </button>
                     </div>
                   )}
-                </motion.div>
-              </div>
-            );
-          })}
+
+                  <motion.div 
+                    drag={user?.role === 'admin' ? "x" : false}
+                    dragConstraints={{ left: -150, right: 0 }}
+                    dragElastic={0.1}
+                    className={cn(
+                      "relative bg-zinc-900/60 border border-zinc-800/50 p-3.5 space-y-2.5 z-10",
+                      user?.role === 'admin' ? "cursor-grab active:cursor-grabbing" : ""
+                    )}
+                  >
+                    <div className="flex justify-between items-start">
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-1.5">
+                          <p className="text-[12px] font-black text-white tracking-tight">{pos.symbol}</p>
+                          <span className={cn(
+                            "px-1 py-0.5 rounded text-[7px] font-black uppercase tracking-tighter",
+                            pos.type === 'Intraday' ? "bg-amber-500/10 text-amber-500" : "bg-blue-500/10 text-blue-500"
+                          )}>{pos.type}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 mt-1">
+                          <p className="text-[8px] font-bold text-zinc-500 uppercase">{pos.quantity} Qty</p>
+                          <span className="w-1 h-1 rounded-full bg-zinc-800" />
+                          <p className="text-[8px] font-bold text-zinc-500 uppercase">Avg {formatCurrency(pos.avgPrice)}</p>
+                        </div>
+                      </div>
+                      
+                      <div className="flex flex-col items-end">
+                        <div className="flex items-center gap-2 justify-end mb-1.5">
+                          <Sparkline color={isPositionProfit ? '#10b981' : '#ef4444'} />
+                          <div className="text-right">
+                            <p className="text-[8px] font-bold text-zinc-500 uppercase tracking-widest leading-none mb-0.5">Total P&L</p>
+                            <p className={cn("text-sm font-black tracking-tighter leading-none", isPositionProfit ? "text-emerald-500" : "text-rose-500")}>
+                              {isPositionProfit ? '+' : ''}{formatCurrency(positionPnl)}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2.5 justify-end mt-0.5">
+                          <div className="text-right">
+                            <p className="text-[7px] font-bold text-zinc-500 uppercase tracking-widest leading-none mb-0.5">Day P&L</p>
+                            <p className={cn("text-[9px] font-bold leading-none", isDayProfit ? "text-emerald-500" : "text-rose-500")}>
+                              {isDayProfit ? '+' : ''}{formatCurrency(dayPnl)}
+                            </p>
+                          </div>
+                          <div className="h-4 w-px bg-zinc-800/80"></div>
+                          <div className="text-right">
+                            <p className="text-[7px] font-bold text-zinc-500 uppercase tracking-widest leading-none mb-0.5">LTP</p>
+                            <p className="text-[9px] font-bold text-white leading-none">
+                              {formatCurrency(pos.ltp)}
+                              <span className={cn("ml-1", (pos.day_change_pct ?? 0) >= 0 ? "text-emerald-500" : "text-rose-500")}>
+                                ({(pos.day_change_pct ?? 0) >= 0 ? '+' : ''}{(pos.day_change_pct ?? 0).toFixed(2)}%)
+                              </span>
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2.5 pt-2 border-t border-zinc-800/50 mt-1">
+                      <div className="flex items-center gap-1">
+                        <div className="w-1 h-1 rounded-full bg-rose-500/40" />
+                        <span className="text-[8px] font-bold text-zinc-600 uppercase">SL: {formatCurrency(pos.avgPrice * 0.95)}</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <div className="w-1 h-1 rounded-full bg-emerald-500/40" />
+                        <span className="text-[8px] font-bold text-zinc-600 uppercase">Tgt: {formatCurrency(pos.avgPrice * 1.15)}</span>
+                      </div>
+                    </div>
+
+                    {user?.role === 'user' && (
+                      <div className="pt-2">
+                        <button 
+                          onClick={() => handleExit(i)}
+                          className={cn(
+                            "w-full py-2 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all",
+                            confirmExit === i ? "bg-rose-500 text-black" : "bg-rose-500/10 text-rose-500 border border-rose-500/20"
+                          )}
+                        >
+                          {confirmExit === i ? 'Confirm Exit' : 'Exit Position'}
+                        </button>
+                      </div>
+                    )}
+                  </motion.div>
+                </div>
+              );
+            })
+          )}
         </div>
       </div>
 
@@ -375,11 +391,22 @@ const FOTradingCenter = ({
           </motion.div>
         )}
 
+        {/* ================================================================= */}
+        {/* NEW: ORDER WINDOW MODAL TRIGGERED BY OPTION CHAIN */}
+        {/* ================================================================= */}
         {orderConfig && (
           <OrderWindow 
             config={orderConfig}
             onClose={() => setOrderConfig(null)}
-            onOrderPlaced={() => setOrderConfig(null)}
+            onOrderPlaced={() => {
+               setOrderConfig(null);
+               // Wait a moment for Upstox execution, then force refresh positions
+               setTimeout(() => {
+                 apiClient.get('/api/portfolio/positions').then(res => {
+                    setPositions(Array.isArray(res.data) ? res.data : []);
+                 });
+               }, 1500);
+            }}
           />
         )}
       </AnimatePresence>

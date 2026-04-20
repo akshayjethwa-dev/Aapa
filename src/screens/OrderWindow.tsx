@@ -34,8 +34,12 @@ const OrderWindow = ({
   const [price, setPrice] = useState<number | string>(config.price || 0);
   const [loading, setLoading] = useState(false);
 
-  const handlePlaceOrder = async () => {
+  // Clean format for the UI (e.g. "NIFTY 22500 CE" or just "RELIANCE")
+  const displaySymbol = config.strike 
+    ? `${config.symbol.replace(' 50', '')} ${config.strike} ${config.optionType}`
+    : config.symbol.replace(' 50', '');
 
+  const handlePlaceOrder = async () => {
     setLoading(true);
     try {
       const res = await fetch('/api/orders', {
@@ -44,17 +48,21 @@ const OrderWindow = ({
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
+        // NEW: Sending strict structured payload to backend
         body: JSON.stringify({
-          broker: 'upstox', // Hardcoded to Upstox exclusively
+          broker: 'upstox',
           symbol: config.symbol, 
           type: config.side.toLowerCase(),
           order_type: orderType.toLowerCase(),
           quantity: parseInt(quantity.toString()),
           price: orderType === 'Market' ? config.price : parseFloat(price.toString()),
           product: product.toLowerCase(),
-          expiry: config.expiry 
+          expiry: config.expiry,
+          strike: config.strike,
+          optionType: config.optionType
         })
       });
+      
       const data = await res.json();
 
       if (res.status === 403 && data.requires_kyc) {
@@ -85,7 +93,7 @@ const OrderWindow = ({
         toast.error(data.error || 'Order failed');
       }
     } catch (e) {
-      toast.error('Network error');
+      toast.error('Network error. Please check your connection.');
     } finally {
       setLoading(false);
     }
@@ -105,7 +113,7 @@ const OrderWindow = ({
           </button>
           <div>
             <h2 className="text-sm font-black text-white tracking-tight">
-              {config.side} {config.symbol.replace(' 50', '')}
+              {config.side} {displaySymbol}
             </h2>
             <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">
               {config.expiry || 'Equity • NSE'}
@@ -121,7 +129,6 @@ const OrderWindow = ({
       </div>
 
       <div className="flex-1 p-6 space-y-8 overflow-y-auto">
-        {/* Status indicator instead of selection */}
         <div className="space-y-3">
           <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest ml-1">Executing Broker</p>
           {user?.is_uptox_connected ? (
@@ -148,7 +155,7 @@ const OrderWindow = ({
             </div>
             <div>
               <p className="text-[9px] font-bold text-zinc-600 uppercase tracking-widest mb-1">Expiry</p>
-              <p className="text-xs font-bold text-white">{config.expiry}</p>
+              <p className="text-xs font-bold text-white">{new Date(config.expiry!).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }).toUpperCase()}</p>
             </div>
           </div>
         )}
@@ -227,7 +234,7 @@ const OrderWindow = ({
             (loading || !user?.is_uptox_connected || isDemoMode) && "opacity-50 cursor-not-allowed"
           )}
         >
-          {loading ? 'Processing...' : isDemoMode ? 'Disabled in Demo Mode' : `${config.side} ${config.symbol.replace(' 50', '')}`}
+          {loading ? 'Processing...' : isDemoMode ? 'Disabled in Demo Mode' : `${config.side} ${displaySymbol}`}
         </button>
       </div>
     </motion.div>
