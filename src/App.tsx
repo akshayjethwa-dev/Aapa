@@ -159,7 +159,7 @@ function App() {
           setAuth(res.data, token);
         }
       } catch (e: any) {
-        // FIX: Catch 403 alongside 401 and 404 to ensure graceful logout instead of crashing
+        // FIX: Catch 403 alongside 401 and 404 to ensure graceful logout instead of crashing UI
         if (e.response?.status === 401 || e.response?.status === 403 || e.response?.status === 404) {
           logout();
         }
@@ -352,7 +352,6 @@ function App() {
           )}
           {activeTab === 'portfolio' && <Portfolio key="portfolio" stocks={stocks} />}
           
-          {/* --> ADDED ORDERS SCREEN HERE <-- */}
           {activeTab === 'orders' && <Orders key="orders" onBack={() => setActiveTab('more')} />}
           
           {activeTab === 'onboarding' && <Onboarding key="onboarding" onComplete={() => setActiveTab('dashboard')} />}
