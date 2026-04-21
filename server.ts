@@ -363,7 +363,8 @@ async function startServer() {
     if (!token) return res.sendStatus(401);
 
     jwt.verify(String(token), JWT_SECRET, (err: any, user: any) => {
-      if (err) return res.sendStatus(403);
+      // FIX: Changed from 403 to 401 so the frontend auto-refresh interceptor catches it
+      if (err) return res.sendStatus(401); 
       req.user = user;
       next();
     });

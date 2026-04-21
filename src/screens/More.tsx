@@ -4,8 +4,9 @@ import { User as UserIcon, Settings, HelpCircle, FileText, LogOut, ShieldCheck, 
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
 import { useAuthStore } from '../store/authStore';
-import { useNavigate } from 'react-router-dom'; // <-- ADDED
+import { useNavigate } from 'react-router-dom';
 import ComplianceDetail from './ComplianceDetail';
+import { apiClient } from '../api/client'; // <-- ADDED
 
 const More = ({ 
   activeTab, 
@@ -29,16 +30,15 @@ const More = ({
   onForceRefresh: () => void
 }) => {
   const { user, token, setAuth, logout } = useAuthStore();
-  const navigate = useNavigate(); // <-- ADDED
+  const navigate = useNavigate();
 
   useEffect(() => {
     const fetchProfile = async () => {
       if (!token) return;
       try {
-        const res = await fetch('/api/user/profile', {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        const data = await res.json();
+        // FIX: Using apiClient to ensure token refresh works
+        const res = await apiClient.get('/api/user/profile');
+        const data = res.data;
         if (data.id) {
           setAuth(data, token);
         }
@@ -98,7 +98,7 @@ const More = ({
       title: 'Account',
       items: [
         { icon: UserIcon, label: 'Profile Details', status: 'Active', color: 'text-emerald-500' },
-        { icon: History, label: 'Order History', status: '', color: 'text-blue-500', action: () => navigate('/orders') }, // <-- ADDED THIS LINK
+        { icon: History, label: 'Order History', status: '', color: 'text-blue-500', action: () => navigate('/orders') },
         { icon: ShieldCheck, label: 'KYC Status', status: 'Pending', color: 'text-amber-500', action: () => setActiveTab('onboarding') },
         { icon: Wallet, label: 'Funds & Withdrawals', status: '', color: 'text-blue-500' },
         { 
@@ -137,7 +137,6 @@ const More = ({
     }
   ];
 
-  // Filter sections for non-admin users
   const sections = user?.role === 'admin' 
     ? allSections 
     : allSections
@@ -145,7 +144,6 @@ const More = ({
 
   return (
     <div className="space-y-8 pb-24">
-      {/* Profile Header */}
       <div className="flex flex-col items-center text-center space-y-4 pt-10">
         <div className="relative">
           <div className="w-24 h-24 rounded-full bg-linear-to-br from-emerald-500 to-emerald-900 p-1 shadow-2xl shadow-emerald-500/20">
@@ -158,12 +156,12 @@ const More = ({
           </div>
         </div>
         <div>
-          <h2 className="text-xl font-bold tracking-tight">{user?.email.split('@')[0]}</h2>
+          {/* FIX: Prevent UI crash by safely handling email */}
+          <h2 className="text-xl font-bold tracking-tight">{(user?.email || '').split('@')[0] || 'Trader'}</h2>
           <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mt-1">Client ID: AAPA-{user?.id}001</p>
         </div>
       </div>
 
-      {/* Menu Sections */}
       <div className="px-6 space-y-8">
         {sections.map((section, sIdx) => (
           <div key={sIdx} className="space-y-3">

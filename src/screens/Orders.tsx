@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { useAuthStore } from '../store/authStore';
 import { ArrowLeft, RefreshCw, Clock, CheckCircle2, XCircle, Ban } from 'lucide-react';
 import { cn, formatCurrency } from '../lib/utils';
+import { apiClient } from '../api/client'; // <-- ADDED
 
 interface Order {
   order_id: string;
@@ -19,7 +20,6 @@ interface Order {
   broker: string;
 }
 
-// 1. ADD THE PROP TYPE HERE
 const Orders = ({ onBack }: { onBack: () => void }) => {
   const { token } = useAuthStore();
   const [orders, setOrders] = useState<Order[]>([]);
@@ -28,15 +28,13 @@ const Orders = ({ onBack }: { onBack: () => void }) => {
 
   const fetchOrders = async () => {
     try {
-      const res = await fetch('/api/orders', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setOrders(data);
+      // FIX: Using apiClient to catch 401s and auto-refresh
+      const res = await apiClient.get('/api/orders');
+      if (res.data) {
+        setOrders(Array.isArray(res.data) ? res.data : []);
       }
     } catch (e) {
-      console.error("Failed to fetch orders");
+      console.error("Failed to fetch orders", e);
     } finally {
       setLoading(false);
     }
@@ -44,7 +42,6 @@ const Orders = ({ onBack }: { onBack: () => void }) => {
 
   useEffect(() => {
     fetchOrders();
-    // Poll every 8 seconds
     const interval = setInterval(fetchOrders, 8000);
     return () => clearInterval(interval);
   }, [token]);
@@ -70,7 +67,6 @@ const Orders = ({ onBack }: { onBack: () => void }) => {
     <div className="min-h-screen bg-black text-white pb-24">
       <div className="sticky top-0 z-50 bg-black/80 backdrop-blur-md border-b border-zinc-900 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-4">
-          {/* 2. USE THE onBack PROP HERE */}
           <button onClick={onBack} className="p-2 -ml-2 rounded-xl hover:bg-zinc-900 transition-colors">
             <ArrowLeft size={20} />
           </button>

@@ -69,7 +69,7 @@ const OrderWindow = ({
     // FAT-FINGER PROTECTION: Require double-click for huge orders
     if (isValueHigh && !showConfirm) {
       setShowConfirm(true);
-      return; // Stop here, wait for them to click the confirm button
+      return; 
     }
 
     setLoading(true);
