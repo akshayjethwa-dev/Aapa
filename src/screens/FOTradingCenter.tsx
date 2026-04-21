@@ -34,7 +34,6 @@ const FOTradingCenter = ({
 
   const [orderConfig, setOrderConfig] = useState<OrderConfig | null>(null);
 
-  // Sync function that can be called manually or via intervals
   const fetchPositionsData = useCallback(async () => {
     if (!token) return;
     try {
@@ -53,12 +52,10 @@ const FOTradingCenter = ({
     }
   }, [token]);
 
-  // Setup Intervals and Listeners
   useEffect(() => {
     fetchPositionsData();
     const interval = setInterval(fetchPositionsData, 5000);
     
-    // Listen for the global sync event to update instantly without waiting 5 seconds
     window.addEventListener('broker_portfolio_updated', fetchPositionsData);
     
     return () => {
@@ -73,7 +70,6 @@ const FOTradingCenter = ({
       toast.info(`Placing exit order for ${pos.symbol}...`);
       setPositions(positions.filter((_, i) => i !== index));
       setConfirmExit(null);
-      // In a real app, you would call the exit API here, then fire the sync event
     } else {
       setConfirmExit(index);
       setTimeout(() => setConfirmExit(null), 3000);
@@ -101,21 +97,21 @@ const FOTradingCenter = ({
         <div className="px-4 pt-4">
           <div className={cn(
             "px-4 py-2.5 rounded-xl border flex items-center justify-between",
-            latestOrder.status.toLowerCase().includes('reject') ? "bg-rose-500/5 border-rose-500/20" : 
-            latestOrder.status.toLowerCase().includes('complete') ? "bg-emerald-500/5 border-emerald-500/20" : 
+            String(latestOrder.status || '').toLowerCase().includes('reject') ? "bg-rose-500/5 border-rose-500/20" : 
+            String(latestOrder.status || '').toLowerCase().includes('complete') ? "bg-emerald-500/5 border-emerald-500/20" : 
             "bg-amber-500/5 border-amber-500/20"
           )}>
             <div className="flex items-center gap-2">
               <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Latest Order:</span>
-              <span className="text-xs font-bold text-white">{latestOrder.symbol.replace(' 50', '')}</span>
+              <span className="text-xs font-bold text-white">{String(latestOrder.symbol || '').replace(' 50', '')}</span>
             </div>
             <div className={cn(
               "text-[10px] font-black uppercase tracking-widest",
-              latestOrder.status.toLowerCase().includes('reject') ? "text-rose-500" : 
-              latestOrder.status.toLowerCase().includes('complete') ? "text-emerald-500" : 
+              String(latestOrder.status || '').toLowerCase().includes('reject') ? "text-rose-500" : 
+              String(latestOrder.status || '').toLowerCase().includes('complete') ? "text-emerald-500" : 
               "text-amber-500"
             )}>
-              {latestOrder.status}
+              {latestOrder.status || 'Pending'}
             </div>
           </div>
         </div>
@@ -442,13 +438,8 @@ const FOTradingCenter = ({
             onClose={() => setOrderConfig(null)}
             onOrderPlaced={() => {
                setOrderConfig(null);
-               // Trigger immediate fetch to verify the order was recorded
                fetchPositionsData();
-               
-               // Dispatch global event so the Dashboard and Portfolio also sync immediately
                window.dispatchEvent(new CustomEvent('broker_portfolio_updated'));
-               
-               // Secondary check a second later to catch Upstox settlement delays
                setTimeout(() => {
                  fetchPositionsData();
                  window.dispatchEvent(new CustomEvent('broker_portfolio_updated'));

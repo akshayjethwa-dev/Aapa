@@ -4,9 +4,8 @@ import { User as UserIcon, Settings, HelpCircle, FileText, LogOut, ShieldCheck, 
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
 import { useAuthStore } from '../store/authStore';
-import { useNavigate } from 'react-router-dom';
 import ComplianceDetail from './ComplianceDetail';
-import { apiClient } from '../api/client'; // <-- ADDED
+import { apiClient } from '../api/client';
 
 const More = ({ 
   activeTab, 
@@ -30,13 +29,11 @@ const More = ({
   onForceRefresh: () => void
 }) => {
   const { user, token, setAuth, logout } = useAuthStore();
-  const navigate = useNavigate();
 
   useEffect(() => {
     const fetchProfile = async () => {
       if (!token) return;
       try {
-        // FIX: Using apiClient to ensure token refresh works
         const res = await apiClient.get('/api/user/profile');
         const data = res.data;
         if (data.id) {
@@ -98,7 +95,8 @@ const More = ({
       title: 'Account',
       items: [
         { icon: UserIcon, label: 'Profile Details', status: 'Active', color: 'text-emerald-500' },
-        { icon: History, label: 'Order History', status: '', color: 'text-blue-500', action: () => navigate('/orders') },
+        // Fixed: Use setActiveTab instead of useNavigate
+        { icon: History, label: 'Order History', status: '', color: 'text-blue-500', action: () => setActiveTab('orders') },
         { icon: ShieldCheck, label: 'KYC Status', status: 'Pending', color: 'text-amber-500', action: () => setActiveTab('onboarding') },
         { icon: Wallet, label: 'Funds & Withdrawals', status: '', color: 'text-blue-500' },
         { 
@@ -156,7 +154,6 @@ const More = ({
           </div>
         </div>
         <div>
-          {/* FIX: Prevent UI crash by safely handling email */}
           <h2 className="text-xl font-bold tracking-tight">{(user?.email || '').split('@')[0] || 'Trader'}</h2>
           <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mt-1">Client ID: AAPA-{user?.id}001</p>
         </div>
