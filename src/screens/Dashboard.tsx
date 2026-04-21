@@ -39,10 +39,9 @@ const Dashboard = ({
       const res = await apiClient.get('/api/portfolio');
       const payload = res.data?.data || res.data; 
 
-      if (Array.isArray(payload)) {
-        setHoldings(payload);
-      } else if (payload && typeof payload === 'object') {
+      if (payload && typeof payload === 'object') {
         if (Array.isArray(payload.holdings)) setHoldings(payload.holdings);
+        if (Array.isArray(payload.positions)) setPositions(payload.positions);
         if (payload.funds !== undefined) setAvailableFunds(payload.funds);
       }
     } catch (e) {
@@ -53,15 +52,11 @@ const Dashboard = ({
   useEffect(() => {
     fetchPortfolio();
     
-    const handlePortfolioUpdate = () => {
-      console.log("Real-time update triggered: Fetching fresh portfolio...");
-      fetchPortfolio();
-    };
-    
-    window.addEventListener('broker_portfolio_updated', handlePortfolioUpdate);
+    // Listen to global order triggers and websocket triggers to sync UI
+    window.addEventListener('broker_portfolio_updated', fetchPortfolio);
     
     return () => {
-      window.removeEventListener('broker_portfolio_updated', handlePortfolioUpdate);
+      window.removeEventListener('broker_portfolio_updated', fetchPortfolio);
     };
   }, [fetchPortfolio]);
 
@@ -104,13 +99,23 @@ const Dashboard = ({
 
   const displayFunds = availableFunds !== null ? availableFunds : (user?.balance || 0);
 
-  const totalInvested = holdings.reduce((acc, curr) => acc + curr.quantity * curr.average_price, 0);
+  // Consolidated Math Engine (Holdings + Positions)
+  let totalInvested = 0;
+  let currentValue = 0;
 
-  const currentValue = holdings.reduce((acc, curr) => {
-    const quote = stocks[curr.symbol];
-    const ltp = typeof quote === 'number' ? quote : (quote?.ltp || curr.current_price || curr.average_price);
-    return acc + curr.quantity * ltp;
-  }, 0);
+  holdings.forEach(h => {
+    const quote = stocks[h.symbol];
+    const ltp = typeof quote === 'number' ? quote : (quote?.ltp || h.current_price || h.average_price);
+    totalInvested += (h.quantity * h.average_price);
+    currentValue += (h.quantity * ltp);
+  });
+
+  positions.forEach(p => {
+    const quote = stocks[p.symbol];
+    const ltp = typeof quote === 'number' ? quote : (quote?.ltp || p.current_price || p.average_price);
+    totalInvested += (p.quantity * p.average_price);
+    currentValue += (p.quantity * ltp);
+  });
 
   const totalPnL = currentValue - totalInvested;
   const totalPnLPercent = totalInvested > 0 ? (totalPnL / totalInvested) * 100 : 0;
@@ -331,7 +336,7 @@ const Dashboard = ({
                     <div className="space-y-1">
                       <div className="flex items-center gap-2">
                         <p className="text-sm font-bold text-white tracking-tight">{pos.symbol}</p>
-                        <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-[8px] font-bold text-zinc-500 uppercase">{pos.type}</span>
+                        <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-[8px] font-bold text-zinc-500 uppercase">{pos.type || pos.product}</span>
                       </div>
                       <div className="flex items-center gap-2">
                         <p className="text-[10px] font-bold text-zinc-500 uppercase">{pos.quantity} Qty</p>

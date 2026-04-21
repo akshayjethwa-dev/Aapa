@@ -30,6 +30,7 @@ import OrderWindow from './screens/OrderWindow';
 import FOTradingCenter from './screens/FOTradingCenter';
 import FullChartModal from './components/FullChartModal';
 import OptionChain from './components/OptionChain';
+import Orders from './screens/Orders';
 
 export type MarketPhase = 'LIVE' | 'PRE_OPEN' | 'CLOSED';
 
@@ -349,6 +350,10 @@ function App() {
             </div>
           )}
           {activeTab === 'portfolio' && <Portfolio key="portfolio" stocks={stocks} />}
+          
+          {/* --> ADDED ORDERS SCREEN HERE <-- */}
+          {activeTab === 'orders' && <Orders key="orders" onBack={() => setActiveTab('more')} />}
+          
           {activeTab === 'onboarding' && <Onboarding key="onboarding" onComplete={() => setActiveTab('dashboard')} />}
           {activeTab === 'admin' && <AdminPanel key="admin" onBack={() => setActiveTab('dashboard')} />}
           {activeTab === 'more' && (

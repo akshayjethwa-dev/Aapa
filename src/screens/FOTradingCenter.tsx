@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowLeft, TrendingUp, ArrowUpRight, ArrowDownRight, Layers, ChevronDown, Zap, MousePointer2, Activity, BarChart3, Target, ArrowRightLeft, XCircle, ShieldCheck, AlertCircle } from 'lucide-react';
 import { formatCurrency, cn } from '../lib/utils';
@@ -23,36 +23,49 @@ const FOTradingCenter = ({
   onConnectUptox: () => void,
   isConnectingUptox: boolean
 }) => {
-  const { user } = useAuthStore();
+  const { user, token } = useAuthStore();
   const [isScalperMode, setIsScalperMode] = useState(false);
   const [activeChart, setActiveChart] = useState<any>(null);
   const [confirmExit, setConfirmExit] = useState<number | null>(null);
   const [slTgtModal, setSlTgtModal] = useState<any>(null);
   const [positions, setPositions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [latestOrder, setLatestOrder] = useState<any>(null);
 
   const [orderConfig, setOrderConfig] = useState<OrderConfig | null>(null);
 
-  useEffect(() => {
-    const token = localStorage.getItem('token');
+  // Sync function that can be called manually or via intervals
+  const fetchPositionsData = useCallback(async () => {
     if (!token) return;
-    
-    const fetchPositions = async () => {
-      try {
-        const res = await apiClient.get('/api/positions');
-        const data = res.data;
-        setPositions(Array.isArray(data) ? data : []);
-      } catch (err) {
-        console.error('Failed to fetch positions', err);
-      } finally {
-        setLoading(false);
+    try {
+      const [posRes, ordRes] = await Promise.all([
+        apiClient.get('/api/positions'),
+        apiClient.get('/api/orders')
+      ]);
+      setPositions(Array.isArray(posRes.data) ? posRes.data : []);
+      if (Array.isArray(ordRes.data) && ordRes.data.length > 0) {
+        setLatestOrder(ordRes.data[0]);
       }
-    };
+    } catch (err) {
+      console.error('Failed to fetch FO data', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [token]);
 
-    fetchPositions();
-    const interval = setInterval(fetchPositions, 5000);
-    return () => clearInterval(interval);
-  }, []);
+  // Setup Intervals and Listeners
+  useEffect(() => {
+    fetchPositionsData();
+    const interval = setInterval(fetchPositionsData, 5000);
+    
+    // Listen for the global sync event to update instantly without waiting 5 seconds
+    window.addEventListener('broker_portfolio_updated', fetchPositionsData);
+    
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('broker_portfolio_updated', fetchPositionsData);
+    };
+  }, [fetchPositionsData]);
 
   const handleExit = async (index: number) => {
     const pos = positions[index];
@@ -60,13 +73,13 @@ const FOTradingCenter = ({
       toast.info(`Placing exit order for ${pos.symbol}...`);
       setPositions(positions.filter((_, i) => i !== index));
       setConfirmExit(null);
+      // In a real app, you would call the exit API here, then fire the sync event
     } else {
       setConfirmExit(index);
       setTimeout(() => setConfirmExit(null), 3000);
     }
   };
 
-  // FIX: Safely calculate P&L accounting for Upstox naming conventions
   const totalPnL = positions.reduce((acc, pos) => {
     const ltp = pos.ltp ?? pos.current_price ?? 0;
     const avg = pos.avgPrice ?? pos.average_price ?? 0;
@@ -83,9 +96,34 @@ const FOTradingCenter = ({
 
   return (
     <div className="space-y-6 pb-24">
+      {/* Live Order Banner */}
+      {latestOrder && (
+        <div className="px-4 pt-4">
+          <div className={cn(
+            "px-4 py-2.5 rounded-xl border flex items-center justify-between",
+            latestOrder.status.toLowerCase().includes('reject') ? "bg-rose-500/5 border-rose-500/20" : 
+            latestOrder.status.toLowerCase().includes('complete') ? "bg-emerald-500/5 border-emerald-500/20" : 
+            "bg-amber-500/5 border-amber-500/20"
+          )}>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Latest Order:</span>
+              <span className="text-xs font-bold text-white">{latestOrder.symbol.replace(' 50', '')}</span>
+            </div>
+            <div className={cn(
+              "text-[10px] font-black uppercase tracking-widest",
+              latestOrder.status.toLowerCase().includes('reject') ? "text-rose-500" : 
+              latestOrder.status.toLowerCase().includes('complete') ? "text-emerald-500" : 
+              "text-amber-500"
+            )}>
+              {latestOrder.status}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Onboarding Requirement Banner */}
       {user?.role === 'pre-onboarding' && (
-        <div className="px-4 pt-4">
+        <div className={latestOrder ? "px-4" : "px-4 pt-4"}>
           <div className="bg-rose-500/10 border border-rose-500/30 rounded-2xl p-4 flex flex-col gap-3 relative overflow-hidden">
              <div className="absolute top-0 right-0 p-2 opacity-10">
                <AlertCircle size={48} className="text-rose-500" />
@@ -112,7 +150,7 @@ const FOTradingCenter = ({
 
       {/* Broker Connection for Users */}
       {!user?.is_uptox_connected && user?.role !== 'user' && user?.role !== 'pre-onboarding' && (
-        <div className="px-4 pt-4">
+        <div className={latestOrder ? "px-4" : "px-4 pt-4"}>
           <div className="bg-zinc-900/40 border border-zinc-800/50 rounded-2xl p-6 space-y-4">
             <div className="flex items-center gap-3">
               <div className="p-3 rounded-2xl bg-emerald-500/10 text-emerald-500">
@@ -203,7 +241,6 @@ const FOTradingCenter = ({
              </div>
           ) : (
             positions.map((pos, i) => {
-              // FIX: Safe property extraction
               const ltp = pos.ltp ?? pos.current_price ?? 0;
               const avg = pos.avgPrice ?? pos.average_price ?? 0;
               const qty = pos.quantity || 0;
@@ -405,10 +442,16 @@ const FOTradingCenter = ({
             onClose={() => setOrderConfig(null)}
             onOrderPlaced={() => {
                setOrderConfig(null);
+               // Trigger immediate fetch to verify the order was recorded
+               fetchPositionsData();
+               
+               // Dispatch global event so the Dashboard and Portfolio also sync immediately
+               window.dispatchEvent(new CustomEvent('broker_portfolio_updated'));
+               
+               // Secondary check a second later to catch Upstox settlement delays
                setTimeout(() => {
-                 apiClient.get('/api/positions').then(res => {
-                    setPositions(Array.isArray(res.data) ? res.data : []);
-                 });
+                 fetchPositionsData();
+                 window.dispatchEvent(new CustomEvent('broker_portfolio_updated'));
                }, 1500);
             }}
           />

@@ -23,10 +23,19 @@ export const placeOrderSchema = z.object({
   product: z.string().optional().default('I'),
   broker: z.enum(['upstox', 'angelone']).optional().default('upstox'),
   
-  // --- NEW: Structured Fields for Options ---
+  // Structured Fields for Options
   expiry: z.string().optional(), 
   strike: z.coerce.number().optional(),
   optionType: z.enum(['CE', 'PE', 'ce', 'pe']).optional()
+}).superRefine((data, ctx) => {
+  // Enforce that Limit and Stop Loss orders must have a price > 0
+  if (['LIMIT', 'limit', 'SL', 'sl'].includes(data.order_type) && data.price <= 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Price must be greater than 0 for Limit/SL orders",
+      path: ["price"]
+    });
+  }
 });
 
 export const angelOneLoginSchema = z.object({

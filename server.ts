@@ -1049,10 +1049,10 @@ async function startServer() {
         const { rows } = await query("SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = $2", [userId, broker]);
         const userToken = rows[0];
 
-        if (!userToken || !userToken.access_token) return res.status(400).json({ error: `Please connect your ${broker} account.` });
+        if (!userToken || !userToken.access_token) return res.status(400).json({ success: false, code: 'NO_BROKER', message: `Please connect your ${broker} account.` });
 
         const decryptedToken = decrypt(String(userToken.access_token));
-        if (!decryptedToken) return res.status(500).json({ error: "Failed to decrypt broker token." });
+        if (!decryptedToken) return res.status(500).json({ success: false, code: 'DECRYPTION_FAILED', message: "Failed to decrypt broker token." });
 
         let brokerSymbol = symbol;
         const friendlySymbol = strike && optionType ? `${symbol.replace(' 50', '')} ${strike} ${optionType}` : symbol;
@@ -1074,15 +1074,34 @@ async function startServer() {
               [userId, friendlySymbol, type, order_type, quantity, price, broker, orderRes.order_id, JSON.stringify(orderRes.raw_response)]);
             return res.json({ success: true, order_id: orderRes.order_id });
           } else {
-            const errorMsg = orderRes.error || "Order failed";
+            // --- ENHANCED STRUCTURED ERROR HANDLING ---
+            const upstoxErr = orderRes.raw_response?.errors?.[0];
+            const rawErrorCode = upstoxErr?.errorCode || 'ORDER_FAILED';
+            const errorMsg = upstoxErr?.message || orderRes.error || "Order failed";
+
+            // Identify margin/fund issues based on Upstox response messages
+            const isMarginError = errorMsg.toLowerCase().includes('margin') || errorMsg.toLowerCase().includes('fund');
+            const finalCode = isMarginError ? 'INSUFFICIENT_MARGIN' : rawErrorCode;
+
             await query("INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8, $9)",
               [userId, friendlySymbol, type, order_type, quantity, price, broker, errorMsg, JSON.stringify(orderRes.raw_response)]);
-            return res.status(400).json({ error: errorMsg });
+            
+            return res.status(400).json({ 
+              success: false, 
+              code: finalCode, 
+              message: errorMsg 
+            });
           }
         } catch (e: any) {
           await query("INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8, $9)",
             [userId, friendlySymbol, type, order_type, quantity, price, broker, e.message, JSON.stringify({ error: e.message })]);
-          throw new Error(`${broker} API Error`);
+          
+          // Return standard JSON instead of throwing to prevent unhandled 500 crashes
+          return res.status(500).json({ 
+            success: false, 
+            code: 'INTERNAL_BROKER_ERROR', 
+            message: `Broker API Error: ${e.message}` 
+          });
         }
       } catch (e) { next(e); }
     }

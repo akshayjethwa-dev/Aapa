@@ -4,6 +4,7 @@ import { User as UserIcon, Settings, HelpCircle, FileText, LogOut, ShieldCheck, 
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
 import { useAuthStore } from '../store/authStore';
+import { useNavigate } from 'react-router-dom'; // <-- ADDED
 import ComplianceDetail from './ComplianceDetail';
 
 const More = ({ 
@@ -28,6 +29,7 @@ const More = ({
   onForceRefresh: () => void
 }) => {
   const { user, token, setAuth, logout } = useAuthStore();
+  const navigate = useNavigate(); // <-- ADDED
 
   useEffect(() => {
     const fetchProfile = async () => {
@@ -96,6 +98,7 @@ const More = ({
       title: 'Account',
       items: [
         { icon: UserIcon, label: 'Profile Details', status: 'Active', color: 'text-emerald-500' },
+        { icon: History, label: 'Order History', status: '', color: 'text-blue-500', action: () => navigate('/orders') }, // <-- ADDED THIS LINK
         { icon: ShieldCheck, label: 'KYC Status', status: 'Pending', color: 'text-amber-500', action: () => setActiveTab('onboarding') },
         { icon: Wallet, label: 'Funds & Withdrawals', status: '', color: 'text-blue-500' },
         { 
