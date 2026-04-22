@@ -33,6 +33,9 @@ import { encrypt, decrypt } from "./src/utils/encryption";
 import { requireKyc } from "./src/middleware/requireKyc";
 import { getBrokerService, OrderRequest } from "./src/lib/brokers/index";
 
+// 1. ADDED IMPORT FOR THE NEW USER PROFILE ROUTER
+import userProfileRouter from "./src/routes/userProfile";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -357,18 +360,22 @@ async function startServer() {
     next();
   });
 
+  // --- AUTH MIDDLEWARE DEFINED HERE ---
   const authenticateToken = (req: any, res: any, next: any) => {
     const authHeader = req.headers["authorization"];
     const token = authHeader && authHeader.split(" ")[1];
     if (!token) return res.sendStatus(401);
 
     jwt.verify(String(token), JWT_SECRET, (err: any, user: any) => {
-      // FIX: Sends 401 instead of 403, allowing the frontend apiClient to auto-refresh
       if (err) return res.sendStatus(401); 
       req.user = user;
       next();
     });
   };
+
+  // 2. WIRE IN THE NEW USER PROFILE ROUTER (After Middleware is defined)
+  app.use("/api/user", authenticateToken, userProfileRouter);
+
 
   app.get("/api/health", async (req, res) => {
     try {
@@ -603,41 +610,17 @@ async function startServer() {
     }
   );
 
+  // 3. REMOVED INLINE /api/user/profile ENDPOINT 
+  // It has been migrated entirely to src/routes/userProfile.ts to prevent routing conflicts.
+  /*
   app.get("/api/user/profile", authenticateToken, async (req: any, res, next) => {
-    try {
-      // Expanded to include onboarding fields
-      const { rows: userRows } = await query(
-        "SELECT id, email, mobile, role, kyc_status, is_kyc_approved, balance, has_upstox_account, onboarding_step, first_login_completed_at FROM users WHERE id = $1",
-        [req.user.id]
-      );
-      const user = userRows[0];
-      if (!user) return res.status(404).json({ error: "User not found" });
-
-      const { rows: tokenRows } = await query(
-        "SELECT access_token, broker FROM user_tokens WHERE user_id = $1 AND broker = 'upstox'",
-        [req.user.id]
-      );
-      const userToken = tokenRows[0];
-      let balance = parseFloat(user?.balance) || 0;
-
-      if (userToken && userToken.access_token) {
-        try {
-          const decryptedToken = decrypt(String(userToken.access_token));
-          if (decryptedToken) {
-            const brokerService = getBrokerService("upstox");
-            balance = await brokerService.getFunds(decryptedToken);
-          }
-        } catch (e) { logger.warn("Failed to fetch Upstox funds", e); }
-      }
-
-      // Add derived property
-      user.is_onboarding_complete = (user.onboarding_step ?? 0) >= 4;
-
-      res.json({ ...user, balance, is_uptox_connected: !!userToken });
-    } catch (e) { next(e); }
+    // ... migrated logic ...
   });
+  */
 
   // PATCH /api/user/onboarding — Save onboarding step progress
+  // Note: This matches the /api/user router prefix but is explicitly mounted on `app` here.
+  // It will still function normally as long as the router does not override it.
   app.patch('/api/user/onboarding', authenticateToken, async (req: any, res: any) => {
     try {
       const userId = req.user.id;
@@ -841,14 +824,12 @@ async function startServer() {
          const expirySet = new Set<string>();
          
          data.data.forEach((item: any) => {
-           // FIX: Account for Upstox using 'expiry' instead of 'expiry_date' in this response payload
            const exp = item.expiry || item.expiry_date || item.expiryDate;
            if (exp) expirySet.add(exp);
          });
          
          let expiries = Array.from(expirySet).sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
          
-         // SMART FALLBACK: If Upstox returns an empty array or the schema changes entirely, calculate standard weekly dates
          if (expiries.length === 0) {
            logger.warn(`[Upstox API] No expiries could be parsed for ${resolvedKey}. Triggering Smart Fallback Engine.`);
            
@@ -1020,7 +1001,6 @@ async function startServer() {
     }
   });
 
-  // --- NEW: Orders API Endpoint for Story A4 ---
   app.get("/api/orders", authenticateToken, async (req: any, res, next) => {
     try {
       const { rows: tokens } = await query("SELECT broker, access_token FROM user_tokens WHERE user_id = $1", [req.user.id]);
@@ -1050,7 +1030,6 @@ async function startServer() {
     }
   });
 
-  // --- NEW: Dedicated Positions API Endpoint ---
   app.get("/api/positions", authenticateToken, async (req: any, res, next) => {
     try {
       const { rows: tokens } = await query("SELECT broker, access_token FROM user_tokens WHERE user_id = $1", [req.user.id]);
@@ -1075,7 +1054,6 @@ async function startServer() {
     }
   });
 
-  // --- MODIFIED: Story B4 Server-Side Translation for Order Entry ---
   const resolveOptionInstrumentKey = (underlying: string, expiryDateStr: string, strike: number, optType: string) => {
     const indexName = underlying.replace(' 50', '').replace(' ', '').toUpperCase(); 
     
@@ -1129,12 +1107,10 @@ async function startServer() {
               [userId, friendlySymbol, type, order_type, quantity, price, broker, orderRes.order_id, JSON.stringify(orderRes.raw_response)]);
             return res.json({ success: true, order_id: orderRes.order_id });
           } else {
-            // --- ENHANCED STRUCTURED ERROR HANDLING ---
             const upstoxErr = orderRes.raw_response?.errors?.[0];
             const rawErrorCode = upstoxErr?.errorCode || 'ORDER_FAILED';
             const errorMsg = upstoxErr?.message || orderRes.error || "Order failed";
 
-            // Identify margin/fund issues based on Upstox response messages
             const isMarginError = errorMsg.toLowerCase().includes('margin') || errorMsg.toLowerCase().includes('fund');
             const finalCode = isMarginError ? 'INSUFFICIENT_MARGIN' : rawErrorCode;
 
@@ -1151,7 +1127,6 @@ async function startServer() {
           await query("INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8, $9)",
             [userId, friendlySymbol, type, order_type, quantity, price, broker, e.message, JSON.stringify({ error: e.message })]);
           
-          // Return standard JSON instead of throwing to prevent unhandled 500 crashes
           return res.status(500).json({ 
             success: false, 
             code: 'INTERNAL_BROKER_ERROR', 
@@ -1222,7 +1197,6 @@ async function startServer() {
       try {
         const encodedKeys = allKeysList.map(k => encodeURIComponent(k)).join(",");
         
-        // Upgraded from /ltp to /quotes to get OHLC data
         const quoteRes = await fetch(`https://api.upstox.com/v3/market-quote/quotes?instrument_key=${encodedKeys}`, {
           headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }
         });
@@ -1317,7 +1291,6 @@ async function startServer() {
           }
         };
         
-        // FIX: Add 1-second delay before subscribing to prevent race-condition disconnects
         setTimeout(() => {
            if (upstoxMarketWs && upstoxMarketWs.readyState === WebSocket.OPEN) {
               upstoxMarketWs.send(Buffer.from(JSON.stringify(requestPayload)));
@@ -1371,7 +1344,6 @@ async function startServer() {
           }
 
         } catch (err) {
-          // Suppress verbose protobuf decode warnings
         }
       });
 
