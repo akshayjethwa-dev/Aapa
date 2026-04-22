@@ -670,6 +670,59 @@ async function startServer() {
     }
   });
 
+  // =========================================================================
+  // LINKED BROKERS — GET /api/user/brokers
+  // =========================================================================
+  app.get("/api/user/brokers", authenticateToken, async (req: any, res, next) => {
+    try {
+      const { rows } = await query(
+        `SELECT broker, updated_at AS last_updated
+         FROM user_tokens
+         WHERE user_id = $1`,
+        [req.user.id]
+      );
+
+      const brokers = rows.map((row: any) => ({
+        broker: row.broker,
+        is_connected: true,
+        last_updated: row.last_updated,
+      }));
+
+      // If no rows found for upstox but user record exists, still return it as disconnected
+      const hasUpstox = brokers.find((b: any) => b.broker === "upstox");
+      if (!hasUpstox) {
+        brokers.push({ broker: "upstox", is_connected: false, last_updated: null });
+      }
+
+      res.json({ success: true, brokers });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // =========================================================================
+  // LINKED BROKERS — DELETE /api/auth/uptox (Disconnect Upstox)
+  // =========================================================================
+  app.delete("/api/auth/uptox", authenticateToken, async (req: any, res, next) => {
+    try {
+      const userId = req.user.id;
+
+      await query("DELETE FROM user_tokens WHERE broker = 'upstox' AND user_id = $1", [userId]);
+      await query("UPDATE users SET is_uptox_connected = false WHERE id = $1", [userId]);
+
+      // Notify all WS clients of broker disconnect
+      const payload = JSON.stringify({ type: "broker_disconnected", broker: "upstox" });
+      wss.clients.forEach((c: any) => {
+        if (c.readyState === WebSocket.OPEN) c.send(payload);
+      });
+
+      logger.info(`[Broker] User ${userId} disconnected Upstox.`);
+      res.json({ success: true, message: "Upstox disconnected successfully." });
+    } catch (e) {
+      next(e);
+    }
+  });
+
   app.get("/api/auth/uptox/url", authenticateToken, (req: any, res) => {
     const apiKey = process.env.UPTOX_API_KEY?.trim() ?? "";
     const redirectUri = process.env.UPTOX_REDIRECT_URI?.trim() ?? "";
