@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence, Reorder } from 'framer-motion';
 import {
@@ -24,6 +23,7 @@ import {
   DeleteWatchlistDialog,
   AddSymbolSheet,
 } from '../components/WatchlistManager';
+import StockDetail from './StockDetail';
 
 const Market = ({
   stocks,
@@ -110,18 +110,6 @@ const Market = ({
   ];
 
   const handleStockClick = (symbol: string) => setSelectedStock(symbol);
-
-  const getUpstoxInstrumentKey = (symbol: string) => {
-    if (symbol.includes('|')) return symbol;
-    const quote = stocks[symbol];
-    if (quote && typeof quote !== 'number' && quote.instrument_token) {
-      return quote.instrument_token;
-    }
-    if (primaryIndices.includes(symbol) || secondaryIndices.includes(symbol)) {
-      return `NSE_INDEX|${symbol}`;
-    }
-    return `NSE_EQ|${symbol}`;
-  };
 
   const optionChainStocks = useMemo(() => {
     const map: Record<string, number> = {};
@@ -458,128 +446,16 @@ const Market = ({
         onAdd={wl.addSymbol}
       />
 
-      {/* ════════════════ STOCK DETAIL MODAL ════════════════ */}
+      {/* Shared stock detail modal (uses new StockDetail screen) */}
       <AnimatePresence mode="wait">
-        {selectedStock &&
-          (() => {
-            const quote = stocks[selectedStock];
-            const ltp = typeof quote === 'number' ? quote : (quote?.ltp || 0);
-            const change = quote?.day_change || 0;
-            const changePct = quote?.day_change_pct || 0;
-            const isPositive = change >= 0;
-
-            return (
-              <motion.div
-                key="stock-detail-modal"
-                initial={{ y: '100%' }}
-                animate={{ y: 0 }}
-                exit={{ y: '100%' }}
-                className="fixed inset-0 z-60 bg-black p-6 flex flex-col"
-              >
-                <div className="flex justify-between items-center mb-8">
-                  <button
-                    onClick={() => setSelectedStock(null)}
-                    className="p-3 rounded-2xl bg-zinc-900 text-zinc-400"
-                  >
-                    <ChevronRight className="rotate-180" size={24} />
-                  </button>
-                  <div className="text-center">
-                    <h2 className="text-lg font-bold tracking-tight">{selectedStock}</h2>
-                    <p className="text-[10px] font-bold text-zinc-500 uppercase">NSE • EQUITY</p>
-                  </div>
-                  {/* Add to active watchlist shortcut */}
-                  <button
-                    onClick={async () => {
-                      if (!wl.activeId) return;
-                      const alreadyIn = existingSymbols.includes(selectedStock);
-                      if (alreadyIn) {
-                        const item = currentItems.find(i => i.symbol === selectedStock);
-                        if (item) await wl.removeSymbol(wl.activeId, item.id);
-                      } else {
-                        await wl.addSymbol(wl.activeId, selectedStock);
-                      }
-                    }}
-                    className={cn(
-                      'p-3 rounded-2xl transition-all',
-                      existingSymbols.includes(selectedStock)
-                        ? 'bg-emerald-500 text-black'
-                        : 'bg-zinc-900 text-zinc-400'
-                    )}
-                  >
-                    <Plus
-                      size={24}
-                      className={cn(existingSymbols.includes(selectedStock) && 'rotate-45')}
-                    />
-                  </button>
-                </div>
-
-                <div className="flex-1 space-y-8 overflow-y-auto pb-24 scrollbar-hide">
-                  <div className="text-center">
-                    <p className="text-5xl font-bold tracking-tighter mb-2">
-                      {formatCurrency(ltp)}
-                    </p>
-                    <p className={cn('text-sm font-bold', isPositive ? 'text-emerald-500' : 'text-rose-500')}>
-                      {isPositive ? '+' : ''}{formatCurrency(Math.abs(change))} ({isPositive ? '+' : ''}
-                      {changePct.toFixed(2)}%) Today
-                    </p>
-                  </div>
-
-                  <div className="h-80 bg-zinc-900/50 rounded-4xl border border-zinc-800/50 relative overflow-hidden">
-                    <ErrorBoundary>
-                      <UpstoxNativeChart
-                        symbol={selectedStock}
-                        instrumentToken={getUpstoxInstrumentKey(selectedStock)}
-                      />
-                    </ErrorBoundary>
-                  </div>
-
-                  <div className="bg-zinc-900/40 border border-zinc-800/50 rounded-3xl p-6 space-y-4">
-                    <div className="flex items-center gap-2 text-zinc-400">
-                      <Activity size={18} />
-                      <h4 className="text-xs font-bold uppercase tracking-widest">Technical Overview</h4>
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="bg-zinc-900/50 p-4 rounded-2xl border border-zinc-800">
-                        <p className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest mb-1">RSI (14)</p>
-                        <p className="text-sm font-bold text-white">
-                          58.42 <span className="text-[10px] text-zinc-500 font-medium ml-1">Neutral</span>
-                        </p>
-                      </div>
-                      <div className="bg-zinc-900/50 p-4 rounded-2xl border border-zinc-800">
-                        <p className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest mb-1">MACD</p>
-                        <p className="text-sm font-bold text-emerald-500">
-                          Bullish <span className="text-[10px] text-zinc-500 font-medium ml-1">Crossover</span>
-                        </p>
-                      </div>
-                      <div className="bg-zinc-900/50 p-4 rounded-2xl border border-zinc-800">
-                        <p className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest mb-1">200 DMA</p>
-                        <p className="text-sm font-bold text-white">{(ltp * 0.92).toFixed(2)}</p>
-                      </div>
-                      <div className="bg-zinc-900/50 p-4 rounded-2xl border border-zinc-800">
-                        <p className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest mb-1">52W High</p>
-                        <p className="text-sm font-bold text-white">{(ltp * 1.15).toFixed(2)}</p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="fixed bottom-0 left-0 right-0 p-6 bg-black/80 backdrop-blur-xl border-t border-zinc-900 flex gap-4">
-                  <button
-                    onClick={() => onPlaceOrder({ side: 'SELL', symbol: selectedStock, price: ltp })}
-                    className="flex-1 bg-rose-500 hover:bg-rose-600 text-black font-bold py-5 rounded-2xl transition-all shadow-xl shadow-rose-500/10"
-                  >
-                    SELL
-                  </button>
-                  <button
-                    onClick={() => onPlaceOrder({ side: 'BUY', symbol: selectedStock, price: ltp })}
-                    className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-black font-bold py-5 rounded-2xl transition-all shadow-xl shadow-emerald-500/10"
-                  >
-                    BUY
-                  </button>
-                </div>
-              </motion.div>
-            );
-          })()}
+        {selectedStock && (
+          <StockDetail
+            symbol={selectedStock}
+            stocks={stocks}
+            onClose={() => setSelectedStock(null)}
+            onPlaceOrder={onPlaceOrder}
+          />
+        )}
       </AnimatePresence>
     </div>
   );

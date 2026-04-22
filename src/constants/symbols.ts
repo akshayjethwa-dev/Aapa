@@ -21,9 +21,9 @@ export interface SymbolDefinition {
 /**
  * NOTE:
  * - Indices use NSE_INDEX / BSE_INDEX style keys, same pattern you already use
- *   in your option-chain code.[cite:7]
+ * in your option-chain code.
  * - Equities default to NSE_EQ|SYMBOL, which matches your current Upstox usage
- *   in Market / option-chain code.[cite:7][cite:9]
+ * in Market / option-chain code.
  */
 export const SYMBOLS: SymbolDefinition[] = [
   // ── Core Indices ────────────────────────────────────────
@@ -286,6 +286,14 @@ export const SYMBOLS: SymbolDefinition[] = [
     type: 'EQUITY',
     segment: 'NSE',
     upstoxInstrumentKey: 'NSE_EQ|RVNL',
+  },
+  {
+    id: 'EQ_IRFC',
+    name: 'IRFC',
+    code: 'IRFC',
+    type: 'EQUITY',
+    segment: 'NSE',
+    upstoxInstrumentKey: 'NSE_EQ|IRFC',
   },
 ];
 
