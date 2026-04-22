@@ -249,7 +249,7 @@ export function WatchlistToolbar({
 interface NewWatchlistDialogProps {
   isOpen: boolean;
   onClose: () => void;
-  onCreate: (name: string) => Promise<void>;
+  onCreate: (name: string) => Promise<any>; // FIXED: accept any promise return type
 }
 
 export function NewWatchlistDialog({
@@ -506,7 +506,7 @@ interface AddSymbolSheetProps {
   existingSymbols: string[];
   stocks: Record<string, any>;
   onClose: () => void;
-  onAdd: (watchlistId: string, symbol: string) => Promise<void>;
+  onAdd: (watchlistId: string, symbol: string) => Promise<any>; // FIXED: accept any promise return type
 }
 
 export function AddSymbolSheet({
