@@ -1,11 +1,11 @@
-// src/screens/More.tsx  — UPDATED with Profile Completeness & Segment Eligibility
+// src/screens/More.tsx — Updated with Linked Brokers
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   User as UserIcon, Settings, HelpCircle, FileText, LogOut,
   ShieldCheck, Bell, CreditCard, ChevronRight,
   Info, AlertTriangle, Activity, Wallet, Zap, Users,
-  LayoutDashboard, History
+  LayoutDashboard, History, Link2                          // ← NEW: Link2
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
@@ -13,6 +13,7 @@ import { useAuthStore } from '../store/authStore';
 import ComplianceDetail from './ComplianceDetail';
 import ProfileCard from './ProfileCard';
 import RiskQuestionnaire from './RiskQuestionnaire';
+import BrokerSettings from './BrokerSettings';            // ← NEW
 import { apiClient } from '../api/client';
 
 const More = ({
@@ -36,8 +37,9 @@ const More = ({
   isRefreshing: boolean;
   onForceRefresh: () => void;
 }) => {
-  const { user, token, setAuth, logout } = useAuthStore();
+  const { user, token, setAuth } = useAuthStore();
   const [showQuestionnaire, setShowQuestionnaire] = useState(false);
+  const [showBrokerSettings, setShowBrokerSettings] = useState(false); // ← NEW
 
   // Fetch full profile (with new fields) on mount
   useEffect(() => {
@@ -59,6 +61,17 @@ const More = ({
   const handleQuestionnaireComplete = () => {
     setShowQuestionnaire(false);
   };
+
+  // ── Show BrokerSettings overlay ── ← NEW
+  if (showBrokerSettings) {
+    return (
+      <BrokerSettings
+        onBack={() => setShowBrokerSettings(false)}
+        onConnectUptox={onConnectUptox}
+        isConnectingUptox={isConnectingUptox}
+      />
+    );
+  }
 
   const allSections = [
     {
@@ -125,13 +138,13 @@ const More = ({
           action: () => setActiveTab('onboarding')
         },
         { icon: Wallet, label: 'Funds & Withdrawals', status: '', color: 'text-blue-500' },
+        // ← NEW: Linked Brokers entry (replaces old inline Connect Upstox)
         {
-          icon: Zap,
-          label: 'Connect Upstox',
-          status: user?.is_uptox_connected ? 'Linked' : 'Not Linked',
+          icon: Link2,
+          label: 'Linked Brokers',
+          status: user?.is_uptox_connected ? '1 Connected' : 'Not Linked',
           color: user?.is_uptox_connected ? 'text-emerald-500' : 'text-zinc-500',
-          action: user?.is_uptox_connected ? undefined : onConnectUptox,
-          loading: isConnectingUptox
+          action: () => setShowBrokerSettings(true),
         },
       ]
     },
@@ -218,7 +231,7 @@ const More = ({
           </div>
         </div>
 
-        {/* ── Profile Card (NEW) ── */}
+        {/* ── Profile Card ── */}
         {user && (
           <ProfileCard
             user={user as any}
@@ -239,7 +252,7 @@ const More = ({
                   <button
                     key={iIdx}
                     onClick={item.action}
-                    disabled={item.loading || (item.label === 'Connect Upstox' && user?.is_uptox_connected)}
+                    disabled={item.loading}
                     className="w-full bg-zinc-900/30 hover:bg-zinc-900/60 border border-zinc-800/30 rounded-2xl p-4 flex justify-between items-center transition-all group disabled:opacity-50"
                   >
                     <div className="flex items-center gap-4">
@@ -275,10 +288,6 @@ const More = ({
                         >
                           <FileText size={14} />
                         </div>
-                      ) : !user?.is_uptox_connected && item.label === 'Connect Upstox' ? (
-                        <div className="bg-emerald-500 text-black px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">
-                          Link
-                        </div>
                       ) : (
                         <ChevronRight
                           size={16}
@@ -296,7 +305,7 @@ const More = ({
         {/* ── Logout ── */}
         <div className="px-6">
           <button
-            onClick={logout}
+            onClick={() => useAuthStore.getState().logout()}
             className="w-full bg-rose-500/5 hover:bg-rose-500 text-rose-500 hover:text-black border border-rose-500/10 font-bold py-5 rounded-2xl transition-all flex items-center justify-center gap-2"
           >
             <LogOut size={20} />
