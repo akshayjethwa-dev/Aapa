@@ -1,9 +1,3 @@
-// src/screens/Market.tsx
-// ─────────────────────────────────────────────────────────────────────────────
-// Updated: Watchlist tab now supports multiple named watchlists, add/remove
-// symbols, and drag-to-reorder. All other segments (Orders, Positions, F&O)
-// are unchanged.
-// ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence, Reorder } from 'framer-motion';

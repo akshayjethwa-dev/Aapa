@@ -2,7 +2,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Toaster, toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
-import { LogOut, ChevronRight, Search, AlertCircle } from 'lucide-react';
 import { useAuthStore } from './store/authStore';
 import { formatCurrency, cn } from './lib/utils';
 import { apiClient } from './api/client';
@@ -32,21 +31,34 @@ import FullChartModal from './components/FullChartModal';
 import OptionChain from './components/OptionChain';
 import Orders from './screens/Orders';
 
+// NEW: symbol search + stock detail
+import SymbolSearch from './components/SymbolSearch';
+import StockDetail from './screens/StockDetail';
+import type { SymbolDefinition } from './constants/symbols';
+
 export type MarketPhase = 'LIVE' | 'PRE_OPEN' | 'CLOSED';
 
 function App() {
   const { token, user, setAuth, logout, setIsWsConnected } = useAuthStore();
   const [activeTab, setActiveTab] = useState('dashboard');
   const [stocks, setStocks] = useState<Record<string, number | any>>({
-    "NIFTY 50": 22145.20, "SENSEX": 72850.40, "BANKNIFTY": 46800.15, "FINNIFTY": 20850.60,
-    "RELIANCE": 2985.40, "TCS": 4120.15, "HDFCBANK": 1450.60, "INFY": 1680.40, "ICICIBANK": 1050.20
+    NIFTY_50: 22145.2,
+    SENSEX: 72850.4,
+    BANKNIFTY: 46800.15,
+    FINNIFTY: 20850.6,
+    RELIANCE: 2985.4,
+    TCS: 4120.15,
+    HDFCBANK: 1450.6,
+    INFY: 1680.4,
+    ICICIBANK: 1050.2,
   });
   const [complianceType, setComplianceType] = useState('');
   const [selectedIndex, setSelectedIndex] = useState<string | null>(null);
   const [overviewIndex, setOverviewIndex] = useState<string | null>(null);
   const [orderConfig, setOrderConfig] = useState<any>(null);
+
+  // NEW: search + stock-from-search
   const [isSearchOpen, setIsSearchOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
   const [selectedStockFromSearch, setSelectedStockFromSearch] = useState<string | null>(null);
 
   const [marketPhase, setMarketPhase] = useState<MarketPhase>('CLOSED');
@@ -64,15 +76,15 @@ function App() {
   // =========================================================================
   const isOnboardingComplete = Boolean(
     user &&
-    user.role !== 'admin' &&
-    (user.is_onboarding_complete === true || (user.onboarding_step ?? 0) >= 4)
+      user.role !== 'admin' &&
+      (user.is_onboarding_complete === true || (user.onboarding_step ?? 0) >= 4),
   );
 
   // =========================================================================
   // UPSTOX CONNECTION TRIGGER
   // =========================================================================
   const handleConnectUptox = async () => {
-    if (!token) return toast.error("Please log in first");
+    if (!token) return toast.error('Please log in first');
 
     setIsConnectingUptox(true);
     try {
@@ -88,15 +100,15 @@ function App() {
         window.open(
           data.url,
           'UpstoxLogin',
-          `width=${width},height=${height},top=${top},left=${left},toolbar=no,menubar=no,scrollbars=yes,resizable=yes`
+          `width=${width},height=${height},top=${top},left=${left},toolbar=no,menubar=no,scrollbars=yes,resizable=yes`,
         );
       } else {
-        toast.error("Failed to generate Upstox login URL");
+        toast.error('Failed to generate Upstox login URL');
         setIsConnectingUptox(false);
       }
     } catch (err: any) {
-      console.error("Upstox connection error:", err);
-      toast.error(err.response?.data?.error || "Failed to start connection");
+      console.error('Upstox connection error:', err);
+      toast.error(err.response?.data?.error || 'Failed to start connection');
       setIsConnectingUptox(false);
     }
   };
@@ -122,39 +134,34 @@ function App() {
       try {
         const res = await apiClient.get('/api/market-status');
         setDebugInfo(res.data);
-      } catch (e) {}
+      } catch (e) {
+        // ignore
+      }
     };
     if (activeTab === 'more') fetchDebug();
   }, [activeTab]);
 
   // =========================================================================
-  // TAB ROUTING LOGIC — Onboarding gate added
+  // TAB ROUTING LOGIC — Onboarding gate
   // =========================================================================
   useEffect(() => {
     if (token && user) {
-      // Admin always goes to admin panel
       if (user.role === 'admin') {
         if (activeTab === 'dashboard') setActiveTab('admin');
         return;
       }
 
-      // Non-admin: gate behind onboarding until complete
       if (!isOnboardingComplete) {
-        // Allow 'onboarding' tab only; redirect everything else
         if (activeTab !== 'onboarding') {
           setActiveTab('onboarding');
         }
         return;
       }
 
-      // Onboarding complete — legacy KYC redirect (is_uptox_connected check)
       if (!user.is_uptox_connected && activeTab !== 'kyc' && activeTab !== 'more') {
-        // Don't force KYC if onboarding is complete — user already went through step 2
-        // Only redirect to kyc if they explicitly navigated away without connecting
-        // (Kept as soft guidance, not a hard gate post-onboarding)
+        // soft guidance only, you already had this
       }
 
-      // If user somehow lands on onboarding tab after completing it, send to dashboard
       if (activeTab === 'onboarding') {
         setActiveTab('dashboard');
       }
@@ -164,13 +171,6 @@ function App() {
   const openOptionChain = (index: string = 'NIFTY 50') => {
     setSelectedIndex(index);
   };
-
-  const filteredStocks = useMemo(() => {
-    if (!searchQuery) return [];
-    return Object.keys(stocks)
-      .filter(s => s.toLowerCase().includes(searchQuery.toLowerCase()))
-      .slice(0, 8);
-  }, [searchQuery, stocks]);
 
   useEffect(() => {
     const verifyToken = async () => {
@@ -183,7 +183,11 @@ function App() {
           setAuth(res.data, token);
         }
       } catch (e: any) {
-        if (e.response?.status === 401 || e.response?.status === 403 || e.response?.status === 404) {
+        if (
+          e.response?.status === 401 ||
+          e.response?.status === 403 ||
+          e.response?.status === 404
+        ) {
           logout();
         }
       }
@@ -196,10 +200,7 @@ function App() {
   // =========================================================================
   useEffect(() => {
     const handleMessage = async (event: MessageEvent) => {
-      const allowedOrigins = [
-        window.location.origin,
-        import.meta.env.VITE_APP_URL
-      ];
+      const allowedOrigins = [window.location.origin, import.meta.env.VITE_APP_URL];
 
       if (!allowedOrigins.includes(event.origin)) return;
 
@@ -216,7 +217,7 @@ function App() {
             });
           }
 
-          await new Promise(r => setTimeout(r, 600));
+          await new Promise((r) => setTimeout(r, 600));
 
           const profileRes = await apiClient.get('/api/user/profile');
           if (profileRes.data?.id) {
@@ -272,41 +273,55 @@ function App() {
           if (message.type === 'broker_disconnected') {
             if (message.broker === 'upstox') {
               toast.error('Upstox session expired. Please reconnect.');
-              apiClient.get('/api/user/profile').then(res => {
-                if (isComponentMounted && res.data?.id) {
-                  setAuth(res.data, freshToken);
-                }
-              }).catch(console.error);
+              apiClient
+                .get('/api/user/profile')
+                .then((res) => {
+                  if (isComponentMounted && res.data?.id) {
+                    setAuth(res.data, freshToken);
+                  }
+                })
+                .catch(console.error);
             }
           }
 
           if (message.type === 'ticker') {
             setStocks(message.data);
             if (message.marketPhase) {
-              setMarketPhase(message.marketPhase);
+              setMarketPhase(message.marketPhase as MarketPhase);
             }
           }
 
           if (message.type === 'order_update') {
-            const statusStr = message.data.status ? String(message.data.status).toUpperCase() : 'UPDATED';
-            toast.info(`Upstox Order: ${statusStr}`, { description: `Order ID: ${message.data.order_id}` });
+            const statusStr = message.data.status
+              ? String(message.data.status).toUpperCase()
+              : 'UPDATED';
+            toast.info(`Upstox Order: ${statusStr}`, {
+              description: `Order ID: ${message.data.order_id}`,
+            });
 
-            apiClient.get('/api/user/profile').then(res => {
-              if (res.data?.id && isComponentMounted) {
-                setAuth(res.data, freshToken);
-              }
-            }).catch(console.error);
+            apiClient
+              .get('/api/user/profile')
+              .then((res) => {
+                if (res.data?.id && isComponentMounted) {
+                  setAuth(res.data, freshToken);
+                }
+              })
+              .catch(console.error);
 
             window.dispatchEvent(new CustomEvent('broker_portfolio_updated'));
           }
-
-        } catch (e) {}
+        } catch (e) {
+          // ignore
+        }
       };
 
       ws.onclose = () => {
         if (!isComponentMounted) return;
         setIsWsConnected(false);
-        const backoffTime = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
+        const backoffTime = Math.min(
+          1000 * Math.pow(2, reconnectAttemptsRef.current),
+          30000,
+        );
         reconnectAttemptsRef.current += 1;
         reconnectTimeoutRef.current = setTimeout(connectWebSocket, backoffTime);
       };
@@ -324,6 +339,23 @@ function App() {
     };
   }, [token, setAuth, setIsWsConnected]);
 
+  // =========================================================================
+  // Symbol search selection handler
+  // =========================================================================
+  const handleSymbolSelected = (symbolMeta: SymbolDefinition) => {
+    setIsSearchOpen(false);
+
+    if (symbolMeta.type === 'INDEX') {
+      // Open index detail overlay, irrespective of current tab
+      setSelectedIndex(symbolMeta.name);
+      return;
+    }
+
+    // Equities: open Market tab + detail for that stock
+    setSelectedStockFromSearch(symbolMeta.name);
+    setActiveTab('market');
+  };
+
   const pathname = window.location.pathname;
   if (pathname === '/terms') return <TermsOfService />;
   if (pathname === '/privacy') return <PrivacyPolicy />;
@@ -337,17 +369,20 @@ function App() {
     <div className="min-h-screen bg-black text-zinc-100 font-sans selection:bg-emerald-500/30">
       <Toaster position="top-center" richColors />
 
-      {/* Hide Header/Navbar during onboarding */}
       {isOnboardingComplete && (
-        <Header onProfileClick={() => setActiveTab('more')} onSearchClick={() => setIsSearchOpen(true)} />
+        <Header
+          onProfileClick={() => setActiveTab('more')}
+          onSearchClick={() => setIsSearchOpen(true)}
+        />
       )}
 
-      <main className={cn(
-        "max-w-md mx-auto",
-        isOnboardingComplete ? "pt-20 pb-24" : "pt-0 pb-0"
-      )}>
+      <main
+        className={cn(
+          'max-w-md mx-auto',
+          isOnboardingComplete ? 'pt-20 pb-24' : 'pt-0 pb-0',
+        )}
+      >
         <AnimatePresence mode="wait">
-          {/* ── ONBOARDING GATE ── */}
           {activeTab === 'onboarding' && (
             <Onboarding
               key="onboarding"
@@ -357,7 +392,6 @@ function App() {
             />
           )}
 
-          {/* ── AUTHENTICATED SCREENS (only after onboarding) ── */}
           {isOnboardingComplete && (
             <>
               {activeTab === 'dashboard' && (
@@ -382,7 +416,11 @@ function App() {
               )}
               {activeTab === 'fo' && (
                 <div className="space-y-6">
-                  <OptionChain onPlaceOrder={setOrderConfig} stocks={stocks} fullChain={false} />
+                  <OptionChain
+                    onPlaceOrder={setOrderConfig}
+                    stocks={stocks}
+                    fullChain={false}
+                  />
                   <FOTradingCenter
                     key="fo"
                     stocks={stocks}
@@ -392,8 +430,12 @@ function App() {
                   />
                 </div>
               )}
-              {activeTab === 'portfolio' && <Portfolio key="portfolio" stocks={stocks} />}
-              {activeTab === 'orders' && <Orders key="orders" onBack={() => setActiveTab('more')} />}
+              {activeTab === 'portfolio' && (
+                <Portfolio key="portfolio" stocks={stocks} />
+              )}
+              {activeTab === 'orders' && (
+                <Orders key="orders" onBack={() => setActiveTab('more')} />
+              )}
               {activeTab === 'admin' && user?.role === 'admin' && (
                 <AdminPanel key="admin" onBack={() => setActiveTab('dashboard')} />
               )}
@@ -412,7 +454,11 @@ function App() {
                 />
               )}
               {activeTab === 'compliance' && (
-                <ComplianceDetail key="compliance" type={complianceType} onBack={() => setActiveTab('more')} />
+                <ComplianceDetail
+                  key="compliance"
+                  type={complianceType}
+                  onBack={() => setActiveTab('more')}
+                />
               )}
               {activeTab === 'kyc' && (
                 <KycVerification
@@ -426,73 +472,55 @@ function App() {
         </AnimatePresence>
       </main>
 
-      {/* Navbar only when onboarding is complete */}
       {isOnboardingComplete && (
         <Navbar activeTab={activeTab} setActiveTab={setActiveTab} />
       )}
 
+      {/* Overlays / modals */}
       <AnimatePresence mode="wait">
+        {/* NEW: Symbol search overlay */}
         {isSearchOpen && (
-          <motion.div key="search-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-150 bg-black/95 backdrop-blur-xl p-6 flex flex-col">
-            <div className="flex items-center gap-4 mb-8">
-              <button onClick={() => setIsSearchOpen(false)} className="p-2 -ml-2 rounded-full hover:bg-zinc-900 text-zinc-400">
-                <ChevronRight className="rotate-180" size={24} />
-              </button>
-              <div className="flex-1 relative">
-                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-600" size={18} />
-                <input autoFocus type="text" placeholder="Search Stocks, Indices, F&O..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full bg-zinc-900 border border-zinc-800 rounded-2xl py-4 pl-12 pr-6 text-sm font-bold focus:border-emerald-500/50 outline-none transition-all" />
-              </div>
-            </div>
-
-            <div className="flex-1 overflow-y-auto space-y-4">
-              {filteredStocks.length > 0 ? (
-                filteredStocks.map((symbol: string) => {
-                  const stockData = stocks[symbol];
-                  const ltp = typeof stockData === 'number' ? stockData : (stockData?.ltp || 0);
-                  const changePct = typeof stockData === 'number' ? 0 : (stockData?.day_change_pct || 0);
-                  const isPositive = changePct >= 0;
-
-                  return (
-                    <div key={symbol} onClick={() => { setIsSearchOpen(false); setSelectedStockFromSearch(symbol); setActiveTab('market'); }} className="bg-zinc-900/40 border border-zinc-800/50 rounded-2xl p-4 flex justify-between items-center cursor-pointer hover:bg-zinc-900 transition-colors">
-                      <div className="flex items-center gap-4">
-                        <div className="w-10 h-10 rounded-xl bg-zinc-900 flex items-center justify-center font-bold text-xs text-zinc-500">
-                          {symbol.substring(0, 2)}
-                        </div>
-                        <div>
-                          <p className="text-sm font-bold text-white tracking-tight">{symbol}</p>
-                          <p className="text-[10px] font-bold text-zinc-600 uppercase">NSE • Equity</p>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-sm font-bold text-white">{formatCurrency(ltp)}</p>
-                        <p className={cn("text-[10px] font-bold", isPositive ? "text-emerald-500" : "text-rose-500")}>
-                          {isPositive ? '+' : ''}{changePct.toFixed(2)}%
-                        </p>
-                      </div>
-                    </div>
-                  );
-                })
-              ) : searchQuery ? (
-                <div className="text-center py-20">
-                  <p className="text-sm font-bold text-zinc-600 uppercase tracking-widest">No results found</p>
-                </div>
-              ) : (
-                <div className="space-y-6">
-                  <h3 className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest ml-1">Recent Searches</h3>
-                  <div className="flex flex-wrap gap-2">
-                    {['RELIANCE', 'NIFTY 50', 'TCS', 'ZOMATO'].map(s => (
-                      <button key={s} onClick={() => setSearchQuery(s)} className="px-4 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs font-bold text-zinc-400 hover:text-white transition-colors">{s}</button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </motion.div>
+          <SymbolSearch
+            isOpen={isSearchOpen}
+            onClose={() => setIsSearchOpen(false)}
+            stocks={stocks}
+            onSelect={handleSymbolSelected}
+          />
         )}
 
-        {orderConfig && <OrderWindow key="order-window" config={orderConfig} onClose={() => setOrderConfig(null)} onOrderPlaced={() => {}} onKycRequired={() => { setOrderConfig(null); setActiveTab('kyc'); }} />}
-        {overviewIndex && <IndexOverview key="index-overview" indexName={overviewIndex} stocks={stocks} onClose={() => setOverviewIndex(null)} onOpenOptionChain={() => { setSelectedIndex(overviewIndex); setOverviewIndex(null); }} />}
-        {selectedIndex && <IndexDetail key="index-detail" indexName={selectedIndex} stocks={stocks} onClose={() => setSelectedIndex(null)} onPlaceOrder={setOrderConfig} />}
+        {orderConfig && (
+          <OrderWindow
+            key="order-window"
+            config={orderConfig}
+            onClose={() => setOrderConfig(null)}
+            onOrderPlaced={() => {}}
+            onKycRequired={() => {
+              setOrderConfig(null);
+              setActiveTab('kyc');
+            }}
+          />
+        )}
+        {overviewIndex && (
+          <IndexOverview
+            key="index-overview"
+            indexName={overviewIndex}
+            stocks={stocks}
+            onClose={() => setOverviewIndex(null)}
+            onOpenOptionChain={() => {
+              setSelectedIndex(overviewIndex);
+              setOverviewIndex(null);
+            }}
+          />
+        )}
+        {selectedIndex && (
+          <IndexDetail
+            key="index-detail"
+            indexName={selectedIndex}
+            stocks={stocks}
+            onClose={() => setSelectedIndex(null)}
+            onPlaceOrder={setOrderConfig}
+          />
+        )}
       </AnimatePresence>
     </div>
   );
