@@ -418,7 +418,7 @@ function App() {
                 <KycVerification
                   key="kyc"
                   onConnectUptox={handleConnectUptox}
-                  isConnectingUpstox={isConnectingUptox}
+                  isConnectingUptox={isConnectingUptox}
                 />
               )}
             </>
