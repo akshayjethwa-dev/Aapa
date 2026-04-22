@@ -35,7 +35,7 @@ import Orders from './screens/Orders';
 export type MarketPhase = 'LIVE' | 'PRE_OPEN' | 'CLOSED';
 
 function App() {
-  const { token, user, setAuth, logout, setIsWsConnected} = useAuthStore();
+  const { token, user, setAuth, logout, setIsWsConnected } = useAuthStore();
   const [activeTab, setActiveTab] = useState('dashboard');
   const [stocks, setStocks] = useState<Record<string, number | any>>({
     "NIFTY 50": 22145.20, "SENSEX": 72850.40, "BANKNIFTY": 46800.15, "FINNIFTY": 20850.60,
@@ -60,11 +60,20 @@ function App() {
   const reconnectAttemptsRef = useRef(0);
 
   // =========================================================================
+  // HELPER: Determine if onboarding is complete
+  // =========================================================================
+  const isOnboardingComplete = Boolean(
+    user &&
+    user.role !== 'admin' &&
+    (user.is_onboarding_complete === true || (user.onboarding_step ?? 0) >= 4)
+  );
+
+  // =========================================================================
   // UPSTOX CONNECTION TRIGGER
   // =========================================================================
   const handleConnectUptox = async () => {
     if (!token) return toast.error("Please log in first");
-    
+
     setIsConnectingUptox(true);
     try {
       const res = await apiClient.get('/api/auth/uptox/url');
@@ -118,24 +127,39 @@ function App() {
     if (activeTab === 'more') fetchDebug();
   }, [activeTab]);
 
+  // =========================================================================
+  // TAB ROUTING LOGIC — Onboarding gate added
+  // =========================================================================
   useEffect(() => {
     if (token && user) {
-      if (user.role === 'admin' && activeTab === 'dashboard') {
-        setActiveTab('admin');
-      } 
-      else if (
-        user.role !== 'admin' && 
-        !user.is_uptox_connected && 
-        activeTab !== 'kyc' && 
-        activeTab !== 'more' 
-      ) {
-        setActiveTab('kyc');
-      } 
-      else if (user.role !== 'admin' && user.is_uptox_connected && activeTab === 'kyc') {
+      // Admin always goes to admin panel
+      if (user.role === 'admin') {
+        if (activeTab === 'dashboard') setActiveTab('admin');
+        return;
+      }
+
+      // Non-admin: gate behind onboarding until complete
+      if (!isOnboardingComplete) {
+        // Allow 'onboarding' tab only; redirect everything else
+        if (activeTab !== 'onboarding') {
+          setActiveTab('onboarding');
+        }
+        return;
+      }
+
+      // Onboarding complete — legacy KYC redirect (is_uptox_connected check)
+      if (!user.is_uptox_connected && activeTab !== 'kyc' && activeTab !== 'more') {
+        // Don't force KYC if onboarding is complete — user already went through step 2
+        // Only redirect to kyc if they explicitly navigated away without connecting
+        // (Kept as soft guidance, not a hard gate post-onboarding)
+      }
+
+      // If user somehow lands on onboarding tab after completing it, send to dashboard
+      if (activeTab === 'onboarding') {
         setActiveTab('dashboard');
       }
     }
-  }, [token, user, activeTab]);
+  }, [token, user, activeTab, isOnboardingComplete]);
 
   const openOptionChain = (index: string = 'NIFTY 50') => {
     setSelectedIndex(index);
@@ -159,7 +183,6 @@ function App() {
           setAuth(res.data, token);
         }
       } catch (e: any) {
-        // FIX: Catch 403 alongside 401 and 404 to ensure graceful logout instead of crashing UI
         if (e.response?.status === 401 || e.response?.status === 403 || e.response?.status === 404) {
           logout();
         }
@@ -192,9 +215,9 @@ function App() {
               refresh_token: uptoxRefreshToken || '',
             });
           }
-          
+
           await new Promise(r => setTimeout(r, 600));
-          
+
           const profileRes = await apiClient.get('/api/user/profile');
           if (profileRes.data?.id) {
             setAuth(profileRes.data, token as string);
@@ -204,11 +227,11 @@ function App() {
           console.error('Failed to finalize Upstox connection', e);
           toast.error('Failed to finalize Upstox connection. Please try again.');
         } finally {
-          setIsConnectingUptox(false); 
+          setIsConnectingUptox(false);
         }
       } else if (data?.type === 'UPTOX_AUTH_ERROR') {
         toast.error(data.error?.message || 'Upstox connection failed or was cancelled.');
-        setIsConnectingUptox(false); 
+        setIsConnectingUptox(false);
       }
     };
 
@@ -226,19 +249,19 @@ function App() {
 
     const connectWebSocket = () => {
       if (!isComponentMounted) return;
-      
+
       const freshToken = localStorage.getItem('token') || token;
       if (!freshToken) return;
 
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const ws = new WebSocket(`${protocol}//${window.location.host}/?token=${freshToken}`);
-      
+
       wsRef.current = ws;
 
       ws.onopen = () => {
         if (!isComponentMounted) return;
         setIsWsConnected(true);
-        reconnectAttemptsRef.current = 0; 
+        reconnectAttemptsRef.current = 0;
       };
 
       ws.onmessage = (event) => {
@@ -250,32 +273,31 @@ function App() {
             if (message.broker === 'upstox') {
               toast.error('Upstox session expired. Please reconnect.');
               apiClient.get('/api/user/profile').then(res => {
-                  if (isComponentMounted && res.data?.id) {
-                     setAuth(res.data, freshToken);
-                  }
+                if (isComponentMounted && res.data?.id) {
+                  setAuth(res.data, freshToken);
+                }
               }).catch(console.error);
             }
           }
 
           if (message.type === 'ticker') {
             setStocks(message.data);
-            
             if (message.marketPhase) {
               setMarketPhase(message.marketPhase);
             }
           }
 
           if (message.type === 'order_update') {
-             const statusStr = message.data.status ? String(message.data.status).toUpperCase() : 'UPDATED';
-             toast.info(`Upstox Order: ${statusStr}`, { description: `Order ID: ${message.data.order_id}` });
-             
-             apiClient.get('/api/user/profile').then(res => {
-                 if (res.data?.id && isComponentMounted) {
-                    setAuth(res.data, freshToken);
-                 }
-             }).catch(console.error);
+            const statusStr = message.data.status ? String(message.data.status).toUpperCase() : 'UPDATED';
+            toast.info(`Upstox Order: ${statusStr}`, { description: `Order ID: ${message.data.order_id}` });
 
-             window.dispatchEvent(new CustomEvent('broker_portfolio_updated'));
+            apiClient.get('/api/user/profile').then(res => {
+              if (res.data?.id && isComponentMounted) {
+                setAuth(res.data, freshToken);
+              }
+            }).catch(console.error);
+
+            window.dispatchEvent(new CustomEvent('broker_portfolio_updated'));
           }
 
         } catch (e) {}
@@ -314,72 +336,100 @@ function App() {
   return (
     <div className="min-h-screen bg-black text-zinc-100 font-sans selection:bg-emerald-500/30">
       <Toaster position="top-center" richColors />
-      <Header onProfileClick={() => setActiveTab('more')} onSearchClick={() => setIsSearchOpen(true)} />
 
-      <main className="max-w-md mx-auto pt-20 pb-24">
+      {/* Hide Header/Navbar during onboarding */}
+      {isOnboardingComplete && (
+        <Header onProfileClick={() => setActiveTab('more')} onSearchClick={() => setIsSearchOpen(true)} />
+      )}
+
+      <main className={cn(
+        "max-w-md mx-auto",
+        isOnboardingComplete ? "pt-20 pb-24" : "pt-0 pb-0"
+      )}>
         <AnimatePresence mode="wait">
-          {activeTab === 'dashboard' && (
-            <Dashboard 
-              key="dashboard" 
-              stocks={stocks} 
-              marketPhase={marketPhase}
-              onMarketClick={() => setActiveTab('market')} 
-              onIndexClick={setSelectedIndex} 
-              onProfileClick={() => setActiveTab('more')} 
+          {/* ── ONBOARDING GATE ── */}
+          {activeTab === 'onboarding' && (
+            <Onboarding
+              key="onboarding"
+              onComplete={() => setActiveTab('dashboard')}
+              onConnectUpstox={handleConnectUptox}
+              isConnectingUpstox={isConnectingUptox}
             />
           )}
-          {activeTab === 'market' && (
-            <Market 
-              key="market" 
-              stocks={stocks} 
-              marketPhase={marketPhase}
-              onIndexClick={setOverviewIndex} 
-              onPlaceOrder={setOrderConfig} 
-              initialSelectedStock={selectedStockFromSearch} 
-            />
-          )}
-          {activeTab === 'fo' && (
-            <div className="space-y-6">
-              <OptionChain onPlaceOrder={setOrderConfig} stocks={stocks} fullChain={false} />
-              <FOTradingCenter 
-                key="fo" 
-                stocks={stocks} 
-                onOpenOptionChain={() => openOptionChain()} 
-                onConnectUptox={handleConnectUptox} 
-                isConnectingUptox={isConnectingUptox} 
-              />
-            </div>
-          )}
-          {activeTab === 'portfolio' && <Portfolio key="portfolio" stocks={stocks} />}
-          
-          {activeTab === 'orders' && <Orders key="orders" onBack={() => setActiveTab('more')} />}
-          
-          {activeTab === 'onboarding' && <Onboarding key="onboarding" onComplete={() => setActiveTab('dashboard')} />}
-          {activeTab === 'admin' && <AdminPanel key="admin" onBack={() => setActiveTab('dashboard')} />}
-          {activeTab === 'more' && (
-            <More 
-              key="more" 
-              activeTab={activeTab} 
-              setActiveTab={setActiveTab} 
-              setComplianceType={setComplianceType} 
-              setStocks={setStocks} 
-              onConnectUptox={handleConnectUptox} 
-              isConnectingUptox={isConnectingUptox} 
-              debugInfo={debugInfo} 
-              isRefreshing={isRefreshing} 
-              onForceRefresh={handleForceRefresh} 
-            />
-          )}
-          {activeTab === 'compliance' && <ComplianceDetail key="compliance" type={complianceType} onBack={() => setActiveTab('more')} />}
-          {activeTab === 'kyc' && (
-            <KycVerification 
-              key="kyc" 
-              onConnectUptox={handleConnectUptox} 
-              isConnectingUptox={isConnectingUptox} 
-            />
+
+          {/* ── AUTHENTICATED SCREENS (only after onboarding) ── */}
+          {isOnboardingComplete && (
+            <>
+              {activeTab === 'dashboard' && (
+                <Dashboard
+                  key="dashboard"
+                  stocks={stocks}
+                  marketPhase={marketPhase}
+                  onMarketClick={() => setActiveTab('market')}
+                  onIndexClick={setSelectedIndex}
+                  onProfileClick={() => setActiveTab('more')}
+                />
+              )}
+              {activeTab === 'market' && (
+                <Market
+                  key="market"
+                  stocks={stocks}
+                  marketPhase={marketPhase}
+                  onIndexClick={setOverviewIndex}
+                  onPlaceOrder={setOrderConfig}
+                  initialSelectedStock={selectedStockFromSearch}
+                />
+              )}
+              {activeTab === 'fo' && (
+                <div className="space-y-6">
+                  <OptionChain onPlaceOrder={setOrderConfig} stocks={stocks} fullChain={false} />
+                  <FOTradingCenter
+                    key="fo"
+                    stocks={stocks}
+                    onOpenOptionChain={() => openOptionChain()}
+                    onConnectUptox={handleConnectUptox}
+                    isConnectingUptox={isConnectingUptox}
+                  />
+                </div>
+              )}
+              {activeTab === 'portfolio' && <Portfolio key="portfolio" stocks={stocks} />}
+              {activeTab === 'orders' && <Orders key="orders" onBack={() => setActiveTab('more')} />}
+              {activeTab === 'admin' && user?.role === 'admin' && (
+                <AdminPanel key="admin" onBack={() => setActiveTab('dashboard')} />
+              )}
+              {activeTab === 'more' && (
+                <More
+                  key="more"
+                  activeTab={activeTab}
+                  setActiveTab={setActiveTab}
+                  setComplianceType={setComplianceType}
+                  setStocks={setStocks}
+                  onConnectUptox={handleConnectUptox}
+                  isConnectingUptox={isConnectingUptox}
+                  debugInfo={debugInfo}
+                  isRefreshing={isRefreshing}
+                  onForceRefresh={handleForceRefresh}
+                />
+              )}
+              {activeTab === 'compliance' && (
+                <ComplianceDetail key="compliance" type={complianceType} onBack={() => setActiveTab('more')} />
+              )}
+              {activeTab === 'kyc' && (
+                <KycVerification
+                  key="kyc"
+                  onConnectUptox={handleConnectUptox}
+                  isConnectingUpstox={isConnectingUptox}
+                />
+              )}
+            </>
           )}
         </AnimatePresence>
       </main>
+
+      {/* Navbar only when onboarding is complete */}
+      {isOnboardingComplete && (
+        <Navbar activeTab={activeTab} setActiveTab={setActiveTab} />
+      )}
 
       <AnimatePresence mode="wait">
         {isSearchOpen && (
@@ -444,8 +494,6 @@ function App() {
         {overviewIndex && <IndexOverview key="index-overview" indexName={overviewIndex} stocks={stocks} onClose={() => setOverviewIndex(null)} onOpenOptionChain={() => { setSelectedIndex(overviewIndex); setOverviewIndex(null); }} />}
         {selectedIndex && <IndexDetail key="index-detail" indexName={selectedIndex} stocks={stocks} onClose={() => setSelectedIndex(null)} onPlaceOrder={setOrderConfig} />}
       </AnimatePresence>
-
-      <Navbar activeTab={activeTab} setActiveTab={setActiveTab} />
     </div>
   );
 }

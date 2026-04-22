@@ -1,13 +1,16 @@
 import { create } from 'zustand';
 import { apiClient } from '../api/client';
 
-interface User {
+export interface User {
   id: number;
   email: string;
   role: string; // 'admin', 'user', or 'pre-onboarding'
   balance: number;
   is_uptox_connected?: boolean;
   has_upstox_account?: boolean;
+  onboarding_step?: number;         // 0-4
+  is_onboarding_complete?: boolean; // derived flag from backend
+  first_login_completed_at?: string | null;
 }
 
 interface AuthState {

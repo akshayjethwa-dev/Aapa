@@ -605,8 +605,9 @@ async function startServer() {
 
   app.get("/api/user/profile", authenticateToken, async (req: any, res, next) => {
     try {
+      // Expanded to include onboarding fields
       const { rows: userRows } = await query(
-        "SELECT id, email, mobile, role, kyc_status, is_kyc_approved, balance, has_upstox_account FROM users WHERE id = $1",
+        "SELECT id, email, mobile, role, kyc_status, is_kyc_approved, balance, has_upstox_account, onboarding_step, first_login_completed_at FROM users WHERE id = $1",
         [req.user.id]
       );
       const user = userRows[0];
@@ -629,8 +630,61 @@ async function startServer() {
         } catch (e) { logger.warn("Failed to fetch Upstox funds", e); }
       }
 
+      // Add derived property
+      user.is_onboarding_complete = (user.onboarding_step ?? 0) >= 4;
+
       res.json({ ...user, balance, is_uptox_connected: !!userToken });
     } catch (e) { next(e); }
+  });
+
+  // PATCH /api/user/onboarding — Save onboarding step progress
+  app.patch('/api/user/onboarding', authenticateToken, async (req: any, res: any) => {
+    try {
+      const userId = req.user.id;
+      const { onboarding_step, first_login_completed_at } = req.body;
+      const updates: string[] = [];
+      const values: any[] = [];
+      let paramCount = 1;
+
+      if (onboarding_step !== undefined) {
+        updates.push(`onboarding_step = $${paramCount++}`);
+        values.push(onboarding_step);
+      }
+
+      if (first_login_completed_at !== undefined) {
+        updates.push(`first_login_completed_at = $${paramCount++}`);
+        values.push(first_login_completed_at);
+      }
+
+      if (updates.length === 0) {
+        return res.status(400).json({ error: 'No fields to update' });
+      }
+
+      updates.push(`updated_at = NOW()`);
+      values.push(userId);
+
+      await query(
+        `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramCount}`,
+        values
+      );
+
+      // Return updated profile (same shape as GET /api/user/profile)
+      const result = await query(
+        `SELECT id, email, mobile, role, balance, is_kyc_approved, kyc_status, has_upstox_account,
+                onboarding_step, first_login_completed_at, created_at 
+         FROM users WHERE id = $1`,
+        [userId]
+      );
+
+      const updatedUser = result.rows[0];
+      // Derive is_onboarding_complete flag
+      updatedUser.is_onboarding_complete = (updatedUser.onboarding_step ?? 0) >= 4;
+
+      return res.json(updatedUser);
+    } catch (err) {
+      logger.error('Error updating onboarding step:', err);
+      return res.status(500).json({ error: 'Failed to update onboarding step' });
+    }
   });
 
   app.get("/api/auth/uptox/url", authenticateToken, (req: any, res) => {
