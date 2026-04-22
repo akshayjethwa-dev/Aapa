@@ -35,6 +35,7 @@ import { getBrokerService, OrderRequest } from "./src/lib/brokers/index";
 
 // 1. ADDED IMPORT FOR THE NEW USER PROFILE ROUTER
 import userProfileRouter from "./src/routes/userProfile";
+import watchlistsRouter from "./src/routes/watchlists";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -375,7 +376,7 @@ async function startServer() {
 
   // 2. WIRE IN THE NEW USER PROFILE ROUTER (After Middleware is defined)
   app.use("/api/user", authenticateToken, userProfileRouter);
-
+  app.use("/api/watchlists", authenticateToken, watchlistsRouter);
 
   app.get("/api/health", async (req, res) => {
     try {
