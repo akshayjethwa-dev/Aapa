@@ -51,14 +51,27 @@ const Dashboard = ({
 
   useEffect(() => {
     fetchPortfolio();
-    
-    // Listen to global order triggers and websocket triggers to sync UI
     window.addEventListener('broker_portfolio_updated', fetchPortfolio);
-    
     return () => {
       window.removeEventListener('broker_portfolio_updated', fetchPortfolio);
     };
   }, [fetchPortfolio]);
+
+  // ── FIX: Listen for Upstox auth success from the popup window ──────────────
+  // After successful OAuth, the callback page posts UPTOX_AUTH_SUCCESS.
+  // We refresh the user profile so is_uptox_connected flips to true and
+  // the "Step 2: Connect Your Broker" box disappears immediately.
+  useEffect(() => {
+    const handleMessage = async (event: MessageEvent) => {
+      if (event.data?.type === 'UPTOX_AUTH_SUCCESS') {
+        toast.success('Upstox connected successfully!');
+        await refreshUser();      // updates is_uptox_connected in authStore
+        await fetchPortfolio();   // load holdings/positions right away
+      }
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [refreshUser, fetchPortfolio]);
 
   const handleUpstoxConnect = async () => {
     setIsConnecting(true);
@@ -99,22 +112,28 @@ const Dashboard = ({
 
   const displayFunds = availableFunds !== null ? availableFunds : (user?.balance || 0);
 
-  // Consolidated Math Engine (Holdings + Positions)
+  // ── Portfolio Math Engine (Holdings + Positions) ───────────────────────────
+  // When market is CLOSED, stocks dict has no live feed.
+  // We fall back to current_price from the broker API (last close price).
   let totalInvested = 0;
   let currentValue = 0;
 
   holdings.forEach(h => {
     const quote = stocks[h.symbol];
-    const ltp = typeof quote === 'number' ? quote : (quote?.ltp || h.current_price || h.average_price);
+    const ltp = typeof quote === 'number'
+      ? quote
+      : (quote?.ltp || h.current_price || h.last_price || h.average_price);
     totalInvested += (h.quantity * h.average_price);
-    currentValue += (h.quantity * ltp);
+    currentValue  += (h.quantity * ltp);
   });
 
   positions.forEach(p => {
     const quote = stocks[p.symbol];
-    const ltp = typeof quote === 'number' ? quote : (quote?.ltp || p.current_price || p.average_price);
-    totalInvested += (p.quantity * p.average_price);
-    currentValue += (p.quantity * ltp);
+    const ltp = typeof quote === 'number'
+      ? quote
+      : (quote?.ltp || p.current_price || p.last_price || p.average_price);
+    totalInvested += (p.quantity * (p.avgPrice || p.average_price));
+    currentValue  += (p.quantity * ltp);
   });
 
   const totalPnL = currentValue - totalInvested;
@@ -122,7 +141,7 @@ const Dashboard = ({
   
   const isDataLive = marketPhase === 'LIVE';
 
-  const primaryIndices = ["NIFTY 50", "SENSEX", "BANKNIFTY", "FINNIFTY", "MIDCAP NIFTY", "SMALLCAP NIFTY"];
+  const primaryIndices   = ["NIFTY 50", "SENSEX", "BANKNIFTY", "FINNIFTY", "MIDCAP NIFTY", "SMALLCAP NIFTY"];
   const secondaryIndices = ["NIFTY IT", "NIFTY AUTO", "NIFTY PHARMA", "NIFTY METAL", "NIFTY FMCG", "NIFTY REALTY"];
 
   const news = [
@@ -132,39 +151,39 @@ const Dashboard = ({
   ];
 
   const marketEvents = [
-    { id: 1, company: "RELIANCE", type: "Results", date: "15 Mar 2026", countdown: "In 15 Days", color: "blue" },
-    { id: 2, company: "TCS", type: "Dividend", date: "05 Mar 2026", countdown: "In 5 Days", color: "green" },
-    { id: 3, company: "HDFCBANK", type: "Board Meeting", date: "03 Mar 2026", countdown: "In 3 Days", color: "orange" },
-    { id: 4, company: "INFY", type: "Bonus", date: "20 Mar 2026", countdown: "In 20 Days", color: "purple" },
+    { id: 1, company: "RELIANCE", type: "Results",      date: "15 Mar 2026", countdown: "In 15 Days", color: "blue" },
+    { id: 2, company: "TCS",      type: "Dividend",     date: "05 Mar 2026", countdown: "In 5 Days",  color: "green" },
+    { id: 3, company: "HDFCBANK", type: "Board Meeting",date: "03 Mar 2026", countdown: "In 3 Days",  color: "orange" },
+    { id: 4, company: "INFY",     type: "Bonus",        date: "20 Mar 2026", countdown: "In 20 Days", color: "purple" },
   ];
 
   const stocksInNews = [
-    { symbol: "TATASTEEL", change: 2.45, tag: "Order Win" },
-    { symbol: "ADANIENT", change: -1.20, tag: "Earnings Beat" },
-    { symbol: "ZOMATO", change: 5.12, tag: "Expansion" },
-    { symbol: "PAYTM", change: -3.40, tag: "Regulatory" },
-    { symbol: "JIOFIN", change: 1.80, tag: "New Product" },
+    { symbol: "TATASTEEL", change:  2.45, tag: "Order Win" },
+    { symbol: "ADANIENT",  change: -1.20, tag: "Earnings Beat" },
+    { symbol: "ZOMATO",    change:  5.12, tag: "Expansion" },
+    { symbol: "PAYTM",     change: -3.40, tag: "Regulatory" },
+    { symbol: "JIOFIN",    change:  1.80, tag: "New Product" },
   ];
 
   const volumeRockers = [
-    { symbol: "YESBANK", price: 28.45, change: 12.4, volumeMultiplier: "8.5x" },
-    { symbol: "SUZLON", price: 45.10, change: -4.2, volumeMultiplier: "5.2x" },
-    { symbol: "IDEA", price: 14.20, change: 8.1, volumeMultiplier: "4.1x" },
-    { symbol: "RVNL", price: 245.60, change: 6.5, volumeMultiplier: "3.8x" },
+    { symbol: "YESBANK", price:  28.45, change:  12.4, volumeMultiplier: "8.5x" },
+    { symbol: "SUZLON",  price:  45.10, change:  -4.2, volumeMultiplier: "5.2x" },
+    { symbol: "IDEA",    price:  14.20, change:   8.1, volumeMultiplier: "4.1x" },
+    { symbol: "RVNL",    price: 245.60, change:   6.5, volumeMultiplier: "3.8x" },
   ];
 
   const filteredEvents = useMemo(() => {
     if (eventFilter === 'All') return marketEvents;
     if (eventFilter === 'This Week') return marketEvents.slice(0, 2);
     return marketEvents.filter(e => e.countdown.includes('Days'));
-  }, [eventFilter, marketEvents]);
+  }, [eventFilter]);
 
   const sortedGainersLosers = useMemo(() => {
     const list = Object.entries(stocks)
       .filter(([s]) => !primaryIndices.includes(s) && !secondaryIndices.includes(s))
       .map(([symbol, quote]) => {
-        const price = typeof quote === 'number' ? quote : (quote?.ltp || 0);
-        const change = typeof quote === 'number' ? 0 : (quote?.day_change_pct || 0);
+        const price  = typeof quote === 'number' ? quote : (quote?.ltp || 0);
+        const change = typeof quote === 'number' ? 0     : (quote?.day_change_pct || 0);
         return { symbol, price, change };
       });
       
@@ -174,7 +193,7 @@ const Dashboard = ({
       list.sort((a, b) => a.change - b.change);
     }
     return list.slice(0, 5);
-  }, [stocks, primaryIndices, secondaryIndices, gainerLoserTab]);
+  }, [stocks, gainerLoserTab]);
 
   return (
     <div className="space-y-5 pb-20">
@@ -187,9 +206,9 @@ const Dashboard = ({
         </div>
         <div className="px-5 overflow-x-auto scrollbar-hide flex gap-3 py-2">
           {[...primaryIndices, ...secondaryIndices].map(index => {
-            const quote = stocks[index];
-            const ltp = typeof quote === 'number' ? quote : (quote?.ltp || 0);
-            const changePct = typeof quote === 'number' ? 0 : (quote?.day_change_pct || 0);
+            const quote     = stocks[index];
+            const ltp       = typeof quote === 'number' ? quote : (quote?.ltp || 0);
+            const changePct = typeof quote === 'number' ? 0     : (quote?.day_change_pct || 0);
             const isPositive = changePct >= 0;
 
             return (
@@ -262,18 +281,30 @@ const Dashboard = ({
               </div>
               <div className="text-right">
                 <div className="flex items-center gap-2 justify-end">
-                  <div className={cn("w-1.5 h-1.5 rounded-full", isDataLive ? "bg-emerald-500 animate-pulse" : "bg-rose-500")} />
-                  <p className={cn("text-[9px] font-bold uppercase tracking-widest", isDataLive ? "text-emerald-500" : "text-rose-500")}>
+                  <div className={cn("w-1.5 h-1.5 rounded-full", isDataLive ? "bg-emerald-500 animate-pulse" : "bg-zinc-500")} />
+                  <p className={cn("text-[9px] font-bold uppercase tracking-widest", isDataLive ? "text-emerald-500" : "text-zinc-500")}>
                     {isDataLive ? "Live" : (marketPhase === 'PRE_OPEN' ? "Pre-Open" : "Closed")}
                   </p>
                 </div>
-                {!isDataLive && <p className="text-[8px] text-zinc-600 font-medium mt-1">Waiting for market data...</p>}
+                {!isDataLive && (
+                  <p className="text-[8px] text-zinc-600 font-medium mt-1">
+                    {holdings.length > 0 ? "Using last close prices" : "Waiting for market data..."}
+                  </p>
+                )}
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-5 pt-4 border-t border-zinc-800/50">
+
+            {/* ── Portfolio Value Row ── */}
+            <div className="grid grid-cols-3 gap-3 pt-4 border-t border-zinc-800/50">
               <div>
                 <p className="text-[9px] font-bold text-zinc-600 uppercase tracking-widest mb-1">Invested</p>
                 <p className="text-[13px] font-bold text-zinc-300">{formatCurrency(totalInvested)}</p>
+              </div>
+              <div>
+                <p className="text-[9px] font-bold text-zinc-600 uppercase tracking-widest mb-1">
+                  {isDataLive ? 'Current Value' : 'Last Value'}
+                </p>
+                <p className="text-[13px] font-bold text-zinc-300">{formatCurrency(currentValue)}</p>
               </div>
               <div>
                 <p className="text-[9px] font-bold text-zinc-600 uppercase tracking-widest mb-1">Available Funds</p>
@@ -288,8 +319,10 @@ const Dashboard = ({
                 </p>
                 {holdings.slice(0, 3).map(h => {
                   const quote = stocks[h.symbol];
-                  const ltp = typeof quote === 'number' ? quote : (quote?.ltp || h.current_price || h.average_price);
-                  const pnl = (ltp - h.average_price) * h.quantity;
+                  const ltp   = typeof quote === 'number'
+                    ? quote
+                    : (quote?.ltp || h.current_price || h.last_price || h.average_price);
+                  const pnl   = (ltp - h.average_price) * h.quantity;
                   return (
                     <div key={h.symbol} className="flex justify-between items-center">
                       <div>
@@ -327,8 +360,10 @@ const Dashboard = ({
           <div className="space-y-2.5">
             {positions.map((pos, i) => {
               const quote = stocks[pos.symbol];
-              const ltp = typeof quote === 'number' ? quote : (quote?.ltp || pos.current_price || pos.average_price);
-              const pnl = (ltp - (pos.avgPrice || pos.average_price)) * pos.quantity;
+              const ltp   = typeof quote === 'number'
+                ? quote
+                : (quote?.ltp || pos.current_price || pos.last_price || pos.average_price);
+              const pnl   = (ltp - (pos.avgPrice || pos.average_price)) * pos.quantity;
 
               return (
                 <div key={pos.symbol} className="bg-zinc-900/30 border border-zinc-800/50 rounded-2xl p-4 space-y-3">
@@ -531,8 +566,8 @@ const Dashboard = ({
                 <p className="text-[13px] font-bold text-white tracking-tight">{event.company}</p>
                 <span className={cn(
                   "px-2 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider",
-                  event.color === 'blue' && "bg-blue-500/10 text-blue-400 border border-blue-500/20",
-                  event.color === 'green' && "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20",
+                  event.color === 'blue'   && "bg-blue-500/10 text-blue-400 border border-blue-500/20",
+                  event.color === 'green'  && "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20",
                   event.color === 'orange' && "bg-orange-500/10 text-orange-400 border border-orange-500/20",
                   event.color === 'purple' && "bg-purple-500/10 text-purple-400 border border-purple-500/20"
                 )}>

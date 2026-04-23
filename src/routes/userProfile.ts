@@ -1,14 +1,4 @@
 // src/routes/userProfile.ts
-// ─────────────────────────────────────────────────────────────────────────────
-// Endpoints:
-//   GET   /api/user/profile           → full user profile with computed completeness
-//   PATCH /api/user/risk-profile      → save risk questionnaire result
-//
-// Wire in server.ts:
-//   import userProfileRouter from './routes/userProfile';
-//   app.use('/api/user', authenticate, userProfileRouter);
-// ─────────────────────────────────────────────────────────────────────────────
-
 import { Router, Response } from 'express';
 import { query } from '../db/index';
 import { logger } from '../utils/logger';
@@ -27,7 +17,6 @@ router.get('/profile', async (req: any, res: Response) => {
          is_uptox_connected,
          has_upstox_account,
          onboarding_step,
-         is_onboarding_complete,
          first_login_completed_at,
          kyc_status,
          risk_profile,
@@ -41,6 +30,9 @@ router.get('/profile', async (req: any, res: Response) => {
 
     const u = rows[0];
 
+    // Derive is_onboarding_complete from onboarding_step — NOT a DB column
+    const is_onboarding_complete = (u.onboarding_step ?? 0) >= 4;
+
     // Ensure segments_enabled is always a proper array
     const segments = Array.isArray(u.segments_enabled)
       ? u.segments_enabled
@@ -48,6 +40,7 @@ router.get('/profile', async (req: any, res: Response) => {
 
     return res.json({
       ...u,
+      is_onboarding_complete,
       segments_enabled: segments,
       profile_completeness: deriveProfileCompleteness(u),
     });
@@ -58,12 +51,6 @@ router.get('/profile', async (req: any, res: Response) => {
 });
 
 // ─── PATCH /api/user/risk-profile ─────────────────────────────────────────────
-// Body: { risk_profile: 'conservative' | 'moderate' | 'aggressive' }
-//
-// Segment logic:
-//   conservative → ['EQUITY']
-//   moderate     → ['EQUITY']
-//   aggressive   → ['EQUITY', 'FO']
 router.patch('/risk-profile', async (req: any, res: Response) => {
   const { risk_profile } = req.body;
   const allowed = ['conservative', 'moderate', 'aggressive'];
@@ -101,12 +88,13 @@ router.patch('/risk-profile', async (req: any, res: Response) => {
 // ─── Helper: compute profile completeness score 0–100 ─────────────────────────
 function deriveProfileCompleteness(u: any): number {
   let score = 0;
+  const is_onboarding_complete = (u.onboarding_step ?? 0) >= 4;
   const checks = [
-    { passes: !!u.email,                   weight: 20 }, // has email / signed up
-    { passes: u.kyc_status === 'approved', weight: 30 }, // KYC approved
-    { passes: !!u.is_uptox_connected,      weight: 25 }, // broker linked
-    { passes: !!u.risk_profile,            weight: 15 }, // risk questionnaire done
-    { passes: !!u.is_onboarding_complete,  weight: 10 }, // onboarding steps done
+    { passes: !!u.email,                   weight: 20 },
+    { passes: u.kyc_status === 'approved', weight: 30 },
+    { passes: !!u.is_uptox_connected,      weight: 25 },
+    { passes: !!u.risk_profile,            weight: 15 },
+    { passes: is_onboarding_complete,      weight: 10 },
   ];
   checks.forEach(c => { if (c.passes) score += c.weight; });
   return score;
