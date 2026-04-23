@@ -118,15 +118,15 @@ const IndexDetail = ({
           /* FO: delegate entirely to OptionChain (fullChain + lockSymbol) */
           <div className="px-4 pt-4 pb-6">
             <OptionChain
-              fullChain
-              lockSymbol
-              initialSymbol={indexName}
-              stocks={stocks}
-              onPlaceOrder={(config) => {
-                // Forward to parent handler or open OrderWindow locally
-                onPlaceOrder(config);
-              }}
-            />
+  fullChain
+  lockSymbol
+  initialSymbol={indexName}
+  stocks={stocks}
+  onPlaceOrder={(config) => {
+    // Open OrderWindow locally for inline quick-trade from IndexDetail
+    setOrderConfig(config as import('./OrderWindow').OrderConfig);
+  }}
+/>
           </div>
         ) : (
           /* Non-FO: show index constituents */

@@ -496,8 +496,12 @@ const FOTradingCenter = ({
 
       {/* Option Chain */}
       <div className="px-4 pt-2">
-        <OptionChain stocks={stocks} onPlaceOrder={(config) => setOrderConfig(config)} />
-      </div>
+  <OptionChain
+    stocks={stocks}
+    onPlaceOrder={(config) => setOrderConfig(config as import('./OrderWindow').OrderConfig)}
+    fullChain={isAdmin}
+  />
+</div>
 
       {/* Live Positions */}
       <div className="px-4 space-y-2.5">

@@ -1,53 +1,57 @@
+// src/components/OptionChain.tsx
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ChevronDown,
   RefreshCw,
   Activity,
-  TrendingDown,
   Layers,
   AlertTriangle,
+  TrendingUp,
+  TrendingDown,
+  X,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useAuthStore } from '../store/authStore';
 import { apiClient } from '../api/client';
+import type { NormalizedOptionRow, NormalizedOptionLeg } from '../types/optionChain';
 
-interface OptionData {
-  strike: number;
-  ce: {
-    ltp: number | null;
-    perc_change: number | null;
-    oi_formatted: string;
-    vol_formatted: string;
-    is_active: boolean;
-    iv: string;
-    delta: string;
-    theta: string;
-    vega: string;
-  };
-  pe: {
-    ltp: number | null;
-    perc_change: number | null;
-    oi_formatted: string;
-    vol_formatted: string;
-    is_active: boolean;
-    iv: string;
-    delta: string;
-    theta: string;
-    vega: string;
-  };
-}
+// ─── Lot sizes per symbol (NSE standard) ───────────────────────────────────
+const LOT_SIZES: Record<string, number> = {
+  NIFTY: 75,
+  BANKNIFTY: 30,
+  FINNIFTY: 65,
+  MIDCAP: 50,
+  SENSEX: 20,
+};
 
+// ─── Props ──────────────────────────────────────────────────────────────────
 interface OptionChainProps {
-  onPlaceOrder?: (config: any) => void;
-  stocks?: Record<string, number>;
+  onPlaceOrder?: (config: import('../types/optionChain').OptionOrderConfig) => void;
+  stocks?: Record<string, number | any>;
   fullChain?: boolean;
-  /** Pre-select and lock the symbol (used when embedded in IndexDetail) */
   initialSymbol?: string;
-  /** Hide the symbol dropdown (used when embedded in IndexDetail) */
   lockSymbol?: boolean;
 }
 
+// ─── Helpers ────────────────────────────────────────────────────────────────
+const fmt = (n: number | null, dec = 2) =>
+  n == null ? '-' : n.toFixed(dec);
+
+const OIBar = ({ value, max, color }: { value: number | null; max: number; color: string }) => {
+  if (!value || !max) return null;
+  const pct = Math.min((value / max) * 100, 100);
+  return (
+    <div className="w-full h-0.5 rounded-full bg-zinc-800/80 mt-0.5">
+      <div
+        className={cn('h-full rounded-full transition-all duration-500', color)}
+        style={{ width: `${pct}%` }}
+      />
+    </div>
+  );
+};
+
+// ─── Main Component ──────────────────────────────────────────────────────────
 const OptionChain: React.FC<OptionChainProps> = ({
   onPlaceOrder,
   stocks = {},
@@ -55,7 +59,6 @@ const OptionChain: React.FC<OptionChainProps> = ({
   initialSymbol,
   lockSymbol = false,
 }) => {
-  // Normalize initialSymbol → internal symbol key used in indexMap
   const normalizeSymbol = (name?: string): string => {
     if (!name) return 'NIFTY';
     const map: Record<string, string> = {
@@ -76,15 +79,9 @@ const OptionChain: React.FC<OptionChainProps> = ({
   const [expiry, setExpiry] = useState('');
   const [expiries, setExpiries] = useState<string[]>([]);
   const [isExpiriesLoading, setIsExpiriesLoading] = useState(false);
-
-  const [options, setOptions] = useState<OptionData[]>([]);
+  const [options, setOptions] = useState<NormalizedOptionRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [selectedStrike, setSelectedStrike] = useState<{
-    strike: number;
-    type: 'CE' | 'PE';
-    price: number;
-  } | null>(null);
   const [showGreeks, setShowGreeks] = useState(false);
 
   const { token, user } = useAuthStore();
@@ -97,7 +94,6 @@ const OptionChain: React.FC<OptionChainProps> = ({
     SENSEX: 'BSE_INDEX|SENSEX',
   };
 
-  // Keep symbol in sync if initialSymbol prop changes (e.g. parent navigates to a new index)
   useEffect(() => {
     if (initialSymbol) {
       const normalized = normalizeSymbol(initialSymbol);
@@ -107,7 +103,41 @@ const OptionChain: React.FC<OptionChainProps> = ({
     }
   }, [initialSymbol]);
 
-  // 1. Fetch Dynamic Expiries
+  // ── Spot price ─────────────────────────────────────────────────────────
+  const spotPrice = useMemo(() => {
+    const keyMap: Record<string, string> = {
+      NIFTY: 'NIFTY 50',
+      BANKNIFTY: 'BANKNIFTY',
+      FINNIFTY: 'FINNIFTY',
+      MIDCAP: 'MIDCAP NIFTY',
+      SENSEX: 'SENSEX',
+    };
+    const key = keyMap[symbol] ?? symbol;
+    const q = stocks[key];
+    return typeof q === 'number' ? q : q?.ltp ?? 0;
+  }, [symbol, stocks]);
+
+  // ── ATM strike ─────────────────────────────────────────────────────────
+  const atmStrike = useMemo(() => {
+    if (!spotPrice || options.length === 0) return null;
+    const interval = symbol.includes('BANKNIFTY') ? 100 : symbol === 'SENSEX' ? 100 : 50;
+    const rounded = Math.round(spotPrice / interval) * interval;
+    const exists = options.find((o) => o.strike === rounded);
+    if (exists) return rounded;
+    return options.reduce((prev, cur) =>
+      Math.abs(cur.strike - spotPrice) < Math.abs(prev.strike - spotPrice) ? cur : prev
+    ).strike;
+  }, [options, spotPrice, symbol]);
+
+  // ── Max OI for bar width ────────────────────────────────────────────────
+  const maxOI = useMemo(() => {
+    if (!options.length) return 1;
+    return Math.max(
+      ...options.flatMap((o) => [o.ce.oi ?? 0, o.pe.oi ?? 0])
+    ) || 1;
+  }, [options]);
+
+  // ── Fetch expiries ──────────────────────────────────────────────────────
   const fetchExpiries = useCallback(async () => {
     if (!token) return;
     setIsExpiriesLoading(true);
@@ -117,7 +147,6 @@ const OptionChain: React.FC<OptionChainProps> = ({
       const response = await apiClient.get(
         `/api/option-expiries?instrument_key=${encodeURIComponent(instrumentKey)}`
       );
-
       if (response.data.status === 'success' && response.data.data.length > 0) {
         setExpiries(response.data.data);
         setExpiry((prev) => prev || response.data.data[0]);
@@ -125,44 +154,31 @@ const OptionChain: React.FC<OptionChainProps> = ({
         setError(response.data.error || 'Failed to load expiries');
       }
     } catch (e: any) {
-      console.error('Failed to fetch expiries', e);
-      setError(
-        e.response?.data?.error || 'Server connection failed while loading expiries.'
-      );
+      setError(e.response?.data?.error || 'Server connection failed while loading expiries.');
     } finally {
       setIsExpiriesLoading(false);
     }
   }, [symbol, token]);
 
-  // 2. Fetch Option Chain Data
+  // ── Fetch option chain ──────────────────────────────────────────────────
   const fetchOptionChain = useCallback(
     async (isSilentRefresh = false) => {
       if (!token || !expiry) return;
-
-      if (!isSilentRefresh || options.length === 0) {
-        setLoading(true);
-      }
-
+      if (!isSilentRefresh || options.length === 0) setLoading(true);
       try {
         const instrumentKey = indexMap[symbol] || `NSE_INDEX|${symbol}`;
         const response = await apiClient.get(
-          `/api/option-chain?instrument_key=${encodeURIComponent(
-            instrumentKey
-          )}&expiry_date=${expiry}`
+          `/api/option-chain?instrument_key=${encodeURIComponent(instrumentKey)}&expiry_date=${expiry}`
         );
         const data = response.data;
-
         if (data.status === 'success' && data.data) {
-          setOptions(data.data);
+          setOptions(data.data as NormalizedOptionRow[]);
           setError(null);
         } else {
           setError(data.error || 'Failed to load option chain data.');
         }
       } catch (e: any) {
-        console.error('Failed to fetch option chain', e);
-        setError(
-          e.response?.data?.error || 'Server connection failed. Could not reach broker.'
-        );
+        setError(e.response?.data?.error || 'Server connection failed. Could not reach broker.');
       } finally {
         setLoading(false);
       }
@@ -183,57 +199,47 @@ const OptionChain: React.FC<OptionChainProps> = ({
     }
   }, [fetchOptionChain, expiry, error]);
 
-  // 3. ATM Filtering
+  // ── Enrich rows with ITM/ATM flags ─────────────────────────────────────
+  const enrichedOptions = useMemo<NormalizedOptionRow[]>(() => {
+    return options.map((row) => ({
+      ...row,
+      isATM: row.strike === atmStrike,
+      // CE is ITM when strike < spot (call option in-the-money)
+      ceITM: spotPrice > 0 && row.strike < spotPrice,
+      // PE is ITM when strike > spot (put option in-the-money)
+      peITM: spotPrice > 0 && row.strike > spotPrice,
+    }));
+  }, [options, atmStrike, spotPrice]);
+
+  // ── Filter to ±5 strikes around ATM for non-admin non-fullChain ─────────
   const filteredOptions = useMemo(() => {
-    if (fullChain || options.length === 0) return options;
-    if (user && user.role === 'admin') return options;
+    if (fullChain || (user && user.role === 'admin')) return enrichedOptions;
+    if (enrichedOptions.length === 0) return enrichedOptions;
+    const atmIdx = enrichedOptions.findIndex((o) => o.strike === atmStrike);
+    const center = atmIdx !== -1 ? atmIdx : Math.floor(enrichedOptions.length / 2);
+    return enrichedOptions.slice(Math.max(0, center - 5), Math.min(enrichedOptions.length, center + 6));
+  }, [enrichedOptions, user, atmStrike, fullChain]);
 
-    const indexPriceKey =
-      symbol === 'NIFTY'
-        ? 'NIFTY 50'
-        : symbol === 'BANKNIFTY'
-        ? 'BANKNIFTY'
-        : symbol === 'FINNIFTY'
-        ? 'FINNIFTY'
-        : symbol;
-
-    const spotPrice = stocks[indexPriceKey] || 0;
-    if (spotPrice === 0) return options;
-
-    const strikeInterval = symbol.includes('BANKNIFTY') ? 100 : 50;
-    const atmStrike = Math.round(spotPrice / strikeInterval) * strikeInterval;
-    const atmIdx = options.findIndex((opt) => opt.strike === atmStrike);
-
-    if (atmIdx !== -1) {
-      return options.slice(Math.max(0, atmIdx - 2), Math.min(options.length, atmIdx + 3));
-    } else {
-      let closestIdx = 0;
-      let minDiff = Math.abs(options[0].strike - spotPrice);
-      for (let i = 1; i < options.length; i++) {
-        const diff = Math.abs(options[i].strike - spotPrice);
-        if (diff < minDiff) {
-          minDiff = diff;
-          closestIdx = i;
-        }
-      }
-      return options.slice(
-        Math.max(0, closestIdx - 2),
-        Math.min(options.length, closestIdx + 3)
-      );
-    }
-  }, [options, user, symbol, stocks, fullChain]);
-
-  const handleTrade = (side: 'BUY' | 'SELL') => {
-    if (!selectedStrike || !onPlaceOrder) return;
+  // ── Quick trade handler ─────────────────────────────────────────────────
+  const handleQuickTrade = (
+    side: 'BUY' | 'SELL',
+    row: NormalizedOptionRow,
+    type: 'CE' | 'PE'
+  ) => {
+    if (!onPlaceOrder) return;
+    const leg: NormalizedOptionLeg = type === 'CE' ? row.ce : row.pe;
+    if (!leg.is_active || leg.ltp == null) return;
+    const lotSize = LOT_SIZES[symbol] ?? 1;
     onPlaceOrder({
       side,
       symbol,
-      strike: selectedStrike.strike,
-      optionType: selectedStrike.type,
+      strike: row.strike,
+      optionType: type,
       expiry,
-      price: selectedStrike.price,
+      price: leg.ltp,
+      defaultQty: lotSize,
+      defaultProduct: 'MIS',
     });
-    setSelectedStrike(null);
   };
 
   const formatExpiryDisplay = (dateString: string) => {
@@ -246,28 +252,29 @@ const OptionChain: React.FC<OptionChainProps> = ({
 
   const handleManualRetry = () => {
     setError(null);
-    if (expiries.length === 0) {
-      fetchExpiries();
-    } else {
-      fetchOptionChain();
-    }
+    if (expiries.length === 0) fetchExpiries();
+    else fetchOptionChain();
   };
 
+  // ─── Render ────────────────────────────────────────────────────────────
   return (
-    <div className="space-y-6">
-      {/* Header Controls */}
-      <div className="flex flex-col gap-4">
+    <div className="space-y-4">
+      {/* ── Header Controls ── */}
+      <div className="flex flex-col gap-3">
         <div className="flex justify-between items-center">
           <div className="flex items-center gap-2">
             <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-500">
-              <Activity size={20} />
+              <Activity size={18} />
             </div>
             <div>
               <h2 className="text-sm font-black text-white tracking-tight uppercase">
                 Option Chain
               </h2>
-              <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">
-                Live Derivatives Data
+              <p className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">
+                {symbol} · Spot:{' '}
+                <span className="text-white">
+                  {spotPrice > 0 ? spotPrice.toLocaleString('en-IN', { maximumFractionDigits: 2 }) : '—'}
+                </span>
               </p>
             </div>
           </div>
@@ -276,15 +283,14 @@ const OptionChain: React.FC<OptionChainProps> = ({
             disabled={loading}
             className="p-2 rounded-xl bg-zinc-900 text-zinc-400 hover:text-white transition-colors disabled:opacity-50"
           >
-            <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
+            <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
           </button>
         </div>
 
-        {/* Controls row: symbol selector only shown when not locked */}
+        {/* Controls row */}
         <div className={cn('grid gap-2', lockSymbol ? 'grid-cols-2' : 'grid-cols-3')}>
-          {/* Symbol selector — hidden when lockSymbol=true */}
           {!lockSymbol && (
-            <div className="relative group col-span-1">
+            <div className="relative col-span-1">
               <select
                 value={symbol}
                 onChange={(e) => {
@@ -292,7 +298,7 @@ const OptionChain: React.FC<OptionChainProps> = ({
                   setOptions([]);
                   setExpiry('');
                 }}
-                className="w-full bg-zinc-900/50 border border-zinc-800 rounded-xl px-4 py-3 text-[11px] font-bold text-white appearance-none focus:outline-none focus:border-emerald-500/50 transition-all"
+                className="w-full bg-zinc-900/50 border border-zinc-800 rounded-xl px-3 py-2.5 text-[11px] font-bold text-white appearance-none focus:outline-none focus:border-emerald-500/50 transition-all"
               >
                 <option value="NIFTY">NIFTY 50</option>
                 <option value="BANKNIFTY">BANKNIFTY</option>
@@ -300,352 +306,388 @@ const OptionChain: React.FC<OptionChainProps> = ({
                 <option value="MIDCAP">MIDCAP NIFTY</option>
                 <option value="SENSEX">SENSEX</option>
               </select>
-              <ChevronDown
-                size={14}
-                className="absolute right-4 top-1/2 -translate-y-1/2 text-zinc-600 pointer-events-none"
-              />
+              <ChevronDown size={12} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-600 pointer-events-none" />
             </div>
           )}
 
-          {/* Expiry selector */}
-          <div className="relative group col-span-1">
+          <div className="relative col-span-1">
             <select
               value={expiry}
               onChange={(e) => setExpiry(e.target.value)}
               disabled={isExpiriesLoading || expiries.length === 0}
-              className="w-full bg-zinc-900/50 border border-zinc-800 rounded-xl px-4 py-3 text-[11px] font-bold text-white appearance-none focus:outline-none focus:border-emerald-500/50 transition-all disabled:opacity-50"
+              className="w-full bg-zinc-900/50 border border-zinc-800 rounded-xl px-3 py-2.5 text-[11px] font-bold text-white appearance-none focus:outline-none focus:border-emerald-500/50 transition-all disabled:opacity-50"
             >
               {isExpiriesLoading ? (
                 <option value="">Loading…</option>
               ) : expiries.length > 0 ? (
-                expiries.map((dateStr) => (
-                  <option key={dateStr} value={dateStr}>
-                    {formatExpiryDisplay(dateStr)}
-                  </option>
+                expiries.map((d) => (
+                  <option key={d} value={d}>{formatExpiryDisplay(d)}</option>
                 ))
               ) : (
                 <option value="">No Expiries</option>
               )}
             </select>
-            <ChevronDown
-              size={14}
-              className="absolute right-4 top-1/2 -translate-y-1/2 text-zinc-600 pointer-events-none"
-            />
+            <ChevronDown size={12} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-600 pointer-events-none" />
           </div>
 
-          {/* Greeks toggle */}
           <button
             onClick={() => setShowGreeks(!showGreeks)}
             className={cn(
-              'col-span-1 flex items-center justify-center gap-2 rounded-xl text-[11px] font-bold transition-all border',
+              'col-span-1 flex items-center justify-center gap-1.5 rounded-xl text-[11px] font-bold transition-all border',
               showGreeks
-                ? 'bg-purple-500/10 border-purple-500/50 text-purple-400 shadow-[0_0_15px_rgba(168,85,247,0.15)]'
+                ? 'bg-purple-500/10 border-purple-500/50 text-purple-400'
                 : 'bg-zinc-900/50 border-zinc-800 text-zinc-400 hover:text-white'
             )}
           >
-            <Layers size={14} />
-            {showGreeks ? 'Hide Greeks' : 'Greeks'}
+            <Layers size={13} />
+            {showGreeks ? 'Hide' : 'Greeks'}
           </button>
         </div>
       </div>
 
-      {/* Option Chain Table */}
-      <div className="bg-zinc-900/20 border border-zinc-800/30 rounded-2xl overflow-hidden min-h-75">
-        <div className="overflow-x-auto scrollbar-hide h-full">
-          <table className="w-full text-left border-collapse">
+      {/* ── ATM indicator strip ── */}
+      {atmStrike && spotPrice > 0 && (
+        <div className="flex items-center gap-2 px-1">
+          <div className="h-px flex-1 bg-zinc-800/50" />
+          <span className="text-[9px] font-black text-zinc-500 uppercase tracking-widest">
+            ATM ≈ {atmStrike.toLocaleString('en-IN')}
+          </span>
+          <div className="h-px flex-1 bg-zinc-800/50" />
+        </div>
+      )}
+
+      {/* ── Option Chain Table ── */}
+      <div className="bg-zinc-900/20 border border-zinc-800/30 rounded-2xl overflow-hidden">
+        <div className="overflow-x-auto scrollbar-hide">
+          <table className="w-full border-collapse" style={{ minWidth: 340 }}>
+            {/* ── Column headers ── */}
             <thead>
-              <tr className="bg-zinc-900/50 border-b border-zinc-800/50">
+              <tr className="bg-zinc-900/60 border-b border-zinc-800/50">
                 <th
-                  colSpan={2}
-                  className="px-3 py-2 text-center text-[9px] font-black text-emerald-500 uppercase tracking-widest border-r border-zinc-800/50"
+                  colSpan={4}
+                  className="px-2 py-2 text-center text-[9px] font-black text-emerald-500 uppercase tracking-widest border-r border-zinc-800/50"
                 >
-                  Calls (CE)
+                  ← Calls (CE)
                 </th>
-                <th className="px-3 py-2 text-center text-[9px] font-black text-zinc-500 uppercase tracking-widest bg-zinc-900/80">
+                <th className="px-2 py-2 text-center text-[9px] font-black text-zinc-400 uppercase tracking-widest bg-zinc-900/80 whitespace-nowrap">
                   Strike
                 </th>
                 <th
-                  colSpan={2}
-                  className="px-3 py-2 text-center text-[9px] font-black text-rose-500 uppercase tracking-widest border-l border-zinc-800/50"
+                  colSpan={4}
+                  className="px-2 py-2 text-center text-[9px] font-black text-rose-500 uppercase tracking-widest border-l border-zinc-800/50"
                 >
-                  Puts (PE)
+                  Puts (PE) →
                 </th>
               </tr>
-              <tr className="bg-zinc-900/30 border-b border-zinc-800/50 text-[8px] font-bold text-zinc-600 uppercase tracking-tighter">
-                <th className="px-2 py-1.5 text-center w-1/5">OI</th>
-                <th className="px-2 py-1.5 text-center w-1/5 border-r border-zinc-800/50">
-                  LTP
-                </th>
-                <th className="px-2 py-1.5 text-center w-1/5 bg-zinc-900/50">Price</th>
-                <th className="px-2 py-1.5 text-center w-1/5 border-l border-zinc-800/50">
-                  LTP
-                </th>
-                <th className="px-2 py-1.5 text-center w-1/5">OI</th>
+              <tr className="bg-zinc-900/40 border-b border-zinc-800/50 text-[8px] font-bold text-zinc-600 uppercase tracking-tighter">
+                {/* CE side */}
+                <th className="px-1.5 py-1 text-center w-10">B/S</th>
+                <th className="px-1.5 py-1 text-right">OI/Vol</th>
+                <th className="px-1.5 py-1 text-right">%chg</th>
+                <th className="px-1.5 py-1 text-right border-r border-zinc-800/50">LTP</th>
+                {/* Strike */}
+                <th className="px-2 py-1 text-center bg-zinc-900/50">Price</th>
+                {/* PE side */}
+                <th className="px-1.5 py-1 text-left border-l border-zinc-800/50">LTP</th>
+                <th className="px-1.5 py-1 text-left">%chg</th>
+                <th className="px-1.5 py-1 text-left">OI/Vol</th>
+                <th className="px-1.5 py-1 text-center w-10">B/S</th>
               </tr>
             </thead>
 
-            <tbody className="divide-y divide-zinc-800/30">
-              {/* Error state */}
+            <tbody className="divide-y divide-zinc-800/20">
+              {/* ── Error state ── */}
               {error ? (
                 <tr>
-                  <td colSpan={5} className="py-16">
-                    <div className="flex flex-col items-center justify-center text-center px-4">
-                      <div className="w-12 h-12 rounded-full bg-rose-500/10 flex items-center justify-center mb-3">
-                        <AlertTriangle size={24} className="text-rose-500" />
+                  <td colSpan={9} className="py-12">
+                    <div className="flex flex-col items-center justify-center text-center px-4 gap-3">
+                      <div className="w-10 h-10 rounded-full bg-rose-500/10 flex items-center justify-center">
+                        <AlertTriangle size={20} className="text-rose-500" />
                       </div>
-                      <p className="text-sm font-bold text-zinc-300 mb-1">
-                        Option Chain Unavailable
-                      </p>
-                      <p className="text-[11px] text-zinc-500 max-w-62.5 mb-4">{error}</p>
+                      <div>
+                        <p className="text-xs font-bold text-zinc-300 mb-1">Option Chain Unavailable</p>
+                        <p className="text-[10px] text-zinc-500 max-w-56">{error}</p>
+                      </div>
                       <button
                         onClick={handleManualRetry}
-                        className="px-6 py-2 bg-zinc-800 hover:bg-zinc-700 text-white font-bold rounded-xl text-xs transition-colors"
+                        className="px-5 py-2 bg-zinc-800 hover:bg-zinc-700 text-white font-bold rounded-xl text-[11px] transition-colors"
                       >
-                        Retry Connection
+                        Retry
                       </button>
                     </div>
                   </td>
                 </tr>
               ) : loading && options.length === 0 ? (
-                // Skeleton loading
-                Array.from({ length: 5 }).map((_, i) => (
+                // ── Skeleton ──
+                Array.from({ length: 6 }).map((_, i) => (
                   <tr key={i} className="animate-pulse">
-                    <td className="px-2 py-4 border-r border-zinc-800/50">
-                      <div className="h-3 bg-zinc-800/50 rounded w-8 mx-auto" />
-                    </td>
-                    <td className="px-2 py-4 border-r border-zinc-800/50">
-                      <div className="flex flex-col items-center gap-1">
-                        <div className="h-4 bg-zinc-800/80 rounded w-10" />
-                        <div className="h-2 bg-zinc-800/40 rounded w-6" />
-                      </div>
-                    </td>
-                    <td className="px-2 py-4 bg-zinc-900/50">
-                      <div className="h-4 bg-zinc-700/50 rounded w-12 mx-auto" />
-                    </td>
-                    <td className="px-2 py-4 border-l border-zinc-800/50">
-                      <div className="flex flex-col items-center gap-1">
-                        <div className="h-4 bg-zinc-800/80 rounded w-10" />
-                        <div className="h-2 bg-zinc-800/40 rounded w-6" />
-                      </div>
-                    </td>
-                    <td className="px-2 py-4 border-l border-zinc-800/50">
-                      <div className="h-3 bg-zinc-800/50 rounded w-8 mx-auto" />
-                    </td>
+                    {Array.from({ length: 9 }).map((_, j) => (
+                      <td key={j} className="px-2 py-3">
+                        <div className="h-3 bg-zinc-800/50 rounded mx-auto" style={{ width: j === 4 ? 40 : 28 }} />
+                      </td>
+                    ))}
                   </tr>
                 ))
               ) : (
-                // Data rows
-                filteredOptions.map((opt, idx) => (
-                  <React.Fragment key={idx}>
-                    <tr className="group hover:bg-zinc-900/40 transition-colors">
-                      <td className="px-2 py-3 text-center text-[10px] text-zinc-500 font-medium">
-                        {opt.ce.oi_formatted}
-                      </td>
-                      <td
-                        onClick={() =>
-                          opt.ce.is_active &&
-                          setSelectedStrike({
-                            strike: opt.strike,
-                            type: 'CE',
-                            price: opt.ce.ltp!,
-                          })
-                        }
+                // ── Data rows ──
+                filteredOptions.map((opt, idx) => {
+                  const isATM = opt.isATM;
+                  const ceActive = opt.ce.is_active;
+                  const peActive = opt.pe.is_active;
+
+                  return (
+                    <React.Fragment key={idx}>
+                      <tr
                         className={cn(
-                          'px-2 py-3 text-center transition-all border-r border-zinc-800/50',
-                          opt.ce.is_active
-                            ? 'cursor-pointer'
-                            : 'cursor-not-allowed opacity-50',
-                          selectedStrike?.strike === opt.strike &&
-                            selectedStrike?.type === 'CE'
-                            ? 'bg-emerald-500/10 ring-1 ring-inset ring-emerald-500/20'
-                            : ''
+                          'transition-colors',
+                          isATM
+                            ? 'bg-amber-500/5 border-y border-amber-500/20'
+                            : 'hover:bg-zinc-900/30'
                         )}
                       >
-                        {opt.ce.is_active ? (
-                          <>
-                            <p className="text-[11px] font-black text-white">
-                              {opt.ce.ltp!.toFixed(2)}
-                            </p>
-                            <p
+                        {/* ── CE Buy/Sell buttons ── */}
+                        <td className="px-1 py-2 text-center">
+                          {ceActive ? (
+                            <div className="flex flex-col gap-0.5">
+                              <button
+                                onClick={() => handleQuickTrade('BUY', opt, 'CE')}
+                                className="px-1.5 py-0.5 bg-emerald-500/15 hover:bg-emerald-500/30 text-emerald-400 text-[8px] font-black rounded uppercase tracking-tight transition-all active:scale-95 leading-none"
+                              >
+                                B
+                              </button>
+                              <button
+                                onClick={() => handleQuickTrade('SELL', opt, 'CE')}
+                                className="px-1.5 py-0.5 bg-rose-500/15 hover:bg-rose-500/30 text-rose-400 text-[8px] font-black rounded uppercase tracking-tight transition-all active:scale-95 leading-none"
+                              >
+                                S
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-zinc-700 text-[9px]">—</span>
+                          )}
+                        </td>
+
+                        {/* ── CE OI/Vol ── */}
+                        <td className={cn('px-1.5 py-2 text-right', opt.ceITM ? 'bg-emerald-950/20' : '')}>
+                          {ceActive ? (
+                            <div className="space-y-0.5">
+                              <p className="text-[9px] font-bold text-zinc-300 leading-none">
+                                {opt.ce.oi_formatted}
+                              </p>
+                              <p className="text-[8px] text-zinc-600 leading-none">
+                                {opt.ce.vol_formatted}
+                              </p>
+                              <OIBar value={opt.ce.oi} max={maxOI} color="bg-emerald-500/60" />
+                            </div>
+                          ) : (
+                            <span className="text-zinc-700 text-[9px]">—</span>
+                          )}
+                        </td>
+
+                        {/* ── CE %change ── */}
+                        <td className={cn('px-1.5 py-2 text-right', opt.ceITM ? 'bg-emerald-950/20' : '')}>
+                          {ceActive && opt.ce.perc_change != null ? (
+                            <span
                               className={cn(
-                                'text-[8px] font-bold',
-                                opt.ce.perc_change! >= 0
-                                  ? 'text-emerald-500'
-                                  : 'text-rose-500'
+                                'text-[9px] font-bold',
+                                opt.ce.perc_change >= 0 ? 'text-emerald-400' : 'text-rose-400'
                               )}
                             >
-                              {opt.ce.perc_change! >= 0 ? '+' : ''}
-                              {opt.ce.perc_change!.toFixed(1)}%
-                            </p>
-                          </>
-                        ) : (
-                          <p className="text-[11px] font-black text-zinc-600">-</p>
-                        )}
-                      </td>
+                              {opt.ce.perc_change >= 0 ? '+' : ''}
+                              {opt.ce.perc_change.toFixed(1)}%
+                            </span>
+                          ) : (
+                            <span className="text-zinc-700 text-[9px]">—</span>
+                          )}
+                        </td>
 
-                      <td className="px-2 py-3 text-center bg-zinc-900/50">
-                        <span className="text-[11px] font-black text-zinc-400">
-                          {opt.strike}
-                        </span>
-                      </td>
+                        {/* ── CE LTP ── */}
+                        <td
+                          className={cn(
+                            'px-1.5 py-2 text-right border-r border-zinc-800/40',
+                            opt.ceITM ? 'bg-emerald-950/20' : ''
+                          )}
+                        >
+                          {ceActive && opt.ce.ltp != null ? (
+                            <span className="text-[11px] font-black text-white">
+                              {opt.ce.ltp.toFixed(2)}
+                            </span>
+                          ) : (
+                            <span className="text-zinc-600 text-[9px]">—</span>
+                          )}
+                        </td>
 
-                      <td
-                        onClick={() =>
-                          opt.pe.is_active &&
-                          setSelectedStrike({
-                            strike: opt.strike,
-                            type: 'PE',
-                            price: opt.pe.ltp!,
-                          })
-                        }
-                        className={cn(
-                          'px-2 py-3 text-center transition-all border-l border-zinc-800/50',
-                          opt.pe.is_active
-                            ? 'cursor-pointer'
-                            : 'cursor-not-allowed opacity-50',
-                          selectedStrike?.strike === opt.strike &&
-                            selectedStrike?.type === 'PE'
-                            ? 'bg-rose-500/10 ring-1 ring-inset ring-rose-500/20'
-                            : ''
-                        )}
-                      >
-                        {opt.pe.is_active ? (
-                          <>
-                            <p className="text-[11px] font-black text-white">
-                              {opt.pe.ltp!.toFixed(2)}
-                            </p>
-                            <p
+                        {/* ── Strike (center) ── */}
+                        <td className="px-2 py-2 text-center bg-zinc-900/50">
+                          <div className="flex flex-col items-center gap-0.5">
+                            <span
                               className={cn(
-                                'text-[8px] font-bold',
-                                opt.pe.perc_change! >= 0
-                                  ? 'text-emerald-500'
-                                  : 'text-rose-500'
+                                'text-[11px] font-black',
+                                isATM ? 'text-amber-400' : 'text-zinc-300'
                               )}
                             >
-                              {opt.pe.perc_change! >= 0 ? '+' : ''}
-                              {opt.pe.perc_change!.toFixed(1)}%
-                            </p>
-                          </>
-                        ) : (
-                          <p className="text-[11px] font-black text-zinc-600">-</p>
-                        )}
-                      </td>
-                      <td className="px-2 py-3 text-center text-[10px] text-zinc-500 font-medium">
-                        {opt.pe.oi_formatted}
-                      </td>
-                    </tr>
-
-                    {/* Greeks row */}
-                    {showGreeks && (
-                      <tr className="bg-zinc-900/30 text-[9px] font-medium text-zinc-500 border-b border-zinc-800/30 shadow-inner">
-                        <td colSpan={2} className="px-2 py-2 border-r border-zinc-800/50">
-                          <div className="flex items-center justify-around w-full">
-                            <span className="flex flex-col items-center">
-                              <span className="text-[8px] uppercase tracking-wider opacity-60">
-                                IV
-                              </span>
-                              <span className="text-purple-400">{opt.ce.iv}%</span>
+                              {opt.strike.toLocaleString('en-IN')}
                             </span>
-                            <span className="flex flex-col items-center">
-                              <span className="text-[8px] uppercase tracking-wider opacity-60">
-                                Delta
+                            {isATM && (
+                              <span className="text-[7px] font-black text-amber-500/80 uppercase tracking-wider leading-none">
+                                ATM
                               </span>
-                              <span className="text-zinc-300">{opt.ce.delta}</span>
-                            </span>
-                            <span className="flex flex-col items-center">
-                              <span className="text-[8px] uppercase tracking-wider opacity-60">
-                                Theta
-                              </span>
-                              <span className="text-zinc-300">{opt.ce.theta}</span>
-                            </span>
+                            )}
                           </div>
                         </td>
-                        <td className="bg-zinc-900/50" />
-                        <td colSpan={2} className="px-2 py-2 border-l border-zinc-800/50">
-                          <div className="flex items-center justify-around w-full">
-                            <span className="flex flex-col items-center">
-                              <span className="text-[8px] uppercase tracking-wider opacity-60">
-                                IV
-                              </span>
-                              <span className="text-purple-400">{opt.pe.iv}%</span>
+
+                        {/* ── PE LTP ── */}
+                        <td
+                          className={cn(
+                            'px-1.5 py-2 text-left border-l border-zinc-800/40',
+                            opt.peITM ? 'bg-rose-950/20' : ''
+                          )}
+                        >
+                          {peActive && opt.pe.ltp != null ? (
+                            <span className="text-[11px] font-black text-white">
+                              {opt.pe.ltp.toFixed(2)}
                             </span>
-                            <span className="flex flex-col items-center">
-                              <span className="text-[8px] uppercase tracking-wider opacity-60">
-                                Delta
-                              </span>
-                              <span className="text-zinc-300">{opt.pe.delta}</span>
+                          ) : (
+                            <span className="text-zinc-600 text-[9px]">—</span>
+                          )}
+                        </td>
+
+                        {/* ── PE %change ── */}
+                        <td className={cn('px-1.5 py-2 text-left', opt.peITM ? 'bg-rose-950/20' : '')}>
+                          {peActive && opt.pe.perc_change != null ? (
+                            <span
+                              className={cn(
+                                'text-[9px] font-bold',
+                                opt.pe.perc_change >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                              )}
+                            >
+                              {opt.pe.perc_change >= 0 ? '+' : ''}
+                              {opt.pe.perc_change.toFixed(1)}%
                             </span>
-                            <span className="flex flex-col items-center">
-                              <span className="text-[8px] uppercase tracking-wider opacity-60">
-                                Theta
-                              </span>
-                              <span className="text-zinc-300">{opt.pe.theta}</span>
-                            </span>
-                          </div>
+                          ) : (
+                            <span className="text-zinc-700 text-[9px]">—</span>
+                          )}
+                        </td>
+
+                        {/* ── PE OI/Vol ── */}
+                        <td className={cn('px-1.5 py-2 text-left', opt.peITM ? 'bg-rose-950/20' : '')}>
+                          {peActive ? (
+                            <div className="space-y-0.5">
+                              <p className="text-[9px] font-bold text-zinc-300 leading-none">
+                                {opt.pe.oi_formatted}
+                              </p>
+                              <p className="text-[8px] text-zinc-600 leading-none">
+                                {opt.pe.vol_formatted}
+                              </p>
+                              <OIBar value={opt.pe.oi} max={maxOI} color="bg-rose-500/60" />
+                            </div>
+                          ) : (
+                            <span className="text-zinc-700 text-[9px]">—</span>
+                          )}
+                        </td>
+
+                        {/* ── PE Buy/Sell buttons ── */}
+                        <td className="px-1 py-2 text-center">
+                          {peActive ? (
+                            <div className="flex flex-col gap-0.5">
+                              <button
+                                onClick={() => handleQuickTrade('BUY', opt, 'PE')}
+                                className="px-1.5 py-0.5 bg-emerald-500/15 hover:bg-emerald-500/30 text-emerald-400 text-[8px] font-black rounded uppercase tracking-tight transition-all active:scale-95 leading-none"
+                              >
+                                B
+                              </button>
+                              <button
+                                onClick={() => handleQuickTrade('SELL', opt, 'PE')}
+                                className="px-1.5 py-0.5 bg-rose-500/15 hover:bg-rose-500/30 text-rose-400 text-[8px] font-black rounded uppercase tracking-tight transition-all active:scale-95 leading-none"
+                              >
+                                S
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-zinc-700 text-[9px]">—</span>
+                          )}
                         </td>
                       </tr>
-                    )}
-                  </React.Fragment>
-                ))
+
+                      {/* ── Greeks row ── */}
+                      {showGreeks && (
+                        <tr className="bg-zinc-900/30 text-[8px] border-b border-zinc-800/20">
+                          <td colSpan={4} className="px-2 py-1.5 border-r border-zinc-800/40">
+                            {opt.ce.is_active && (
+                              <div className="flex items-center justify-around">
+                                <span className="flex flex-col items-center gap-0.5">
+                                  <span className="text-[7px] uppercase tracking-wide text-zinc-600">IV</span>
+                                  <span className="text-purple-400 font-bold">{opt.ce.iv}%</span>
+                                </span>
+                                <span className="flex flex-col items-center gap-0.5">
+                                  <span className="text-[7px] uppercase tracking-wide text-zinc-600">Δ</span>
+                                  <span className="text-zinc-300 font-bold">{opt.ce.delta}</span>
+                                </span>
+                                <span className="flex flex-col items-center gap-0.5">
+                                  <span className="text-[7px] uppercase tracking-wide text-zinc-600">θ</span>
+                                  <span className="text-zinc-300 font-bold">{opt.ce.theta}</span>
+                                </span>
+                                <span className="flex flex-col items-center gap-0.5">
+                                  <span className="text-[7px] uppercase tracking-wide text-zinc-600">V</span>
+                                  <span className="text-zinc-300 font-bold">{opt.ce.vega}</span>
+                                </span>
+                              </div>
+                            )}
+                          </td>
+                          <td className="bg-zinc-900/60" />
+                          <td colSpan={4} className="px-2 py-1.5 border-l border-zinc-800/40">
+                            {opt.pe.is_active && (
+                              <div className="flex items-center justify-around">
+                                <span className="flex flex-col items-center gap-0.5">
+                                  <span className="text-[7px] uppercase tracking-wide text-zinc-600">IV</span>
+                                  <span className="text-purple-400 font-bold">{opt.pe.iv}%</span>
+                                </span>
+                                <span className="flex flex-col items-center gap-0.5">
+                                  <span className="text-[7px] uppercase tracking-wide text-zinc-600">Δ</span>
+                                  <span className="text-zinc-300 font-bold">{opt.pe.delta}</span>
+                                </span>
+                                <span className="flex flex-col items-center gap-0.5">
+                                  <span className="text-[7px] uppercase tracking-wide text-zinc-600">θ</span>
+                                  <span className="text-zinc-300 font-bold">{opt.pe.theta}</span>
+                                </span>
+                                <span className="flex flex-col items-center gap-0.5">
+                                  <span className="text-[7px] uppercase tracking-wide text-zinc-600">V</span>
+                                  <span className="text-zinc-300 font-bold">{opt.pe.vega}</span>
+                                </span>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })
               )}
             </tbody>
           </table>
         </div>
-      </div>
 
-      {/* Action Bar */}
-      <AnimatePresence>
-        {selectedStrike && (
-          <motion.div
-            initial={{ y: 20, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            exit={{ y: 20, opacity: 0 }}
-            className="fixed bottom-24 left-4 right-4 z-100 bg-zinc-900 border border-zinc-800 rounded-2xl p-4 shadow-2xl flex items-center justify-between gap-4"
-          >
-            <div className="flex items-center gap-3">
-              <div
-                className={cn(
-                  'w-10 h-10 rounded-xl flex items-center justify-center font-black text-xs',
-                  selectedStrike.type === 'CE'
-                    ? 'bg-emerald-500/10 text-emerald-500'
-                    : 'bg-rose-500/10 text-rose-500'
-                )}
-              >
-                {selectedStrike.type}
-              </div>
-              <div>
-                <p className="text-xs font-black text-white tracking-tight">
-                  {symbol} {selectedStrike.strike}
-                </p>
-                <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">
-                  LTP: ₹{selectedStrike.price.toFixed(2)}
-                </p>
-              </div>
-            </div>
-
-            <div className="flex gap-2">
-              <button
-                onClick={() => handleTrade('SELL')}
-                className="px-6 py-2.5 bg-rose-500 text-black font-black rounded-xl text-[10px] uppercase tracking-widest active:scale-95 transition-all"
-              >
-                Sell
-              </button>
-              <button
-                onClick={() => handleTrade('BUY')}
-                className="px-6 py-2.5 bg-emerald-500 text-black font-black rounded-xl text-[10px] uppercase tracking-widest active:scale-95 transition-all"
-              >
-                Buy
-              </button>
-              <button
-                onClick={() => setSelectedStrike(null)}
-                className="p-2.5 bg-zinc-800 text-zinc-400 rounded-xl hover:text-white transition-colors"
-              >
-                <TrendingDown size={18} className="rotate-45" />
-              </button>
-            </div>
-          </motion.div>
+        {/* ── Legend ── */}
+        {!error && !loading && filteredOptions.length > 0 && (
+          <div className="px-3 py-2 border-t border-zinc-800/30 flex items-center gap-4 flex-wrap">
+            <span className="flex items-center gap-1.5 text-[8px] font-bold text-zinc-600 uppercase tracking-wider">
+              <span className="w-2 h-2 rounded-sm bg-emerald-950/60 border border-emerald-800/40" />
+              CE ITM
+            </span>
+            <span className="flex items-center gap-1.5 text-[8px] font-bold text-zinc-600 uppercase tracking-wider">
+              <span className="w-2 h-2 rounded-sm bg-rose-950/60 border border-rose-800/40" />
+              PE ITM
+            </span>
+            <span className="flex items-center gap-1.5 text-[8px] font-bold text-zinc-600 uppercase tracking-wider">
+              <span className="w-2 h-2 rounded-sm bg-amber-500/10 border border-amber-500/30" />
+              ATM
+            </span>
+            <span className="ml-auto text-[8px] font-bold text-zinc-700 uppercase tracking-wider">
+              B = Buy · S = Sell · auto-fills 1 lot MIS
+            </span>
+          </div>
         )}
-      </AnimatePresence>
+      </div>
     </div>
   );
 };
