@@ -1,5 +1,20 @@
 import { BrokerService, Holding, BrokerPosition, OrderRequest, OrderResponse } from './types';
 
+// ─── Status Normalizer ────────────────────────────────────────────────────────
+// Upstox raw statuses → normalized app statuses
+// Upstox statuses: open, complete, cancelled, rejected, modify_pending,
+//                  trigger_pending, put_order_req_received, validation_pending,
+//                  open_pending, not_cancelled, modify_after_market_order_req_received
+const normalizeUpstoxStatus = (raw: string): string => {
+  const s = (raw || '').toLowerCase().trim();
+  if (s === 'complete') return 'completed';
+  if (s === 'cancelled' || s === 'not_cancelled') return 'cancelled';
+  if (s === 'rejected') return 'rejected';
+  if (s === 'open') return 'open'; // open = live, resting order on exchange
+  // Partially filled: open order with some fills — handled in getOrders mapping
+  return 'pending'; // catch-all for queued/validation states
+};
+
 export class UpstoxBrokerService implements BrokerService {
   async getFunds(token: string): Promise<number> {
     const response = await fetch("https://api.upstox.com/v2/user/get-funds-and-margin", {
@@ -20,7 +35,7 @@ export class UpstoxBrokerService implements BrokerService {
     if (data.status === 'success') {
       return data.data.map((h: any) => {
         const ltp = h.last_price || 0;
-        const close_price = h.close_price || ltp; 
+        const close_price = h.close_price || ltp;
         return {
           symbol: h.trading_symbol,
           quantity: h.quantity,
@@ -50,7 +65,7 @@ export class UpstoxBrokerService implements BrokerService {
           quantity: p.quantity,
           average_price: p.average_price,
           current_price: ltp,
-          close_price: close_price, 
+          close_price: close_price,
           day_change: ltp - close_price,
           day_change_pct: close_price ? ((ltp - close_price) / close_price) * 100 : 0,
           product: p.product,
@@ -61,78 +76,94 @@ export class UpstoxBrokerService implements BrokerService {
     throw new Error(data.errors?.[0]?.message || 'Failed to fetch Upstox positions');
   }
 
-  // --- NEW: Fetch Order History for Story A4 ---
   async getOrders(token: string): Promise<any[]> {
     const response = await fetch("https://api.upstox.com/v2/order/retrieve-all", {
       headers: { "Authorization": `Bearer ${token}`, "Accept": "application/json" }
     });
     const data = await response.json();
     if (data.status === 'success') {
-      return data.data.map((o: any) => ({
-        order_id: o.order_id,
-        symbol: o.trading_symbol,
-        quantity: o.quantity,
-        filled_quantity: o.filled_quantity || 0,
-        price: o.price,
-        average_price: o.average_price || 0,
-        status: o.status,
-        type: o.transaction_type, // BUY or SELL
-        order_type: o.order_type,
-        product: o.product,
-        placed_at: o.order_timestamp,
-        broker: 'Upstox'
-      }));
+      return data.data.map((o: any) => {
+        const qty: number = o.quantity || 0;
+        const filledQty: number = o.filled_quantity || 0;
+
+        // Determine normalized status — partial fill detection:
+        // An "open" order that has SOME fills but not all = partially_filled
+        let normalizedStatus = normalizeUpstoxStatus(o.status);
+        if (normalizedStatus === 'open' && filledQty > 0 && filledQty < qty) {
+          normalizedStatus = 'partially_filled';
+        }
+
+        return {
+          order_id:         o.order_id,
+          exchange_order_id: o.exchange_order_id || null,
+          symbol:           o.trading_symbol,
+          quantity:         qty,
+          filled_quantity:  filledQty,
+          price:            o.price || 0,
+          average_price:    o.average_price || 0,
+          trigger_price:    o.trigger_price || 0,
+          validity:         o.validity || 'DAY',
+          // normalized_status is the canonical field; raw_status preserved for debug
+          status:           normalizedStatus,
+          raw_status:       o.status,
+          type:             o.transaction_type,   // BUY | SELL
+          order_type:       o.order_type,         // MARKET | LIMIT | SL | SL-M
+          product:          o.product,            // MIS | CNC | NRML
+          placed_at:        o.order_timestamp,
+          modified_at:      o.exchange_timestamp || null,
+          completed_at:     normalizedStatus === 'completed' ? (o.exchange_timestamp || null) : null,
+          broker:           'Upstox',
+        };
+      });
     }
     throw new Error(data.errors?.[0]?.message || 'Failed to fetch Upstox orders');
   }
 
   async placeOrder(token: string, order: OrderRequest): Promise<OrderResponse> {
-  try {
-    const orderType = order.order_type.toUpperCase();       // MARKET | LIMIT | SL | SL-M
-    const validity  = (order.validity ?? 'DAY').toUpperCase(); // DAY | IOC
+    try {
+      const orderType = order.order_type.toUpperCase();
+      const validity  = (order.validity ?? 'DAY').toUpperCase();
 
-    const payload: Record<string, any> = {
-      quantity:           order.quantity,
-      product:            order.product.toUpperCase() === 'INTRADAY' ? 'I' : 'D',
-      validity:           validity,
-      // MARKET and SL-M don't use a price — Upstox requires 0
-      price:              ['MARKET', 'SL-M'].includes(orderType) ? 0 : (order.price ?? 0),
-      // SL and SL-M require a trigger_price — others get 0
-      trigger_price:      ['SL', 'SL-M'].includes(orderType) ? (order.trigger_price ?? 0) : 0,
-      tag:                'AAPA_APP',
-      instrument_token:   order.symbol.includes('|') ? order.symbol : `NSE_EQ|${order.symbol}`,
-      order_type:         orderType,
-      transaction_type:   order.type.toUpperCase(),
-      disclosed_quantity: 0,
-      is_amo:             false,
-    };
+      const payload: Record<string, any> = {
+        quantity:           order.quantity,
+        product:            order.product.toUpperCase() === 'INTRADAY' ? 'I' : 'D',
+        validity:           validity,
+        price:              ['MARKET', 'SL-M'].includes(orderType) ? 0 : (order.price ?? 0),
+        trigger_price:      ['SL', 'SL-M'].includes(orderType) ? (order.trigger_price ?? 0) : 0,
+        tag:                'AAPA_APP',
+        instrument_token:   order.symbol.includes('|') ? order.symbol : `NSE_EQ|${order.symbol}`,
+        order_type:         orderType,
+        transaction_type:   order.type.toUpperCase(),
+        disclosed_quantity: 0,
+        is_amo:             false,
+      };
 
-    const response = await fetch('https://api.upstox.com/v2/order/place', {
-      method:  'POST',
-      headers: {
-        Authorization:  `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        Accept:         'application/json',
-      },
-      body: JSON.stringify(payload),
-    });
+      const response = await fetch('https://api.upstox.com/v2/order/place', {
+        method:  'POST',
+        headers: {
+          Authorization:  `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          Accept:         'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
 
-    const data = await response.json();
-    if (data.status === 'success') {
-      return { success: true, order_id: data.data.order_id, raw_response: data };
+      const data = await response.json();
+      if (data.status === 'success') {
+        return { success: true, order_id: data.data.order_id, raw_response: data };
+      }
+      return { success: false, error: data.errors?.[0]?.message || 'Upstox order failed', raw_response: data };
+    } catch (e: any) {
+      return { success: false, error: e.message || 'Upstox API Error', raw_response: { error: e.message } };
     }
-    return { success: false, error: data.errors?.[0]?.message || 'Upstox order failed', raw_response: data };
-  } catch (e: any) {
-    return { success: false, error: e.message || 'Upstox API Error', raw_response: { error: e.message } };
   }
-}
 
   async refreshAccessToken(apiKey: string, apiSecret: string, refreshToken: string): Promise<{access_token: string, refresh_token?: string}> {
     const params = new URLSearchParams({
-      client_id: apiKey,
+      client_id:     apiKey,
       client_secret: apiSecret,
       refresh_token: refreshToken,
-      grant_type: "refresh_token",
+      grant_type:    "refresh_token",
     });
 
     const response = await fetch("https://api.upstox.com/v2/login/authorization/token", {
@@ -145,44 +176,26 @@ export class UpstoxBrokerService implements BrokerService {
     });
 
     const data = await response.json();
-    
     if (data.access_token) {
-      return {
-        access_token: data.access_token,
-        refresh_token: data.refresh_token 
-      };
+      return { access_token: data.access_token, refresh_token: data.refresh_token };
     }
-    
     throw new Error(data.errors?.[0]?.message || 'Failed to refresh Upstox token');
   }
 
-  // --- NEW: Fetch Historical Candles for Lightweight Charts ---
   async getHistoricalCandles(
-    instrumentKey: string, 
-    interval: '1minute' | 'day' | '30minute' | 'month' = 'day', 
-    fromDate: string, // Format: YYYY-MM-DD
-    toDate: string    // Format: YYYY-MM-DD
+    instrumentKey: string,
+    interval: '1minute' | 'day' | '30minute' | 'month' = 'day',
+    fromDate: string,
+    toDate: string
   ): Promise<any[]> {
-    // encodeURIComponent is crucial here because instrument tokens contain a '|' (e.g., NSE_EQ|INE123...)
     const endpoint = `https://api.upstox.com/v2/historical-candle/${encodeURIComponent(instrumentKey)}/${interval}/${toDate}/${fromDate}`;
-    
     const response = await fetch(endpoint, {
       method: 'GET',
-      headers: {
-        'Accept': 'application/json',
-      }
+      headers: { 'Accept': 'application/json' }
     });
-
-    if (!response.ok) {
-      throw new Error(`Upstox HTTP error: ${response.status}`);
-    }
-
+    if (!response.ok) throw new Error(`Upstox HTTP error: ${response.status}`);
     const data = await response.json();
-    
-    if (data.status === 'success' && data.data?.candles) {
-      return data.data.candles; // Returns array of arrays: [timestamp, open, high, low, close, volume, oi]
-    }
-    
+    if (data.status === 'success' && data.data?.candles) return data.data.candles;
     return [];
   }
 }

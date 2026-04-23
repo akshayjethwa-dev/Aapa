@@ -1038,9 +1038,13 @@ async function startServer() {
     }
   });
 
+    // ── GET /api/orders ── Fetch & normalize orders from all connected brokers ──
   app.get("/api/orders", authenticateToken, async (req: any, res, next) => {
     try {
-      const { rows: tokens } = await query("SELECT broker, access_token FROM user_tokens WHERE user_id = $1", [req.user.id]);
+      const { rows: tokens } = await query(
+        "SELECT broker, access_token FROM user_tokens WHERE user_id = $1",
+        [req.user.id]
+      );
       let combinedOrders: any[] = [];
 
       for (const token of tokens) {
@@ -1058,12 +1062,25 @@ async function startServer() {
           logger.warn(`[Orders] ${token.broker} error:`, e);
         }
       }
-      
-      combinedOrders.sort((a, b) => new Date(b.placed_at).getTime() - new Date(a.placed_at).getTime());
-      res.json(combinedOrders);
 
-    } catch (e: any) { 
-      res.status(500).json({ error: "Failed to load orders", details: e.message || String(e) }); 
+      // Sort newest first
+      combinedOrders.sort(
+        (a, b) => new Date(b.placed_at).getTime() - new Date(a.placed_at).getTime()
+      );
+
+      // Final safety-net normalization in case a future broker service
+      // doesn't normalize — ensures frontend always sees a consistent status set.
+      const VALID_STATUSES = new Set([
+        'pending', 'open', 'partially_filled', 'completed', 'cancelled', 'rejected'
+      ]);
+      combinedOrders = combinedOrders.map(o => ({
+        ...o,
+        status: VALID_STATUSES.has(o.status) ? o.status : 'pending',
+      }));
+
+      res.json(combinedOrders);
+    } catch (e: any) {
+      res.status(500).json({ error: "Failed to load orders", details: e.message || String(e) });
     }
   });
 
