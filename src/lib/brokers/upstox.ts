@@ -1,4 +1,12 @@
-import { BrokerService, Holding, BrokerPosition, OrderRequest, OrderResponse } from './types';
+import { 
+  BrokerService, 
+  Holding, 
+  BrokerPosition, 
+  OrderRequest, 
+  OrderResponse, 
+  SquareOffRequest, 
+  ConvertPositionRequest 
+} from './types';
 
 // ─── Status Normalizer ────────────────────────────────────────────────────────
 // Upstox raw statuses → normalized app statuses
@@ -155,6 +163,107 @@ export class UpstoxBrokerService implements BrokerService {
       return { success: false, error: data.errors?.[0]?.message || 'Upstox order failed', raw_response: data };
     } catch (e: any) {
       return { success: false, error: e.message || 'Upstox API Error', raw_response: { error: e.message } };
+    }
+  }
+
+  // ── squareOff ──────────────────────────────────────────────────────────────
+  async squareOff(token: string, req: SquareOffRequest): Promise<OrderResponse> {
+    try {
+      const instrumentToken = req.instrument_token
+        ?? (req.symbol.includes('|') ? req.symbol : `NSE_EQ|${req.symbol}`);
+
+      const productCode = (() => {
+        const p = req.product?.toUpperCase();
+        if (p === 'MIS')  return 'I';
+        if (p === 'CNC')  return 'D';
+        if (p === 'NRML') return 'M';
+        return 'I';
+      })();
+
+      const payload = {
+        quantity:           req.quantity,
+        product:            productCode,
+        validity:           'DAY',
+        price:              0,
+        trigger_price:      0,
+        tag:                'AAPA_SQUAREOFF',
+        instrument_token:   instrumentToken,
+        order_type:         'MARKET',
+        transaction_type:   'SELL',
+        disclosed_quantity: 0,
+        is_amo:             false,
+      };
+
+      const response = await fetch('https://api.upstox.com/v2/order/place', {
+        method:  'POST',
+        headers: {
+          Authorization:  `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          Accept:         'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await response.json();
+      if (data.status === 'success') {
+        return { success: true, order_id: data.data.order_id, raw_response: data };
+      }
+      return {
+        success: false,
+        error: data.errors?.[0]?.message || 'Upstox square off failed',
+        raw_response: data,
+      };
+    } catch (e: any) {
+      return { success: false, error: e.message || 'Upstox API Error', raw_response: {} };
+    }
+  }
+
+  // ── convertPosition ────────────────────────────────────────────────────────
+  async convertPosition(
+    token: string,
+    req: ConvertPositionRequest
+  ): Promise<{ success: boolean; message?: string }> {
+    try {
+      const instrumentToken = req.instrument_token
+        ?? (req.symbol.includes('|') ? req.symbol : `NSE_EQ|${req.symbol}`);
+
+      const mapProduct = (p: string) => {
+        const up = p?.toUpperCase();
+        if (up === 'MIS')  return 'I';
+        if (up === 'CNC')  return 'D';
+        if (up === 'NRML') return 'M';
+        return up;
+      };
+
+      const payload = {
+        instrument_token: instrumentToken,
+        quantity:         req.quantity,
+        old_product:      mapProduct(req.from_product),
+        new_product:      mapProduct(req.to_product),
+        transaction_type: 'BUY',
+        position_type:    'TOD',
+      };
+
+      const response = await fetch('https://api.upstox.com/v2/order/convert-position', {
+        method:  'PUT',
+        headers: {
+          Authorization:  `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          Accept:         'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await response.json();
+      if (data.status === 'success') {
+        return { success: true, message: `Converted to ${req.to_product}` };
+      }
+      return {
+        success: false,
+        message: data.errors?.[0]?.message || 'Upstox conversion failed',
+      };
+    } catch (e: any) {
+      return { success: false, message: e.message || 'Upstox API Error' };
     }
   }
 

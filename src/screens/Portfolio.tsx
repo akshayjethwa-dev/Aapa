@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { PieChart, TrendingUp, ArrowUpRight, ArrowDownRight, CreditCard, History, ArrowRight, AlertCircle, BarChart3, Calendar, Plus, Minus, ArrowRightLeft, RefreshCw } from 'lucide-react';
+import { PieChart, TrendingUp, ArrowUpRight, ArrowDownRight, CreditCard, History, ArrowRight, AlertCircle, BarChart3, Calendar, Plus, Minus, ArrowRightLeft, RefreshCw, Activity } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart as RePieChart, Pie, Cell } from 'recharts';
 import { formatCurrency, cn } from '../lib/utils';
 import { useAuthStore } from '../store/authStore';
 import { apiClient } from '../api/client';
 
-const Portfolio = ({ stocks }: { stocks: Record<string, number> }) => {
+const Portfolio = ({ stocks, onGoToPositions }: { stocks: Record<string, number>; onGoToPositions?: () => void }) => {
   const { user } = useAuthStore();
   const [holdings, setHoldings] = useState<any[]>([]);
   const [positions, setPositions] = useState<any[]>([]);
@@ -134,38 +134,26 @@ const Portfolio = ({ stocks }: { stocks: Record<string, number> }) => {
 
       {/* ── Active Positions (Intraday/F&O) ── */}
       {(!loading && positions.length > 0) && (
-        <div className="px-5 space-y-3">
-          <div className="flex justify-between items-center">
-            <h3 className="text-[11px] font-bold uppercase tracking-widest text-zinc-500">Active Positions</h3>
-            <span className="text-[9px] font-bold text-zinc-700">{positions.length} Open</span>
-          </div>
-          <div className="space-y-2.5">
-            {positions.map(p => {
-              const ltp = stocks[p.symbol] || p.current_price || p.average_price;
-              const pnl = (ltp - p.average_price) * p.quantity;
-              return (
-                <div key={p.symbol} className="bg-zinc-900/40 border border-amber-500/20 rounded-xl p-3.5 flex justify-between items-center">
-                  <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-xl bg-amber-500/10 flex items-center justify-center font-bold text-[11px] text-amber-500">
-                      {p.product.charAt(0)}
-                    </div>
-                    <div>
-                      <p className="text-[13px] font-bold text-white tracking-tight">{p.symbol}</p>
-                      <p className="text-[9px] font-bold text-zinc-600 uppercase mt-0.5">
-                        {p.quantity} Qty • Avg {formatCurrency(p.average_price)}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-[13px] font-bold text-white">{formatCurrency(p.quantity * ltp)}</p>
-                    <p className={cn("text-[9px] font-bold", pnl >= 0 ? "text-emerald-500" : "text-rose-500")}>
-                      {pnl >= 0 ? '+' : ''}{formatCurrency(pnl)}
-                    </p>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+        <div className="px-5">
+          <button
+            onClick={onGoToPositions}
+            className="w-full flex items-center justify-between bg-amber-500/10 border border-amber-500/20 rounded-2xl p-4 hover:bg-amber-500/15 active:scale-[0.98] transition-all"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-500/15 flex items-center justify-center">
+                <Activity size={18} className="text-amber-400" />
+              </div>
+              <div className="text-left">
+                <p className="text-[13px] font-bold text-white">
+                  {positions.length} Active {positions.length === 1 ? 'Position' : 'Positions'}
+                </p>
+                <p className="text-[9px] font-bold text-amber-500/70 uppercase tracking-widest mt-0.5">
+                  Tap to manage • Square off • Convert
+                </p>
+              </div>
+            </div>
+            <ArrowRight size={16} className="text-amber-400" />
+          </button>
         </div>
       )}
 

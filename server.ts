@@ -1108,6 +1108,100 @@ async function startServer() {
     }
   });
 
+  // ── POST /api/positions/squareoff ─────────────────────────────────────────
+  app.post("/api/positions/squareoff", authenticateToken, requireKyc, async (req: any, res) => {
+    try {
+      const { symbol, product, quantity, instrument_token } = req.body;
+
+      if (!symbol || !product || !quantity || quantity < 1) {
+        return res.status(400).json({ success: false, message: "symbol, product and quantity are required." });
+      }
+
+      const broker = 'upstox';
+      const { rows } = await query(
+        "SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = $2",
+        [req.user.id, broker]
+      );
+
+      if (!rows[0]?.access_token) {
+        return res.status(400).json({ success: false, code: 'NO_BROKER', message: "Please connect your Upstox account." });
+      }
+
+      const decryptedToken = decrypt(String(rows[0].access_token));
+      if (!decryptedToken) {
+        return res.status(500).json({ success: false, message: "Failed to decrypt broker token." });
+      }
+
+      const brokerService = getBrokerService(broker) as any;
+      if (typeof brokerService.squareOff !== 'function') {
+        return res.status(501).json({ success: false, message: "Square off not supported for this broker." });
+      }
+
+      const result = await brokerService.squareOff(decryptedToken, {
+        symbol,
+        product,
+        quantity: Number(quantity),
+        instrument_token,
+      });
+
+      if (result.success) {
+        logger.info(`[SquareOff] User ${req.user.id} squared off ${quantity} × ${symbol}`);
+        return res.json({ success: true, order_id: result.order_id });
+      }
+      return res.status(400).json({ success: false, message: result.error || "Square off failed." });
+    } catch (e: any) {
+      logger.error("[SquareOff] Error:", e);
+      return res.status(500).json({ success: false, message: e.message || "Internal server error." });
+    }
+  });
+
+  // ── POST /api/positions/convert ───────────────────────────────────────────
+  app.post("/api/positions/convert", authenticateToken, async (req: any, res) => {
+    try {
+      const { symbol, from_product, to_product, quantity, instrument_token } = req.body;
+
+      if (!symbol || !from_product || !to_product || !quantity || quantity < 1) {
+        return res.status(400).json({ success: false, message: "symbol, from_product, to_product, and quantity are required." });
+      }
+      if (from_product?.toUpperCase() === to_product?.toUpperCase()) {
+        return res.status(400).json({ success: false, message: "from_product and to_product must be different." });
+      }
+
+      const broker = 'upstox';
+      const { rows } = await query(
+        "SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = $2",
+        [req.user.id, broker]
+      );
+
+      if (!rows[0]?.access_token) {
+        return res.status(400).json({ success: false, code: 'NO_BROKER', message: "Please connect your Upstox account." });
+      }
+
+      const decryptedToken = decrypt(String(rows[0].access_token));
+      if (!decryptedToken) {
+        return res.status(500).json({ success: false, message: "Failed to decrypt broker token." });
+      }
+
+      const brokerService = getBrokerService(broker) as any;
+      if (typeof brokerService.convertPosition !== 'function') {
+        return res.status(501).json({ success: false, message: "Position conversion not supported for this broker." });
+      }
+
+      const result = await brokerService.convertPosition(decryptedToken, {
+        symbol, from_product, to_product, quantity: Number(quantity), instrument_token,
+      });
+
+      if (result.success) {
+        logger.info(`[Convert] User ${req.user.id} converted ${symbol} ${from_product} → ${to_product}`);
+        return res.json({ success: true, message: result.message });
+      }
+      return res.status(400).json({ success: false, message: result.message || "Conversion failed." });
+    } catch (e: any) {
+      logger.error("[Convert] Error:", e);
+      return res.status(500).json({ success: false, message: e.message || "Internal server error." });
+    }
+  });
+
   const resolveOptionInstrumentKey = (underlying: string, expiryDateStr: string, strike: number, optType: string) => {
     const indexName = underlying.replace(' 50', '').replace(' ', '').toUpperCase(); 
     

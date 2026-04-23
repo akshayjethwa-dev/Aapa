@@ -14,6 +14,7 @@ import Onboarding from './screens/Onboarding';
 import Dashboard from './screens/Dashboard';
 import Market from './screens/Market';
 import Portfolio from './screens/Portfolio';
+import Positions from './screens/Positions';
 import More from './screens/More';
 import AdminPanel from './screens/admin/AdminPanel';
 import ComplianceDetail from './screens/ComplianceDetail';
@@ -430,8 +431,15 @@ function App() {
                   />
                 </div>
               )}
+              {activeTab === 'positions' && (
+                <Positions key="positions" stocks={stocks} />
+              )}
               {activeTab === 'portfolio' && (
-                <Portfolio key="portfolio" stocks={stocks} />
+                <Portfolio
+                  key="portfolio"
+                  stocks={stocks}
+                  onGoToPositions={() => setActiveTab('positions')}
+                />
               )}
               {activeTab === 'orders' && (
                 <Orders key="orders" onBack={() => setActiveTab('more')} />
