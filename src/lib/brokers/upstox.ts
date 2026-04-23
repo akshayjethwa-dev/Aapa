@@ -87,38 +87,45 @@ export class UpstoxBrokerService implements BrokerService {
   }
 
   async placeOrder(token: string, order: OrderRequest): Promise<OrderResponse> {
-    try {
-      const response = await fetch("https://api.upstox.com/v2/order/place", {
-        method: "POST",
-        headers: { 
-          "Authorization": `Bearer ${token}`, 
-          "Content-Type": "application/json", 
-          "Accept": "application/json" 
-        },
-        body: JSON.stringify({
-          quantity: order.quantity,
-          product: order.product.toUpperCase() === 'INTRADAY' ? 'I' : 'D',
-          validity: 'DAY',
-          price: order.price || 0,
-          tag: 'AAPA_APP',
-          instrument_token: order.symbol.includes('|') ? order.symbol : `NSE_EQ|${order.symbol}`,
-          order_type: order.order_type.toUpperCase(),
-          transaction_type: order.type.toUpperCase(),
-          disclosed_quantity: 0,
-          trigger_price: 0,
-          is_amo: false
-        })
-      });
-      const data = await response.json();
+  try {
+    const orderType = order.order_type.toUpperCase();       // MARKET | LIMIT | SL | SL-M
+    const validity  = (order.validity ?? 'DAY').toUpperCase(); // DAY | IOC
 
-      if (data.status === 'success') {
-        return { success: true, order_id: data.data.order_id, raw_response: data };
-      }
-      return { success: false, error: data.errors?.[0]?.message || "Upstox order failed", raw_response: data };
-    } catch (e: any) {
-      return { success: false, error: e.message || "Upstox API Error", raw_response: { error: e.message } };
+    const payload: Record<string, any> = {
+      quantity:           order.quantity,
+      product:            order.product.toUpperCase() === 'INTRADAY' ? 'I' : 'D',
+      validity:           validity,
+      // MARKET and SL-M don't use a price — Upstox requires 0
+      price:              ['MARKET', 'SL-M'].includes(orderType) ? 0 : (order.price ?? 0),
+      // SL and SL-M require a trigger_price — others get 0
+      trigger_price:      ['SL', 'SL-M'].includes(orderType) ? (order.trigger_price ?? 0) : 0,
+      tag:                'AAPA_APP',
+      instrument_token:   order.symbol.includes('|') ? order.symbol : `NSE_EQ|${order.symbol}`,
+      order_type:         orderType,
+      transaction_type:   order.type.toUpperCase(),
+      disclosed_quantity: 0,
+      is_amo:             false,
+    };
+
+    const response = await fetch('https://api.upstox.com/v2/order/place', {
+      method:  'POST',
+      headers: {
+        Authorization:  `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        Accept:         'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await response.json();
+    if (data.status === 'success') {
+      return { success: true, order_id: data.data.order_id, raw_response: data };
     }
+    return { success: false, error: data.errors?.[0]?.message || 'Upstox order failed', raw_response: data };
+  } catch (e: any) {
+    return { success: false, error: e.message || 'Upstox API Error', raw_response: { error: e.message } };
   }
+}
 
   async refreshAccessToken(apiKey: string, apiSecret: string, refreshToken: string): Promise<{access_token: string, refresh_token?: string}> {
     const params = new URLSearchParams({

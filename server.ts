@@ -1129,7 +1129,7 @@ async function startServer() {
            });
         }
         
-        const { symbol, type, order_type, quantity, price, product, expiry, strike, optionType } = req.body;
+        const { symbol, type, order_type, validity, quantity, price, trigger_price, product, expiry, strike, optionType } = req.body;
         const broker = 'upstox'; 
         const userId = req.user.id;
         
@@ -1153,7 +1153,16 @@ async function startServer() {
 
         try {
           const brokerService = getBrokerService(String(broker));
-          const orderRequest: OrderRequest = { symbol: brokerSymbol, type, order_type, quantity, price, product };
+          const orderRequest: OrderRequest = {
+            symbol: brokerSymbol,
+            type,
+            order_type,
+            validity:      validity ?? 'DAY',
+            quantity,
+            price,
+            trigger_price: trigger_price ?? 0,
+            product,
+          };
           const orderRes = await brokerService.placeOrder(decryptedToken, orderRequest);
 
           if (orderRes.success) {
