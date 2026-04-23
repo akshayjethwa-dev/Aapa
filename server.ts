@@ -611,17 +611,7 @@ async function startServer() {
     }
   );
 
-  // 3. REMOVED INLINE /api/user/profile ENDPOINT 
-  // It has been migrated entirely to src/routes/userProfile.ts to prevent routing conflicts.
-  /*
-  app.get("/api/user/profile", authenticateToken, async (req: any, res, next) => {
-    // ... migrated logic ...
-  });
-  */
-
   // PATCH /api/user/onboarding — Save onboarding step progress
-  // Note: This matches the /api/user router prefix but is explicitly mounted on `app` here.
-  // It will still function normally as long as the router does not override it.
   app.patch('/api/user/onboarding', authenticateToken, async (req: any, res: any) => {
     try {
       const userId = req.user.id;
@@ -652,7 +642,7 @@ async function startServer() {
         values
       );
 
-      // Return updated profile (same shape as GET /api/user/profile)
+      // Return updated profile
       const result = await query(
         `SELECT id, email, mobile, role, balance, is_kyc_approved, kyc_status, has_upstox_account,
                 onboarding_step, first_login_completed_at, created_at 
@@ -661,7 +651,6 @@ async function startServer() {
       );
 
       const updatedUser = result.rows[0];
-      // Derive is_onboarding_complete flag
       updatedUser.is_onboarding_complete = (updatedUser.onboarding_step ?? 0) >= 4;
 
       return res.json(updatedUser);
@@ -689,7 +678,6 @@ async function startServer() {
         last_updated: row.last_updated,
       }));
 
-      // If no rows found for upstox but user record exists, still return it as disconnected
       const hasUpstox = brokers.find((b: any) => b.broker === "upstox");
       if (!hasUpstox) {
         brokers.push({ broker: "upstox", is_connected: false, last_updated: null });
@@ -711,7 +699,6 @@ async function startServer() {
       await query("DELETE FROM user_tokens WHERE broker = 'upstox' AND user_id = $1", [userId]);
       await query("UPDATE users SET is_uptox_connected = false WHERE id = $1", [userId]);
 
-      // Notify all WS clients of broker disconnect
       const payload = JSON.stringify({ type: "broker_disconnected", broker: "upstox" });
       wss.clients.forEach((c: any) => {
         if (c.readyState === WebSocket.OPEN) c.send(payload);
@@ -838,11 +825,9 @@ async function startServer() {
     }
   );
 
-  // --- IN-MEMORY CACHE FOR RAILWAY OPTIMIZATION ---
   const expiryCache: Record<string, { dates: string[], timestamp: number }> = {};
   const CACHE_TTL = 1000 * 60 * 60; // 1 Hour
 
-  // --- STABILIZED: Dynamic Expiry Discovery Endpoint (With Field Fix & Fallback) ---
   app.get("/api/option-expiries", authenticateToken, async (req: any, res, next) => {
     try {
       let { instrument_key } = req.query;
@@ -926,7 +911,6 @@ async function startServer() {
     }
   });
 
-  // --- STABILIZED: Option Chain API Endpoint (Sorted & Normalized) ---
   app.get("/api/option-chain", authenticateToken, async (req: any, res, next) => {
     try {
       let { instrument_key, expiry_date } = req.query;
@@ -999,7 +983,6 @@ async function startServer() {
             };
          });
 
-         // STRICT SORTING: Always guarantee strikes are sorted ascending for the UI
          normalizedChain.sort((a: any, b: any) => a.strike - b.strike);
 
          return res.json({ status: "success", data: normalizedChain });
@@ -1166,9 +1149,28 @@ async function startServer() {
           const orderRes = await brokerService.placeOrder(decryptedToken, orderRequest);
 
           if (orderRes.success) {
-            await query("INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, broker_order_id, status, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed', $9)",
-              [userId, friendlySymbol, type, order_type, quantity, price, broker, orderRes.order_id, JSON.stringify(orderRes.raw_response)]);
-            return res.json({ success: true, order_id: orderRes.order_id });
+            // Include exchange_order_id as requested
+            const exchangeOrderId = orderRes.raw_response?.data?.order_id ?? orderRes.order_id ?? null;
+
+            const insertRes = await query(
+              `INSERT INTO orders (
+                order_id, user_id, exchange_order_id, broker_order_id, symbol, type, order_type,
+                quantity, filled_quantity, price, average_price,
+                trigger_price, validity, product, status,
+                broker, raw_broker_response, placed_at
+              ) VALUES (
+                gen_random_uuid(), $1, $2, $3, $4, $5, $6,
+                $7, 0, $8, 0,
+                $9, $10, $11, 'pending',
+                $12, $13, NOW()
+              ) RETURNING order_id`,
+              [
+                userId, exchangeOrderId, orderRes.order_id, friendlySymbol, type, order_type,
+                quantity, price, trigger_price || 0, validity || 'DAY', product,
+                broker, JSON.stringify(orderRes.raw_response)
+              ]
+            );
+            return res.json({ success: true, order_id: insertRes.rows[0].order_id });
           } else {
             const upstoxErr = orderRes.raw_response?.errors?.[0];
             const rawErrorCode = upstoxErr?.errorCode || 'ORDER_FAILED';
@@ -1177,8 +1179,14 @@ async function startServer() {
             const isMarginError = errorMsg.toLowerCase().includes('margin') || errorMsg.toLowerCase().includes('fund');
             const finalCode = isMarginError ? 'INSUFFICIENT_MARGIN' : rawErrorCode;
 
-            await query("INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8, $9)",
-              [userId, friendlySymbol, type, order_type, quantity, price, broker, errorMsg, JSON.stringify(orderRes.raw_response)]);
+            await query(
+              `INSERT INTO orders (
+                order_id, user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason, raw_broker_response
+              ) VALUES (
+                gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, 'failed', $8, $9
+              )`,
+              [userId, friendlySymbol, type, order_type, quantity, price, broker, errorMsg, JSON.stringify(orderRes.raw_response)]
+            );
             
             return res.status(400).json({ 
               success: false, 
@@ -1187,8 +1195,14 @@ async function startServer() {
             });
           }
         } catch (e: any) {
-          await query("INSERT INTO orders (user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason, raw_broker_response) VALUES ($1, $2, $3, $4, $5, $6, $7, 'failed', $8, $9)",
-            [userId, friendlySymbol, type, order_type, quantity, price, broker, e.message, JSON.stringify({ error: e.message })]);
+          await query(
+            `INSERT INTO orders (
+              order_id, user_id, symbol, type, order_type, quantity, price, broker, status, failed_reason, raw_broker_response
+            ) VALUES (
+              gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, 'failed', $8, $9
+            )`,
+            [userId, friendlySymbol, type, order_type, quantity, price, broker, e.message, JSON.stringify({ error: e.message })]
+          );
           
           return res.status(500).json({ 
             success: false, 
@@ -1199,6 +1213,162 @@ async function startServer() {
       } catch (e) { next(e); }
     }
   );
+
+  // ── PUT /api/orders/:id ── Modify an open order ────────────────────────────
+  app.put('/api/orders/:id', authenticateToken, async (req: any, res) => {
+    const userId  = req.user.id;
+    const orderId = req.params.id;
+
+    try {
+      // 1. Fetch order from DB to get exchange_order_id and validate ownership
+      const { rows } = await query(
+        `SELECT * FROM orders WHERE order_id = $1 AND user_id = $2`,
+        [orderId, userId]
+      );
+      if (rows.length === 0) {
+        return res.status(404).json({ success: false, message: 'Order not found' });
+      }
+      const order = rows[0];
+
+      // 2. Only allow modify on open/pending orders
+      const cancellableStatuses = ['open', 'pending', 'trigger pending'];
+      if (!cancellableStatuses.includes(order.status?.toLowerCase())) {
+        return res.status(400).json({ success: false, message: `Cannot modify order with status: ${order.status}` });
+      }
+
+      // 3. Get fresh Upstox token for this user
+      const tokenRow = await query(
+        `SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = 'upstox'`,
+        [userId]
+      );
+      if (tokenRow.rows.length === 0) {
+        return res.status(403).json({ success: false, message: 'Upstox not connected' });
+      }
+      const upstoxToken = decrypt(String(tokenRow.rows[0].access_token));
+
+      const {
+        quantity, price = 0, trigger_price = 0,
+        order_type, validity = 'DAY'
+      } = req.body;
+
+      // 4. Call Upstox Modify Order API
+      const upstoxRes = await fetch(
+        `https://api.upstox.com/v2/order/modify`,
+        {
+          method:  'PUT',
+          headers: {
+            'Content-Type':  'application/json',
+            'Authorization': `Bearer ${upstoxToken}`,
+            'Accept':        'application/json',
+          },
+          body: JSON.stringify({
+            order_id:      order.exchange_order_id || order.broker_order_id,
+            quantity:      quantity,
+            price:         price,
+            trigger_price: trigger_price,
+            order_type:    order_type,
+            validity:      validity,
+            disclosed_quantity: 0,
+          }),
+        }
+      );
+
+      const upstoxData = await upstoxRes.json();
+
+      if (!upstoxRes.ok || upstoxData.status !== 'success') {
+        return res.status(400).json({
+          success: false,
+          message: upstoxData?.errors?.[0]?.message || upstoxData?.message || 'Upstox modify failed',
+        });
+      }
+
+      // 5. Update our DB row
+      await query(
+        `UPDATE orders
+         SET quantity      = $1,
+             price         = $2,
+             trigger_price = $3,
+             order_type    = $4,
+             validity      = $5,
+             modified_at   = NOW()
+         WHERE order_id = $6 AND user_id = $7`,
+        [quantity, price, trigger_price, order_type, validity, orderId, userId]
+      );
+
+      return res.json({ success: true, message: 'Order modified successfully' });
+    } catch (err: any) {
+      logger.error('Modify order error:', err);
+      return res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  });
+
+  // ── DELETE /api/orders/:id ── Cancel an open order ─────────────────────────
+  app.delete('/api/orders/:id', authenticateToken, async (req: any, res) => {
+    const userId  = req.user.id;
+    const orderId = req.params.id;
+
+    try {
+      // 1. Fetch order
+      const { rows } = await query(
+        `SELECT * FROM orders WHERE order_id = $1 AND user_id = $2`,
+        [orderId, userId]
+      );
+      if (rows.length === 0) {
+        return res.status(404).json({ success: false, message: 'Order not found' });
+      }
+      const order = rows[0];
+
+      const cancellableStatuses = ['open', 'pending', 'trigger pending'];
+      if (!cancellableStatuses.includes(order.status?.toLowerCase())) {
+        return res.status(400).json({ success: false, message: `Cannot cancel order with status: ${order.status}` });
+      }
+
+      // 2. Get Upstox token
+      const tokenRow = await query(
+        `SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = 'upstox'`,
+        [userId]
+      );
+      if (tokenRow.rows.length === 0) {
+        return res.status(403).json({ success: false, message: 'Upstox not connected' });
+      }
+      const upstoxToken = decrypt(String(tokenRow.rows[0].access_token));
+
+      // 3. Call Upstox Cancel API
+      const upstoxRes = await fetch(
+        `https://api.upstox.com/v2/order/cancel?order_id=${order.exchange_order_id || order.broker_order_id}`,
+        {
+          method:  'DELETE',
+          headers: {
+            'Authorization': `Bearer ${upstoxToken}`,
+            'Accept':        'application/json',
+          },
+        }
+      );
+
+      const upstoxData = await upstoxRes.json();
+
+      if (!upstoxRes.ok || upstoxData.status !== 'success') {
+        return res.status(400).json({
+          success: false,
+          message: upstoxData?.errors?.[0]?.message || upstoxData?.message || 'Upstox cancel failed',
+        });
+      }
+
+      // 4. Update DB status
+      await query(
+        `UPDATE orders
+         SET status       = 'cancelled',
+             completed_at = NOW()
+         WHERE order_id = $1 AND user_id = $2`,
+        [orderId, userId]
+      );
+
+      return res.json({ success: true, message: 'Order cancelled successfully' });
+    } catch (err: any) {
+      logger.error('Cancel order error:', err);
+      return res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  });
 
   // =========================================================================
   // UPSTOX WEBSOCKET INTEGRATION FOR LIVE DATA (MARKET & PORTFOLIO)
@@ -1284,11 +1454,11 @@ async function startServer() {
                 const symbol = reverseMap[key] || (key.includes('|') ? key.split('|')[1] : null);
                 if (symbol && allSymbols.includes(symbol)) {
                   marketData[symbol] = {
-      ...marketData[symbol],
-      symbol, ltp, prevClose, open, high, low,
-      day_change: ltp - prevClose,
-      day_change_pct: prevClose ? ((ltp - prevClose) / prevClose) * 100 : 0
-    };
+                    ...marketData[symbol],
+                    symbol, ltp, prevClose, open, high, low,
+                    day_change: ltp - prevClose,
+                    day_change_pct: prevClose ? ((ltp - prevClose) / prevClose) * 100 : 0
+                  };
                   updated = true;
                 }
               }
@@ -1386,11 +1556,11 @@ async function startServer() {
                 if (symbol && allSymbols.includes(symbol)) {
                   const prevClose = marketData[symbol]?.prevClose || price;
                   marketData[symbol] = {
-      ...marketData[symbol],
-      ltp: price,
-      day_change: price - prevClose,
-      day_change_pct: prevClose ? ((price - prevClose) / prevClose) * 100 : 0
-    };
+                    ...marketData[symbol],
+                    ltp: price,
+                    day_change: price - prevClose,
+                    day_change_pct: prevClose ? ((price - prevClose) / prevClose) * 100 : 0
+                  };
                   updated = true;
                 }
               }
@@ -1424,6 +1594,42 @@ async function startServer() {
     }
   };
 
+  async function syncOrderFromWebSocket(orderUpdate: any, userId: string) {
+    try {
+      const {
+        order_id:         exchangeOrderId,
+        status,
+        filled_quantity:  filledQty,
+        average_price:    avgPrice,
+      } = orderUpdate;
+
+      if (!exchangeOrderId) return;
+
+      await query(
+        `UPDATE orders
+         SET status            = $1,
+             filled_quantity   = COALESCE($2, filled_quantity),
+             average_price     = COALESCE($3, average_price),
+             exchange_order_id = COALESCE(exchange_order_id, $4),
+             completed_at      = CASE
+               WHEN $1 IN ('complete', 'completed', 'rejected', 'cancelled')
+               THEN NOW()
+               ELSE completed_at
+             END
+         WHERE exchange_order_id = $4 AND user_id = $5`,
+        [
+          status?.toLowerCase(),
+          filledQty   ?? null,
+          avgPrice    ?? null,
+          exchangeOrderId,
+          userId,
+        ]
+      );
+    } catch (err) {
+      logger.error('WebSocket order sync error:', err);
+    }
+  }
+
   const initPortfolioFeed = async (token: string, userId: number) => {
     try {
       const authRes = await fetch("https://api.upstox.com/v2/feed/portfolio-stream-feed/authorize", {
@@ -1448,6 +1654,9 @@ async function startServer() {
           if (payload.update_type === 'order') {
             const wsPayload = JSON.stringify({ type: "order_update", data: payload });
             wss.clients.forEach((c) => { if (c.readyState === WebSocket.OPEN) c.send(wsPayload); });
+
+            // Trigger Database Sync Here
+            syncOrderFromWebSocket(payload, String(userId));
           }
         } catch (err) {
           logger.warn("[Upstox WS] Portfolio Feed Parse Error");
@@ -1505,7 +1714,7 @@ async function startServer() {
             
             marketData[symbol].ltp = newLtp;
             marketData[symbol].day_change = newLtp - prevClose;
-    marketData[symbol].day_change_pct = prevClose ? ((newLtp - prevClose) / prevClose) * 100 : 0;
+            marketData[symbol].day_change_pct = prevClose ? ((newLtp - prevClose) / prevClose) * 100 : 0;
           });
         }
         
