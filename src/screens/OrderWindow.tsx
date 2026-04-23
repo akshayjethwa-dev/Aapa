@@ -6,7 +6,7 @@ import { toast } from 'sonner';
 import { formatCurrency, cn } from '../lib/utils';
 import { useAuthStore } from '../store/authStore';
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 export interface OrderConfig {
   side: 'BUY' | 'SELL';
   symbol: string;
@@ -16,6 +16,12 @@ export interface OrderConfig {
   price: number;
   defaultQty?: number;
   defaultProduct?: 'MIS' | 'NRML' | 'Intraday' | 'Delivery';
+  // ── Modify-mode extras (injected by Orders.tsx) ──
+  _isModify?: boolean;
+  _orderId?: string;
+  _orderType?: 'MARKET' | 'LIMIT' | 'SL' | 'SL-M';
+  _validity?: 'DAY' | 'IOC';
+  _triggerPrice?: number;
 }
 
 type OrderTypeValue = 'MARKET' | 'LIMIT' | 'SL' | 'SL-M';
@@ -59,33 +65,34 @@ const OrderWindow = ({
   onKycRequired?: () => void;
 }) => {
   const { user, token } = useAuthStore();
-  const isOption = !!config.strike;
+  const isOption   = !!config.strike;
+  const isModify   = !!config._isModify;
 
   const resolvedDefaultProduct = config.defaultProduct
     ? (PRODUCT_DISPLAY[config.defaultProduct] ?? 'Intraday')
     : 'Intraday';
 
-  // ── State ─────────────────────────────────────────────────────────────────
+  // ── State ──────────────────────────────────────────────────────────────────
   const [quantity,     setQuantity]     = useState<number | string>(config.defaultQty ?? 1);
-  const [orderType,    setOrderType]    = useState<OrderTypeValue>('MARKET');
-  const [validity,     setValidity]     = useState<ValidityValue>('DAY');
+  const [orderType,    setOrderType]    = useState<OrderTypeValue>(config._orderType ?? 'MARKET');
+  const [validity,     setValidity]     = useState<ValidityValue>(config._validity ?? 'DAY');
   const [product,      setProduct]      = useState(resolvedDefaultProduct);
   const [price,        setPrice]        = useState<number | string>(config.price || 0);
-  const [triggerPrice, setTriggerPrice] = useState<number | string>('');
+  const [triggerPrice, setTriggerPrice] = useState<number | string>(config._triggerPrice ?? '');
   const [loading,      setLoading]      = useState(false);
   const [showConfirm,  setShowConfirm]  = useState(false);
 
   useEffect(() => {
     setQuantity(config.defaultQty ?? 1);
     setPrice(config.price || 0);
-    setTriggerPrice('');
+    setTriggerPrice(config._triggerPrice ?? '');
     setShowConfirm(false);
-    setOrderType('MARKET');
-    setValidity('DAY');
+    setOrderType(config._orderType ?? 'MARKET');
+    setValidity(config._validity ?? 'DAY');
     setProduct(config.defaultProduct ? (PRODUCT_DISPLAY[config.defaultProduct] ?? 'Intraday') : 'Intraday');
   }, [config.symbol, config.strike, config.optionType, config.side]);
 
-  // ── Derived values ────────────────────────────────────────────────────────
+  // ── Derived ────────────────────────────────────────────────────────────────
   const isSLType   = orderType === 'SL' || orderType === 'SL-M';
   const needsPrice = orderType === 'LIMIT' || orderType === 'SL';
 
@@ -102,7 +109,7 @@ const OrderWindow = ({
   const isQtyExceeded = numQty > MAX_QTY;
   const isValueHigh   = nominalValue > 500000;
 
-  // ── Client-side validation ────────────────────────────────────────────────
+  // ── Validation ─────────────────────────────────────────────────────────────
   const validateOrder = (): string | null => {
     if (numQty <= 0)                 return 'Quantity must be greater than 0';
     if (isQtyExceeded)               return `Max quantity is ${MAX_QTY}`;
@@ -110,10 +117,8 @@ const OrderWindow = ({
     if (isSLType) {
       const tp = Number(triggerPrice);
       if (!tp || tp <= 0) return 'Enter a valid trigger price';
-      // Directional check vs LTP
       if (config.side === 'BUY'  && tp < config.price) return `Trigger (${tp}) must be ≥ LTP (${config.price}) for BUY SL`;
       if (config.side === 'SELL' && tp > config.price) return `Trigger (${tp}) must be ≤ LTP (${config.price}) for SELL SL`;
-      // SL limit price check vs trigger
       if (orderType === 'SL') {
         if (config.side === 'BUY'  && numPrice < tp) return 'Limit price must be ≥ trigger price for BUY SL';
         if (config.side === 'SELL' && numPrice > tp) return 'Limit price must be ≤ trigger price for SELL SL';
@@ -122,7 +127,7 @@ const OrderWindow = ({
     return null;
   };
 
-  // ── Place order ───────────────────────────────────────────────────────────
+  // ── Place / Modify order ───────────────────────────────────────────────────
   const handlePlaceOrder = async () => {
     const err = validateOrder();
     if (err) { toast.error(err); return; }
@@ -130,23 +135,50 @@ const OrderWindow = ({
 
     setLoading(true);
     try {
+      const payload = {
+        broker:        'upstox',
+        symbol:        config.symbol,
+        type:          config.side,
+        order_type:    orderType,
+        validity:      validity,
+        quantity:      numQty,
+        price:         needsPrice ? numPrice : 0,
+        trigger_price: isSLType ? Number(triggerPrice) : 0,
+        product:       PRODUCT_API[product] ?? product.toLowerCase(),
+        expiry:        config.expiry,
+        strike:        config.strike,
+        optionType:    config.optionType,
+      };
+
+      // ── MODIFY path: PUT /api/orders/:id ──────────────────────────────────
+      if (isModify && config._orderId) {
+        const res = await fetch(`/api/orders/${config._orderId}`, {
+          method:  'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body:    JSON.stringify(payload),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          toast.error(data?.message || data?.error || 'Modify failed');
+          setLoading(false);
+          return;
+        }
+        if (data.success) {
+          toast.success(`Order modified successfully`);
+          onOrderPlaced();
+          onClose();
+        } else {
+          toast.error(data.message || data.error || 'Modify failed');
+        }
+        return;
+      }
+
+      // ── PLACE path: POST /api/orders ──────────────────────────────────────
       const res = await fetch('/api/orders', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          broker:        'upstox',
-          symbol:        config.symbol,
-          type:          config.side,
-          order_type:    orderType,
-          validity:      validity,
-          quantity:      numQty,
-          price:         needsPrice ? numPrice : 0,
-          trigger_price: isSLType ? Number(triggerPrice) : 0,
-          product:       PRODUCT_API[product] ?? product.toLowerCase(),
-          expiry:        config.expiry,
-          strike:        config.strike,
-          optionType:    config.optionType,
-        }),
+        body:    JSON.stringify(payload),
       });
 
       const data = await res.json();
@@ -185,7 +217,7 @@ const OrderWindow = ({
     }
   };
 
-  // ── Render ────────────────────────────────────────────────────────────────
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <motion.div
       initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
@@ -198,17 +230,25 @@ const OrderWindow = ({
             <ChevronRight className="rotate-180" size={22} />
           </button>
           <div>
-            <h2 className="text-sm font-black text-white tracking-tight">{config.side} {displaySymbol}</h2>
+            <h2 className="text-sm font-black text-white tracking-tight">
+              {isModify ? 'Modify' : config.side} {displaySymbol}
+            </h2>
             <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">
-              {config.expiry && !isNaN(new Date(config.expiry).getTime())
-                ? new Date(config.expiry).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }).toUpperCase()
-                : config.expiry || 'Equity • NSE'}
+              {isModify
+                ? 'Edit your open order'
+                : config.expiry && !isNaN(new Date(config.expiry).getTime())
+                  ? new Date(config.expiry).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }).toUpperCase()
+                  : config.expiry || 'Equity • NSE'}
             </p>
           </div>
         </div>
-        <div className={cn('px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest',
-          config.side === 'BUY' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500')}>
-          {config.side}
+        <div className={cn(
+          'px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest',
+          isModify
+            ? 'bg-amber-500/10 text-amber-500'
+            : config.side === 'BUY' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'
+        )}>
+          {isModify ? 'MODIFY' : config.side}
         </div>
       </div>
 
@@ -258,7 +298,9 @@ const OrderWindow = ({
                 onClick={() => { setOrderType(value); setShowConfirm(false); }}
                 className={cn('py-2.5 rounded-xl text-[11px] font-black uppercase tracking-widest transition-all',
                   orderType === value
-                    ? (config.side === 'BUY' ? 'bg-emerald-500 text-black' : 'bg-rose-500 text-white')
+                    ? isModify
+                      ? 'bg-amber-500 text-black'
+                      : (config.side === 'BUY' ? 'bg-emerald-500 text-black' : 'bg-rose-500 text-white')
                     : 'bg-zinc-900/60 text-zinc-500 hover:bg-zinc-800'
                 )}>{label}</button>
             ))}
@@ -308,7 +350,7 @@ const OrderWindow = ({
           )}
         </div>
 
-        {/* Limit Price — only for LIMIT and SL */}
+        {/* Limit Price */}
         {needsPrice && (
           <div className="space-y-2">
             <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest ml-1">
@@ -321,7 +363,7 @@ const OrderWindow = ({
           </div>
         )}
 
-        {/* Trigger Price — only for SL and SL-M */}
+        {/* Trigger Price */}
         {isSLType && (
           <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="space-y-2">
             <p className="text-[10px] font-bold text-amber-500 uppercase tracking-widest ml-1">
@@ -332,9 +374,7 @@ const OrderWindow = ({
               placeholder={config.side === 'BUY' ? 'Price above LTP to trigger' : 'Price below LTP to trigger'}
               className="w-full h-12 bg-amber-500/5 rounded-xl px-4 text-amber-400 font-bold text-base border border-amber-500/20 focus:border-amber-500/50 outline-none placeholder:text-zinc-700" />
             <p className="text-[9px] text-zinc-600 ml-1">
-              {config.side === 'BUY'
-                ? 'Order triggers when market rises to this price'
-                : 'Order triggers when market falls to this price'}
+              {config.side === 'BUY' ? 'Order triggers when market rises to this price' : 'Order triggers when market falls to this price'}
             </p>
           </motion.div>
         )}
@@ -389,7 +429,7 @@ const OrderWindow = ({
           </div>
         </div>
 
-        {/* High-value confirmation warning */}
+        {/* High-value confirmation */}
         {showConfirm && (
           <motion.div initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }}
             className="flex items-start gap-3 bg-amber-500/10 border border-amber-500/20 rounded-2xl p-4">
@@ -404,17 +444,27 @@ const OrderWindow = ({
         )}
       </div>
 
-      {/* Place Order Button */}
+      {/* CTA button */}
       <div className="px-5 pb-8 pt-4 border-t border-zinc-900">
-        <button onClick={handlePlaceOrder} disabled={loading || isQtyExceeded}
-          className={cn('w-full py-4 rounded-2xl text-sm font-black uppercase tracking-widest transition-all',
+        <button
+          onClick={handlePlaceOrder}
+          disabled={loading || isQtyExceeded}
+          className={cn(
+            'w-full py-4 rounded-2xl text-sm font-black uppercase tracking-widest transition-all',
             loading || isQtyExceeded
               ? 'bg-zinc-800 text-zinc-600 cursor-not-allowed'
+              : isModify
+              ? 'bg-amber-500 hover:bg-amber-400 text-black active:scale-95'
               : config.side === 'BUY'
               ? 'bg-emerald-500 hover:bg-emerald-400 text-black active:scale-95'
               : 'bg-rose-500 hover:bg-rose-400 text-white active:scale-95'
-          )}>
-          {loading ? 'Placing Order…' : showConfirm ? `Confirm ${config.side} ${orderType}` : `${config.side} ${displaySymbol}`}
+          )}
+        >
+          {loading
+            ? isModify ? 'Modifying Order…' : 'Placing Order…'
+            : showConfirm
+            ? isModify ? 'Confirm Modify' : `Confirm ${config.side} ${orderType}`
+            : isModify ? `Modify Order` : `${config.side} ${displaySymbol}`}
         </button>
       </div>
     </motion.div>
