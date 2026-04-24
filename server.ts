@@ -1002,7 +1002,16 @@ async function startServer() {
       
       let combinedHoldings: any[] = [];
       let combinedPositions: any[] = [];
-      let totalFunds: number = 0;
+      
+      const emptySegment = {
+        available_margin: 0, used_margin: 0, opening_balance: 0,
+        collateral: 0, span_margin: 0, exposure_margin: 0, option_premium: 0
+      };
+      const structuredFunds = {
+        available: 0, used: 0, opening_balance: 0, collateral: 0,
+        equity: { ...emptySegment },
+        fno:    { ...emptySegment },
+      };
 
       for (const token of tokens) {
         if (!token.access_token) continue;
@@ -1012,15 +1021,25 @@ async function startServer() {
 
           const brokerService = getBrokerService(String(token.broker));
           
-          const [holdings, positions, funds] = await Promise.all([
+          const [holdings, positions, fundsData] = await Promise.all([
             brokerService.getHoldings(decryptedToken).catch(() => []),
             brokerService.getPositions(decryptedToken).catch(() => []),
-            brokerService.getFunds(decryptedToken).catch(() => 0)
+            brokerService.getFunds(decryptedToken).catch(() => null)
           ]);
 
-          combinedHoldings = [...combinedHoldings, ...holdings];
+          combinedHoldings  = [...combinedHoldings, ...holdings];
           combinedPositions = [...combinedPositions, ...positions];
-          totalFunds += funds;
+
+          if (fundsData && typeof fundsData === 'object' && 'available' in fundsData) {
+            // Structured FundsData — merge segments
+            structuredFunds.available       += (fundsData as any).available       ?? 0;
+            structuredFunds.used            += (fundsData as any).used            ?? 0;
+            structuredFunds.opening_balance += (fundsData as any).opening_balance ?? 0;
+            structuredFunds.collateral      += (fundsData as any).collateral      ?? 0;
+            // Keep equity and fno from the last broker (Upstox only for now)
+            structuredFunds.equity = (fundsData as any).equity ?? structuredFunds.equity;
+            structuredFunds.fno    = (fundsData as any).fno    ?? structuredFunds.fno;
+          }
 
         } catch (e) { 
           logger.warn(`[Portfolio] ${token.broker} error:`, e); 
@@ -1030,7 +1049,7 @@ async function startServer() {
       res.json({
         holdings: combinedHoldings,
         positions: combinedPositions,
-        funds: totalFunds
+        funds: structuredFunds        // Now an object, not a number
       });
 
     } catch (e: any) { 
