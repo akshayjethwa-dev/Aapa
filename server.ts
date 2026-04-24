@@ -1675,12 +1675,17 @@ async function startServer() {
           if (payload.feeds) {
             Object.entries(payload.feeds).forEach(([key, feedData]: [string, any]) => {
               
+              // FIX 1: Safely access both 'ff' and 'fullFeed' as protobufjs parsing can yield either depending on the environment
               const rawPrice = 
+                feedData?.ff?.marketFF?.ltpc?.ltp || 
+                feedData?.ff?.indexFF?.ltpc?.ltp || 
                 feedData?.fullFeed?.marketFF?.ltpc?.ltp || 
                 feedData?.fullFeed?.indexFF?.ltpc?.ltp || 
                 feedData?.ltpc?.ltp ||
                 feedData?.firstLevelWithGreeks?.ltpc?.ltp;
-              const price = rawPrice ? rawPrice / 100 : null;
+              
+              // FIX 2: Upstox V3 MarketFeed sends pure 'double' prices. Do not divide by 100!
+              const price = rawPrice ? Number(rawPrice) : null;
               
               if (price) {
                 const symbol = reverseMap[key] || (key.includes('|') ? key.split('|')[1] : null);
@@ -1708,6 +1713,7 @@ async function startServer() {
           }
 
         } catch (err) {
+           // Safely ignore malformed ticks
         }
       });
 
