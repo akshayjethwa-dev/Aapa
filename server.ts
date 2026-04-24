@@ -996,6 +996,74 @@ async function startServer() {
     }
   });
 
+  // =========================================================================
+  // MARKET HISTORY — GET /api/market/history
+  // =========================================================================
+  app.get("/api/market/history", authenticateToken, async (req: any, res, next) => {
+    try {
+      let { instrument, interval, from, to } = req.query;
+      if (!instrument) return res.status(400).json({ status: "error", error: "Missing instrument parameter" });
+
+      const resolvedKey = resolveInstrumentKey(String(instrument));
+
+      // Fetch the connected user's Upstox token
+      const { rows } = await query("SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = 'upstox'", [req.user.id]);
+      const userToken = rows[0];
+
+      if (!userToken || !userToken.access_token) {
+        return res.status(400).json({ status: "error", error: "Please connect your Upstox account to fetch historical data." });
+      }
+
+      const decryptedToken = decrypt(String(userToken.access_token));
+
+      // Set defaults for interval and dates
+      const reqInterval = interval || 'day';
+      const toDateObj = to ? new Date(String(to)) : new Date();
+      const fromDateObj = from ? new Date(String(from)) : new Date(toDateObj.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+      // Upstox expects dates in YYYY-MM-DD format
+      const to_date = toDateObj.toISOString().split('T')[0];
+      const from_date = fromDateObj.toISOString().split('T')[0];
+
+      // Request to Upstox API
+      const response = await fetch(`https://api.upstox.com/v2/historical-candle/${encodeURIComponent(resolvedKey)}/${reqInterval}/${to_date}/${from_date}`, {
+        headers: { 
+          "Authorization": `Bearer ${decryptedToken}`, 
+          "Accept": "application/json" 
+        }
+      });
+
+      if (!response.ok) {
+        logger.error(`[Upstox API] History fetch failed: HTTP ${response.status} for ${resolvedKey}`);
+        return res.status(response.status).json({ status: "error", error: "Broker API rate limited or unavailable." });
+      }
+
+      const data = await response.json();
+
+      // Normalize the response to send back to the frontend
+      if (data.status === 'success' && data.data && data.data.candles) {
+         const formattedCandles = data.data.candles.map((candle: any) => {
+           // Upstox returns: [timestamp, open, high, low, close, volume, oi]
+           return {
+             timestamp: candle[0],
+             open: Number(candle[1]),
+             high: Number(candle[2]),
+             low: Number(candle[3]),
+             close: Number(candle[4])
+           };
+         });
+
+         return res.json({ status: "success", candles: formattedCandles });
+      }
+
+      logger.warn(`[Upstox API] Malformed history data for ${resolvedKey}`, data);
+      return res.status(400).json({ status: "error", error: data.errors?.[0]?.message || "Failed to fetch historical data." });
+    } catch (e: any) {
+      logger.error("[Market History] Server Exception:", e);
+      res.status(500).json({ status: "error", error: "Server error fetching market history", details: e.message });
+    }
+  });
+
   app.get("/api/portfolio", authenticateToken, async (req: any, res, next) => {
     try {
       const { rows: tokens } = await query("SELECT broker, access_token FROM user_tokens WHERE user_id = $1", [req.user.id]);

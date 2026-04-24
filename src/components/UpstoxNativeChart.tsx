@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickSeries, Time } from 'lightweight-charts';
 import { AlertTriangle } from 'lucide-react';
-import { UpstoxBrokerService } from '../lib/brokers/upstox'; 
+// FIX: Changed to named import
+import { apiClient } from '../api/client';
 
 interface UpstoxNativeChartProps {
   symbol: string;
@@ -11,7 +12,7 @@ interface UpstoxNativeChartProps {
 const UpstoxNativeChart: React.FC<UpstoxNativeChartProps> = ({ symbol, instrumentToken }) => {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -61,44 +62,49 @@ const UpstoxNativeChart: React.FC<UpstoxNativeChartProps> = ({ symbol, instrumen
     };
     window.addEventListener('resize', handleResize);
 
-    // 3. Fetch Upstox Data
+    // 3. Fetch Data via the Backend Proxy
     const fetchUpstoxData = async () => {
       try {
         setLoading(true);
-        setError(false);
+        setError(null);
         
         // Fetching 'day' candles for the last 1 month from Upstox
         const toDate = new Date();
         const fromDate = new Date();
         fromDate.setMonth(fromDate.getMonth() - 1);
         
-        // Instantiate the broker service to use the class method
-        const broker = new UpstoxBrokerService();
-        const rawData = await broker.getHistoricalCandles(
-          instrumentToken, 
-          'day', 
-          fromDate.toISOString().split('T')[0], 
-          toDate.toISOString().split('T')[0]
-        );
+        const res = await apiClient.get('/api/market/history', {
+          params: {
+            instrument: instrumentToken,
+            interval: 'day',
+            from: fromDate.toISOString(),
+            to: toDate.toISOString(),
+          },
+        });
 
-        // Map Upstox response to Lightweight Charts format
-        const formattedData = rawData.map((candle: any) => ({
-          // Cast the resulting number explicitly to the lightweight-charts Time type
-          time: (new Date(candle[0]).getTime() / 1000) as Time, 
-          open: Number(candle[1]),
-          high: Number(candle[2]),
-          low: Number(candle[3]),
-          close: Number(candle[4]),
-        }));
+        if (res.data?.status === 'success' && res.data?.candles) {
+          // Map backend response to Lightweight Charts format
+          const formattedData = res.data.candles.map((c: any) => ({
+            // Cast the resulting number explicitly to the lightweight-charts Time type
+            time: (new Date(c.timestamp).getTime() / 1000) as Time, 
+            open: Number(c.open),
+            high: Number(c.high),
+            low: Number(c.low),
+            close: Number(c.close),
+          }));
 
-        // Sort chronologically as required by the library
-        formattedData.sort((a, b) => (a.time as number) - (b.time as number));
+          // Sort chronologically as required by the library
+          formattedData.sort((a: any, b: any) => (a.time as number) - (b.time as number));
 
-        candlestickSeries.setData(formattedData);
-        chart.timeScale().fitContent();
-      } catch (err) {
+          candlestickSeries.setData(formattedData);
+          chart.timeScale().fitContent();
+        } else {
+          throw new Error("Invalid data format received");
+        }
+      } catch (err: any) {
         console.error("Failed to fetch Upstox chart data:", err);
-        setError(true);
+        // Show specific backend error if available, else generic
+        setError(err.response?.data?.error || "Check Upstox API connection");
       } finally {
         setLoading(false);
       }
@@ -119,7 +125,7 @@ const UpstoxNativeChart: React.FC<UpstoxNativeChartProps> = ({ symbol, instrumen
       <div className="flex flex-col items-center justify-center w-full h-full bg-zinc-900/50 rounded-2xl border border-zinc-800">
         <AlertTriangle className="text-zinc-600 mb-3" size={28} />
         <p className="text-xs font-bold text-zinc-400">Data Fetch Failed</p>
-        <p className="text-[10px] text-zinc-500 mt-1">Check Upstox API connection</p>
+        <p className="text-[10px] text-zinc-500 mt-1 max-w-50 text-center">{error}</p>
       </div>
     );
   }
