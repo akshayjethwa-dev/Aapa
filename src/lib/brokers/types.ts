@@ -22,16 +22,20 @@ export interface Holding {
 
 export interface BrokerPosition {
   symbol:            string;
+  product:           string;
   quantity:          number;
-  average_price:     number;
+  avg_price:         number;        // ← ADD: canonical frontend field
+  average_price:     number;        // ← KEEP: legacy compatibility
+  ltp:               number;        // ← ADD: last traded price
   current_price:     number;
   close_price:       number;
+  pnl:               number;        // ← ADD: unrealised P&L
+  day_pnl:           number;        // ← ADD: day P&L
   day_change:        number;
   day_change_pct:    number;
-  product:           string;
+  segment:           string;        // ← ADD: EQ | FO | CD
+  instrument_token?: string;
   broker:            string;
-  instrument_token?: string;  // ← NEW
-  segment?:          string;  // ← NEW: EQ | FO | CD
 }
 
 export interface OrderResponse {

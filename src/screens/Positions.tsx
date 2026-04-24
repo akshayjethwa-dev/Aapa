@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  RefreshCw, AlertCircle, X, BarChart2, ArrowRightLeft, Loader2,
+  RefreshCw, AlertCircle, X, BarChart2, ArrowRightLeft, Loader2, ZapOff,
 } from 'lucide-react';
 import { formatCurrency, cn } from '../lib/utils';
 import { apiClient } from '../api/client';
@@ -18,6 +18,8 @@ interface Position {
   instrument_token?: string;
   segment?:          string;
 }
+
+const REFRESH_INTERVAL = 30; // seconds
 
 const productLabel = (p: string) => {
   if (p === 'MIS')  return { label: 'MIS',  color: 'text-amber-400',  bg: 'bg-amber-500/10 border-amber-500/20'  };
@@ -70,7 +72,11 @@ const SquareOffSheet = ({
         </div>
 
         <div className="grid grid-cols-3 gap-3">
-          {[{ label: 'Product', val: position.product }, { label: 'Avg Price', val: formatCurrency(position.avg_price) }, { label: 'LTP', val: formatCurrency(position.ltp) }].map(r => (
+          {[
+            { label: 'Product', val: position.product },
+            { label: 'Avg Price', val: formatCurrency(position.avg_price) },
+            { label: 'LTP', val: formatCurrency(position.ltp) },
+          ].map(r => (
             <div key={r.label} className="bg-zinc-900 rounded-xl p-3 text-center">
               <p className="text-[8px] font-bold text-zinc-600 uppercase tracking-widest">{r.label}</p>
               <p className="text-[13px] font-bold text-white mt-0.5">{r.val}</p>
@@ -82,7 +88,7 @@ const SquareOffSheet = ({
           <p className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">Quantity to Square Off</p>
           <div className="flex items-center gap-3 bg-zinc-900 border border-zinc-800 rounded-xl p-3">
             <button onClick={() => setQty(q => String(Math.max(1, parseInt(q || '1', 10) - 1)))}
-              className="w-8 h-8 rounded-lg bg-zinc-800 flex items-center justify-center text-white text-lg font-bold active:scale-95">-</button>
+              className="w-8 h-8 rounded-lg bg-zinc-800 flex items-center justify-center text-white text-lg font-bold active:scale-95">−</button>
             <input type="number" min={1} max={position.quantity} value={qty}
               onChange={e => setQty(e.target.value)}
               className="flex-1 bg-transparent text-center text-[18px] font-black text-white outline-none" />
@@ -114,6 +120,87 @@ const SquareOffSheet = ({
           className="w-full py-4 rounded-2xl bg-rose-600 hover:bg-rose-500 active:scale-[0.98] text-white font-black text-[14px] uppercase tracking-widest transition-all disabled:opacity-50 flex items-center justify-center gap-2">
           {loading ? <><Loader2 size={16} className="animate-spin" /> Placing Order…</> : 'Square Off'}
         </button>
+      </motion.div>
+    </motion.div>
+  );
+};
+
+// ─── Square Off All Confirmation ──────────────────────────────────────────────
+const SquareOffAllSheet = ({
+  positions, onClose, onSuccess,
+}: { positions: Position[]; onClose: () => void; onSuccess: () => void }) => {
+  const [loading, setLoading] = useState(false);
+  const [results, setResults] = useState<{ symbol: string; ok: boolean; msg: string }[]>([]);
+  const [done, setDone]       = useState(false);
+
+  const misList = positions.filter(p => p.product === 'MIS');
+
+  const handleSquareOffAll = async () => {
+    setLoading(true);
+    const out: typeof results = [];
+    for (const pos of misList) {
+      try {
+        const res = await apiClient.post('/api/positions/squareoff', {
+          symbol: pos.symbol, product: pos.product,
+          quantity: pos.quantity, instrument_token: pos.instrument_token,
+        });
+        out.push({ symbol: pos.symbol, ok: res.data.success, msg: res.data.message || (res.data.success ? 'Done' : 'Failed') });
+      } catch (e: any) {
+        out.push({ symbol: pos.symbol, ok: false, msg: e?.response?.data?.message || 'Error' });
+      }
+    }
+    setResults(out);
+    setLoading(false);
+    setDone(true);
+    if (out.every(r => r.ok)) {
+      setTimeout(() => { onSuccess(); onClose(); }, 1200);
+    }
+  };
+
+  return (
+    <motion.div className="fixed inset-0 z-50 flex items-end bg-black/70"
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={!loading ? onClose : undefined}>
+      <motion.div className="w-full bg-zinc-950 border-t border-zinc-800 rounded-t-3xl p-6 space-y-5"
+        initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
+        transition={{ type: 'spring', damping: 28, stiffness: 320 }} onClick={e => e.stopPropagation()}>
+
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-[9px] font-bold text-rose-500/70 uppercase tracking-widest">⚠ Danger Zone</p>
+            <h3 className="text-[18px] font-black text-white tracking-tight">Square Off All MIS</h3>
+          </div>
+          {!loading && <button onClick={onClose} className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center text-zinc-400"><X size={16} /></button>}
+        </div>
+
+        {!done ? (
+          <>
+            <p className="text-[11px] text-zinc-400 leading-relaxed">
+              This will place SELL MARKET orders for all <span className="text-white font-bold">{misList.length} MIS positions</span> at current market price. This cannot be undone.
+            </p>
+            <div className="space-y-1.5 max-h-40 overflow-y-auto">
+              {misList.map(p => (
+                <div key={p.symbol} className="flex justify-between items-center bg-zinc-900/50 rounded-lg px-3 py-2">
+                  <span className="text-[11px] font-bold text-white">{p.symbol}</span>
+                  <span className="text-[10px] text-zinc-500">{p.quantity} qty · LTP {formatCurrency(p.ltp)}</span>
+                </div>
+              ))}
+            </div>
+            <button onClick={handleSquareOffAll} disabled={loading || misList.length === 0}
+              className="w-full py-4 rounded-2xl bg-rose-700 hover:bg-rose-600 active:scale-[0.98] text-white font-black text-[13px] uppercase tracking-widest transition-all disabled:opacity-50 flex items-center justify-center gap-2">
+              {loading ? <><Loader2 size={16} className="animate-spin" /> Processing {misList.length} positions…</> : `Exit All ${misList.length} MIS Positions`}
+            </button>
+          </>
+        ) : (
+          <div className="space-y-2">
+            {results.map(r => (
+              <div key={r.symbol} className={cn("flex justify-between items-center rounded-lg px-3 py-2",
+                r.ok ? "bg-emerald-500/10" : "bg-rose-500/10")}>
+                <span className="text-[11px] font-bold text-white">{r.symbol}</span>
+                <span className={cn("text-[10px] font-bold", r.ok ? "text-emerald-400" : "text-rose-400")}>{r.msg}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </motion.div>
     </motion.div>
   );
@@ -170,7 +257,11 @@ const ConvertSheet = ({
         </div>
 
         <div className="bg-zinc-900 rounded-xl p-4 space-y-2">
-          {[{ label: 'Symbol', val: position.symbol }, { label: 'Quantity', val: String(position.quantity) }, { label: 'Avg Price', val: formatCurrency(position.avg_price) }].map(r => (
+          {[
+            { label: 'Symbol', val: position.symbol },
+            { label: 'Quantity', val: String(position.quantity) },
+            { label: 'Avg Price', val: formatCurrency(position.avg_price) },
+          ].map(r => (
             <div key={r.label} className="flex justify-between">
               <span className="text-[10px] text-zinc-500">{r.label}</span>
               <span className="text-[10px] font-bold text-white">{r.val}</span>
@@ -193,7 +284,7 @@ const ConvertSheet = ({
         )}
 
         <button onClick={handleConvert} disabled={loading}
-          className="w-full py-4 rounded-2xl bg-emerald-600 hover:bg-emerald-500 active:scale-[0.98] text-white font-black text-[14px] uppercase tracking-widest transition-all disabled:opacity-50 flex items-center justify-center gap-2">
+          className="w-full py-4 rounded-2xl bg-emerald-700 hover:bg-emerald-600 active:scale-[0.98] text-white font-black text-[14px] uppercase tracking-widest transition-all disabled:opacity-50 flex items-center justify-center gap-2">
           {loading ? <><Loader2 size={16} className="animate-spin" /> Converting…</> : `Convert to ${targetProduct}`}
         </button>
       </motion.div>
@@ -204,29 +295,44 @@ const ConvertSheet = ({
 // ─── Position Row ─────────────────────────────────────────────────────────────
 const PositionRow = ({
   position, stocks, onSquareOff, onConvert,
-}: { position: Position; stocks: Record<string, number>; onSquareOff: (p: Position) => void; onConvert: (p: Position) => void }) => {
-  const ltp   = stocks[position.symbol] || position.ltp;
-  const pnl   = (ltp - position.avg_price) * position.quantity;
-  const pnlPc = position.avg_price > 0 ? ((ltp - position.avg_price) / position.avg_price) * 100 : 0;
-  const { label, color, bg } = productLabel(position.product);
+}: {
+  position: Position;
+  stocks: Record<string, number>;
+  onSquareOff: (p: Position) => void;
+  onConvert: (p: Position) => void;
+}) => {
+  const ltp    = stocks[position.symbol] || position.ltp;
+  const pnl    = (ltp - position.avg_price) * position.quantity;
+  const pnlPc  = position.avg_price > 0 ? (pnl / (position.avg_price * position.quantity)) * 100 : 0;
+  const { label, bg, color } = productLabel(position.product);
 
   return (
-    <motion.div layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8 }}
       className="bg-zinc-900/30 border border-zinc-800/40 rounded-2xl overflow-hidden">
-      <div className="p-4 flex items-start justify-between gap-3">
+
+      <div className="flex items-center justify-between p-4">
         <div className="flex items-center gap-3 min-w-0">
-          <div className={cn("w-10 h-10 rounded-xl border flex items-center justify-center shrink-0 font-black text-[11px]", bg, color)}>
-            {label}
+          <div className="w-10 h-10 rounded-xl bg-zinc-800/60 flex items-center justify-center shrink-0">
+            <span className="text-[11px] font-black text-zinc-300">{position.symbol.slice(0, 2)}</span>
           </div>
           <div className="min-w-0">
-            <p className="text-[14px] font-black text-white tracking-tight truncate">{position.symbol}</p>
-            <p className="text-[9px] font-bold text-zinc-600 uppercase tracking-widest mt-0.5">
-              {position.quantity} Qty · Avg {formatCurrency(position.avg_price)}
-              {position.broker && <span className="ml-1 text-zinc-700">· {position.broker}</span>}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <p className="text-[13px] font-black text-white truncate">{position.symbol}</p>
+              <span className={cn("text-[8px] font-black px-1.5 py-0.5 rounded-full border uppercase", bg, color)}>{label}</span>
+              {position.segment && position.segment !== 'EQ' && (
+                <span className="text-[7px] font-bold text-zinc-600 uppercase">{position.segment}</span>
+              )}
+            </div>
+            <p className="text-[10px] text-zinc-500 mt-0.5">
+              {position.quantity} qty · Avg {formatCurrency(position.avg_price)}
             </p>
           </div>
         </div>
-        <div className="text-right shrink-0">
+        <div className="text-right shrink-0 ml-2">
           <p className="text-[14px] font-black text-white">{formatCurrency(ltp * position.quantity)}</p>
           <p className={cn("text-[10px] font-bold", pnl >= 0 ? "text-emerald-500" : "text-rose-500")}>
             {pnl >= 0 ? '+' : ''}{formatCurrency(pnl)}
@@ -235,6 +341,7 @@ const PositionRow = ({
           <p className="text-[8px] font-bold text-zinc-600 uppercase mt-0.5">LTP {formatCurrency(ltp)}</p>
         </div>
       </div>
+
       <div className="flex border-t border-zinc-800/40">
         <button onClick={() => onSquareOff(position)}
           className="flex-1 py-2.5 text-[10px] font-black uppercase tracking-widest text-rose-400 hover:bg-rose-500/10 active:bg-rose-500/20 transition-colors flex items-center justify-center gap-1.5">
@@ -262,13 +369,24 @@ const Positions = ({ stocks }: { stocks: Record<string, number> }) => {
   const [filter, setFilter]                   = useState<'ALL' | 'MIS' | 'CNC' | 'NRML'>('ALL');
   const [squareOffTarget, setSquareOffTarget] = useState<Position | null>(null);
   const [convertTarget, setConvertTarget]     = useState<Position | null>(null);
+  const [showSquareOffAll, setShowSquareOffAll] = useState(false);
+  const [countdown, setCountdown]             = useState(REFRESH_INTERVAL);
+  const countdownRef                          = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchPositions = useCallback(async () => {
-    setLoading(true); setError(null);
+    setLoading(true); setError(null); setCountdown(REFRESH_INTERVAL);
     try {
       const res = await apiClient.get('/api/positions');
       const raw = Array.isArray(res.data) ? res.data : (res.data?.positions || []);
-      setPositions(raw);
+      // Normalise: support both avg_price and average_price from backend
+      const normalised: Position[] = raw.map((p: any) => ({
+        ...p,
+        avg_price: p.avg_price ?? p.average_price ?? 0,
+        ltp:       p.ltp ?? p.current_price ?? 0,
+        pnl:       p.pnl ?? 0,
+        day_pnl:   p.day_pnl ?? 0,
+      }));
+      setPositions(normalised);
     } catch (e: any) {
       setError(e?.response?.data?.message || 'Failed to load positions.');
     } finally { setLoading(false); }
@@ -276,16 +394,23 @@ const Positions = ({ stocks }: { stocks: Record<string, number> }) => {
 
   useEffect(() => {
     fetchPositions();
-    const interval = setInterval(fetchPositions, 30_000);
-    return () => clearInterval(interval);
+    const refreshTimer = setInterval(fetchPositions, REFRESH_INTERVAL * 1000);
+
+    // Live countdown
+    countdownRef.current = setInterval(() => {
+      setCountdown(c => (c <= 1 ? REFRESH_INTERVAL : c - 1));
+    }, 1000);
+
+    return () => {
+      clearInterval(refreshTimer);
+      if (countdownRef.current) clearInterval(countdownRef.current);
+    };
   }, [fetchPositions]);
 
   const displayed = filter === 'ALL' ? positions : positions.filter(p => p.product === filter);
+  const misList   = positions.filter(p => p.product === 'MIS');
 
-  const totalPnL = positions.reduce((sum, p) => {
-    const ltp = stocks[p.symbol] || p.ltp;
-    return sum + (ltp - p.avg_price) * p.quantity;
-  }, 0);
+  const totalPnL    = positions.reduce((sum, p) => sum + ((stocks[p.symbol] || p.ltp) - p.avg_price) * p.quantity, 0);
   const totalDayPnL = positions.reduce((sum, p) => sum + (p.day_pnl || 0), 0);
 
   const segmentTotals = positions.reduce<Record<string, number>>((acc, p) => {
@@ -300,18 +425,36 @@ const Positions = ({ stocks }: { stocks: Record<string, number> }) => {
   return (
     <div className="pb-28 overflow-y-auto scroll-smooth">
 
-      {/* Header */}
+      {/* ── Header ── */}
       <div className="sticky top-0 bg-black/95 backdrop-blur-md z-10 px-5 pt-4 pb-3 space-y-3 border-b border-zinc-900">
         <div className="flex items-center justify-between">
           <div>
             <p className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">Live</p>
             <h1 className="text-[22px] font-black tracking-tighter text-white">Positions</h1>
           </div>
-          <button onClick={fetchPositions} disabled={loading}
-            className="w-9 h-9 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center text-zinc-400 hover:text-white transition-colors disabled:opacity-50">
-            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-          </button>
+          <div className="flex items-center gap-2">
+            {/* Square Off All — only shown when MIS positions exist */}
+            {misList.length > 0 && !loading && (
+              <button
+                onClick={() => setShowSquareOffAll(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 text-[9px] font-black uppercase tracking-widest hover:bg-rose-500/20 active:scale-95 transition-all">
+                <ZapOff size={11} /> Exit All MIS
+              </button>
+            )}
+            {/* Refresh + countdown */}
+            <button onClick={fetchPositions} disabled={loading}
+              className="relative w-9 h-9 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center text-zinc-400 hover:text-white transition-colors disabled:opacity-50">
+              <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+              {!loading && (
+                <span className="absolute -bottom-1 -right-1 text-[7px] font-black text-zinc-600 bg-black px-0.5 rounded">
+                  {countdown}s
+                </span>
+              )}
+            </button>
+          </div>
         </div>
+
+        {/* Product filter pills */}
         <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
           {FILTERS.map(f => (
             <button key={f} onClick={() => setFilter(f)}
@@ -325,30 +468,31 @@ const Positions = ({ stocks }: { stocks: Record<string, number> }) => {
         </div>
       </div>
 
-      {/* P&L Summary */}
+      {/* ── P&L Summary Bar ── */}
       {!loading && positions.length > 0 && (
         <div className="px-5 pt-4">
           <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-2xl p-4">
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <p className="text-[8px] font-bold text-zinc-600 uppercase tracking-widest">Unrealised P&L</p>
-                <p className={cn("text-[18px] font-black mt-0.5", totalPnL >= 0 ? "text-emerald-500" : "text-rose-500")}>
+                <p className={cn("text-[18px] font-black mt-0.5 tabular-nums", totalPnL >= 0 ? "text-emerald-500" : "text-rose-500")}>
                   {totalPnL >= 0 ? '+' : ''}{formatCurrency(totalPnL)}
                 </p>
               </div>
               <div>
                 <p className="text-[8px] font-bold text-zinc-600 uppercase tracking-widest">Day P&L</p>
-                <p className={cn("text-[18px] font-black mt-0.5", totalDayPnL >= 0 ? "text-emerald-500" : "text-rose-500")}>
+                <p className={cn("text-[18px] font-black mt-0.5 tabular-nums", totalDayPnL >= 0 ? "text-emerald-500" : "text-rose-500")}>
                   {totalDayPnL >= 0 ? '+' : ''}{formatCurrency(totalDayPnL)}
                 </p>
               </div>
             </div>
+            {/* Segment breakdown — only shows when multiple segments */}
             {Object.keys(segmentTotals).length > 1 && (
               <div className="flex gap-3 mt-3 pt-3 border-t border-zinc-800/40">
                 {Object.entries(segmentTotals).map(([seg, val]) => (
                   <div key={seg} className="flex-1">
                     <p className="text-[8px] font-bold text-zinc-600 uppercase tracking-widest">{seg}</p>
-                    <p className={cn("text-[11px] font-black", val >= 0 ? "text-emerald-500" : "text-rose-500")}>
+                    <p className={cn("text-[11px] font-black tabular-nums", val >= 0 ? "text-emerald-500" : "text-rose-500")}>
                       {val >= 0 ? '+' : ''}{formatCurrency(val)}
                     </p>
                   </div>
@@ -359,9 +503,11 @@ const Positions = ({ stocks }: { stocks: Record<string, number> }) => {
         </div>
       )}
 
-      {/* Content */}
+      {/* ── Content ── */}
       <div className="px-5 pt-4 space-y-3">
-        {loading && [1,2,3].map(i => (
+
+        {/* Loading skeletons */}
+        {loading && [1, 2, 3].map(i => (
           <div key={i} className="bg-zinc-900/20 border border-zinc-800/30 rounded-2xl p-4 animate-pulse">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-zinc-800" />
@@ -377,6 +523,7 @@ const Positions = ({ stocks }: { stocks: Record<string, number> }) => {
           </div>
         ))}
 
+        {/* Error state */}
         {!loading && error && (
           <div className="flex flex-col items-center justify-center py-16 space-y-4">
             <AlertCircle size={40} className="text-rose-500/50" />
@@ -387,6 +534,7 @@ const Positions = ({ stocks }: { stocks: Record<string, number> }) => {
           </div>
         )}
 
+        {/* Empty state */}
         {!loading && !error && positions.length === 0 && (
           <div className="flex flex-col items-center justify-center py-20 space-y-3 text-center">
             <div className="w-16 h-16 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center">
@@ -399,27 +547,51 @@ const Positions = ({ stocks }: { stocks: Record<string, number> }) => {
           </div>
         )}
 
+        {/* Position rows */}
         <AnimatePresence>
           {!loading && !error && displayed.map(pos => (
-            <PositionRow key={`${pos.symbol}-${pos.product}`}
-              position={pos} stocks={stocks}
+            <PositionRow
+              key={`${pos.symbol}-${pos.product}`}
+              position={pos}
+              stocks={stocks}
               onSquareOff={setSquareOffTarget}
-              onConvert={setConvertTarget} />
+              onConvert={setConvertTarget}
+            />
           ))}
         </AnimatePresence>
       </div>
 
-      {/* Sheets */}
+      {/* ── Action Sheets ── */}
       <AnimatePresence>
         {squareOffTarget && (
-          <SquareOffSheet position={squareOffTarget}
+          <SquareOffSheet
+            position={squareOffTarget}
             onClose={() => setSquareOffTarget(null)}
-            onSuccess={() => { fetchPositions(); window.dispatchEvent(new Event('broker_portfolio_updated')); }} />
+            onSuccess={() => {
+              fetchPositions();
+              window.dispatchEvent(new Event('broker_portfolio_updated'));
+            }}
+          />
         )}
         {convertTarget && (
-          <ConvertSheet position={convertTarget}
+          <ConvertSheet
+            position={convertTarget}
             onClose={() => setConvertTarget(null)}
-            onSuccess={() => { fetchPositions(); window.dispatchEvent(new Event('broker_portfolio_updated')); }} />
+            onSuccess={() => {
+              fetchPositions();
+              window.dispatchEvent(new Event('broker_portfolio_updated'));
+            }}
+          />
+        )}
+        {showSquareOffAll && (
+          <SquareOffAllSheet
+            positions={positions}
+            onClose={() => setShowSquareOffAll(false)}
+            onSuccess={() => {
+              fetchPositions();
+              window.dispatchEvent(new Event('broker_portfolio_updated'));
+            }}
+          />
         )}
       </AnimatePresence>
     </div>

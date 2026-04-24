@@ -60,29 +60,48 @@ export class UpstoxBrokerService implements BrokerService {
   }
 
   async getPositions(token: string): Promise<BrokerPosition[]> {
-    const response = await fetch("https://api.upstox.com/v2/portfolio/short-term-positions", {
-      headers: { "Authorization": `Bearer ${token}`, "Accept": "application/json" }
+  const response = await fetch("https://api.upstox.com/v2/portfolio/short-term-positions", {
+    headers: { "Authorization": `Bearer ${token}`, "Accept": "application/json" }
+  });
+  const data = await response.json();
+  if (data.status === 'success') {
+    return data.data.map((p: any) => {
+      const ltp         = p.last_price || 0;
+      const close_price = p.close_price || ltp;
+      const avg         = p.average_price || 0;
+      const qty         = p.quantity || 0;
+
+      // Derive segment from instrument_key prefix or exchange field
+      const instrumentKey: string = p.instrument_token || p.instrument_key || '';
+      const exchange = (p.exchange || '').toUpperCase();
+      let segment = 'EQ';
+      if (instrumentKey.includes('NSE_FO') || instrumentKey.includes('BSE_FO') || exchange === 'NFO' || exchange === 'BFO') segment = 'FO';
+      else if (instrumentKey.includes('NSE_CD') || exchange === 'CDS') segment = 'CD';
+
+      const pnl     = (ltp - avg) * qty;
+      const day_pnl = (ltp - close_price) * qty;
+
+      return {
+        symbol:            p.trading_symbol,
+        product:           p.product,
+        quantity:          qty,
+        avg_price:         avg,         // ← frontend-canonical field
+        average_price:     avg,         // ← legacy, keep for compatibility
+        ltp:               ltp,
+        current_price:     ltp,
+        close_price:       close_price,
+        pnl:               pnl,
+        day_pnl:           day_pnl,
+        day_change:        ltp - close_price,
+        day_change_pct:    close_price ? ((ltp - close_price) / close_price) * 100 : 0,
+        segment:           segment,
+        instrument_token:  instrumentKey,
+        broker:            'Upstox',
+      };
     });
-    const data = await response.json();
-    if (data.status === 'success') {
-      return data.data.map((p: any) => {
-        const ltp = p.last_price || 0;
-        const close_price = p.close_price || ltp;
-        return {
-          symbol: p.trading_symbol,
-          quantity: p.quantity,
-          average_price: p.average_price,
-          current_price: ltp,
-          close_price: close_price,
-          day_change: ltp - close_price,
-          day_change_pct: close_price ? ((ltp - close_price) / close_price) * 100 : 0,
-          product: p.product,
-          broker: 'Upstox'
-        };
-      });
-    }
-    throw new Error(data.errors?.[0]?.message || 'Failed to fetch Upstox positions');
   }
+  throw new Error(data.errors?.[0]?.message || 'Failed to fetch Upstox positions');
+}
 
   async getOrders(token: string): Promise<any[]> {
     const response = await fetch("https://api.upstox.com/v2/order/retrieve-all", {
