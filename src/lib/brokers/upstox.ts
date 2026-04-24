@@ -5,7 +5,7 @@ import {
   OrderRequest, 
   OrderResponse, 
   SquareOffRequest, 
-  ConvertPositionRequest 
+  ConvertPositionRequest , FundsData, FundsSegment 
 } from './types';
 
 // ─── Status Normalizer ────────────────────────────────────────────────────────
@@ -24,16 +24,40 @@ const normalizeUpstoxStatus = (raw: string): string => {
 };
 
 export class UpstoxBrokerService implements BrokerService {
-  async getFunds(token: string): Promise<number> {
-    const response = await fetch("https://api.upstox.com/v2/user/get-funds-and-margin", {
-      headers: { "Authorization": `Bearer ${token}`, "Accept": "application/json" }
+  async getFunds(token: string): Promise<FundsData> {
+  const response = await fetch("https://api.upstox.com/v2/user/get-funds-and-margin", {
+    headers: { "Authorization": `Bearer ${token}`, "Accept": "application/json" }
+  });
+  const data = await response.json();
+
+  if (data.status === 'success') {
+    const eq = data.data?.equity ?? {};
+    const fo = data.data?.commodity ?? data.data?.fno ?? {};
+
+    const parseSegment = (seg: any): FundsSegment => ({
+      available_margin:  Number(seg.available_margin  ?? 0),
+      used_margin:       Number(seg.used_margin       ?? seg.utilised_margin ?? 0),
+      opening_balance:   Number(seg.opening_balance   ?? 0),
+      collateral:        Number(seg.collateral        ?? 0),
+      span_margin:       Number(seg.span              ?? seg.span_margin ?? 0),
+      exposure_margin:   Number(seg.exposure          ?? seg.exposure_margin ?? 0),
+      option_premium:    Number(seg.option_premium    ?? 0),
     });
-    const data = await response.json();
-    if (data.status === 'success') {
-      return data.data.equity.available_margin;
-    }
-    throw new Error(data.errors?.[0]?.message || 'Failed to fetch Upstox funds');
+
+    const equitySegment = parseSegment(eq);
+    const fnoSegment    = parseSegment(fo);
+
+    return {
+      available:       equitySegment.available_margin + fnoSegment.available_margin,
+      used:            equitySegment.used_margin + fnoSegment.used_margin,
+      opening_balance: equitySegment.opening_balance + fnoSegment.opening_balance,
+      collateral:      equitySegment.collateral + fnoSegment.collateral,
+      equity:          equitySegment,
+      fno:             fnoSegment,
+    };
   }
+  throw new Error(data.errors?.[0]?.message || 'Failed to fetch Upstox funds');
+}
 
   async getHoldings(token: string): Promise<Holding[]> {
     const response = await fetch("https://api.upstox.com/v2/portfolio/long-term-holdings", {

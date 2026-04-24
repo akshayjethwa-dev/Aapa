@@ -9,6 +9,25 @@ export interface OrderRequest {
   product:        string;
 }
 
+export interface FundsSegment {
+  available_margin: number;
+  used_margin: number;
+  opening_balance: number;
+  collateral: number;
+  span_margin: number;
+  exposure_margin: number;
+  option_premium: number;
+}
+
+export interface FundsData {
+  available: number;         // Total available margin (Equity + F&O combined)
+  used: number;              // Total used margin
+  opening_balance: number;   // Opening balance of the day
+  collateral: number;        // Collateral value
+  equity: FundsSegment;      // Equity segment breakdown
+  fno: FundsSegment;         // F&O segment breakdown
+}
+
 export interface Holding {
   symbol:         string;
   quantity:       number;
