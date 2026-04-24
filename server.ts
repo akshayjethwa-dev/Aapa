@@ -180,7 +180,7 @@ async function startServer() {
 
     if (!token) {
       logger.warn(`[WebSocket] Connection rejected: No token provided from ${ip}`);
-      ws.close(4001, "Unauthorized");
+      ws.close(4003, "TokenExpired");
       return;
     }
 
@@ -1675,11 +1675,12 @@ async function startServer() {
           if (payload.feeds) {
             Object.entries(payload.feeds).forEach(([key, feedData]: [string, any]) => {
               
-              const price = 
+              const rawPrice = 
                 feedData?.fullFeed?.marketFF?.ltpc?.ltp || 
                 feedData?.fullFeed?.indexFF?.ltpc?.ltp || 
                 feedData?.ltpc?.ltp ||
                 feedData?.firstLevelWithGreeks?.ltpc?.ltp;
+              const price = rawPrice ? rawPrice / 100 : null;
               
               if (price) {
                 const symbol = reverseMap[key] || (key.includes('|') ? key.split('|')[1] : null);
@@ -1712,7 +1713,8 @@ async function startServer() {
 
       upstoxMarketWs.on("close", (code, reason) => {
         logger.warn(`[Upstox WS] Market Data Closed. Code: ${code}, Reason: ${reason?.toString() || 'Unknown'}. Reconnecting in 5s...`);
-        setTimeout(() => initMarketDataFeed(token, userId), 5000);
+        // DON'T reuse stale token — re-init from DB which gets a fresh token
+        setTimeout(() => initUpstoxWebSockets(), 5000);
       });
 
       upstoxMarketWs.on("error", (err: any) => {
