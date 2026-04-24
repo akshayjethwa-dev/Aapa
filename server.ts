@@ -18,6 +18,12 @@ import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import helmet from "helmet";
 import cors from "cors";
 
+// --- NEW IMPORTS FOR INSTRUMENT SYNC & SEARCH ---
+import cron from "node-cron";
+import { syncUpstoxInstruments } from "./scripts/sync_instruments";
+import instrumentRoutes from "./src/routes/instruments";
+// ------------------------------------------------
+
 import { pool, query } from "./src/db/index";
 import { validate } from "./src/middleware/validate";
 import {
@@ -392,8 +398,12 @@ async function startServer() {
     });
   };
 
+  // =========================================================================
+  // API ROUTERS
+  // =========================================================================
   app.use("/api/user", authenticateToken, userProfileRouter);
   app.use("/api/watchlists", authenticateToken, watchlistsRouter);
+  app.use("/api/instruments", instrumentRoutes); // <-- NEW INSTRUMENTS SEARCH ROUTE
 
   app.get("/api/health", async (req, res) => {
     try {
@@ -2006,6 +2016,20 @@ async function startServer() {
   app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
       logger.error("Unhandled error", { error: err.message, stack: err.stack, path: req.path, method: req.method, userId: (req as any).user?.id });
       res.status(500).json({ error: "An internal server error occurred.", details: err.message || String(err) });
+  });
+
+  // =========================================================================
+  // DAILY UPSTOX INSTRUMENT SYNC CRON JOB (8:00 AM IST)
+  // =========================================================================
+  cron.schedule("0 8 * * *", async () => {
+    logger.info("[Cron] Triggering daily Upstox Instrument Sync at 8:00 AM");
+    try {
+      await syncUpstoxInstruments();
+    } catch (error) {
+      logger.error("[Cron] Failed to sync Upstox instruments:", error);
+    }
+  }, {
+    timezone: "Asia/Kolkata"
   });
 
   server.listen(3000, "0.0.0.0", () => {

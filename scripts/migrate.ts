@@ -22,18 +22,20 @@ const runMigrations = async () => {
 
     // List all migrations in order
     const migrations = [
-      { file: "001_initial_schema.sql",                         label: "001 Initial Schema"              },
-      { file: "002_add_audit_compliance_fields.sql",            label: "002 Audit Fields"                },
-      { file: "003_add_broker_audit_logs.sql",                  label: "003 Broker Audit Logs"           },
-      { file: "004_add_kyc_fields.sql",                         label: "004 KYC Fields"                  },
-      { file: "005_add_terms_accepted_field.sql",               label: "005 Terms Accepted"              },
-      { file: "006_enable_rls.sql",                             label: "006 Enable RLS"                  },
-      { file: "007_add_expires_at_to_user_tokens.sql",          label: "007 Token Expiry"                },
-      { file: "008_add_onboarding_fields.sql",                  label: "008 Onboarding Fields"           },
-      { file: "009_add_risk_profile.sql",                       label: "009 Risk Profile"                },
-      { file: "010_user_watchlists.sql",                        label: "010 User Watchlists"             },
-      { file: "011_add_order_validity_trigger_price.sql",       label: "011 Order Validity & Trigger"    },
-      { file: "012_order_modify_cancel_fields.sql",             label: "012 Order Modify & Cancel Fields" }, // ← NEW
+      { file: "001_initial_schema.sql",                       label: "001 Initial Schema"              },
+      { file: "002_add_audit_compliance_fields.sql",          label: "002 Audit Fields"                },
+      { file: "003_add_broker_audit_logs.sql",                label: "003 Broker Audit Logs"           },
+      { file: "004_add_kyc_fields.sql",                       label: "004 KYC Fields"                  },
+      { file: "005_add_terms_accepted_field.sql",             label: "005 Terms Accepted"              },
+      { file: "006_enable_rls.sql",                           label: "006 Enable RLS"                  },
+      { file: "007_add_expires_at_to_user_tokens.sql",        label: "007 Token Expiry"                },
+      { file: "008_add_onboarding_fields.sql",                label: "008 Onboarding Fields"           },
+      { file: "009_add_risk_profile.sql",                     label: "009 Risk Profile"                },
+      { file: "010_user_watchlists.sql",                      label: "010 User Watchlists"             },
+      { file: "011_add_order_validity_trigger_price.sql",     label: "011 Order Validity & Trigger"    },
+      { file: "012_order_modify_cancel_fields.sql",           label: "012 Order Modify & Cancel Fields" }, 
+      { file: "013_fix_onboarding_complete.sql",              label: "013 Fix Onboarding Complete"     },
+      { file: "014_add_instruments_table.sql",                label: "014 Add Instruments Table"       },
     ];
 
     for (const migration of migrations) {
