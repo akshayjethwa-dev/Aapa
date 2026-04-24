@@ -961,7 +961,9 @@ async function startServer() {
                ce: {
                   ltp: ce?.ltp ?? null,
                   perc_change: ce?.perc_change ?? null,
+                  oi: ce?.oi ?? null,
                   oi_formatted: formatVal(ce?.oi, 100000, 'L'),
+                  volume: ce?.volume ?? null,
                   vol_formatted: formatVal(ce?.volume, 1000, 'K'),
                   is_active: ce?.ltp != null && ce?.ltp > 0,
                   iv: formatGreek(ceGreeks?.iv, 2),
@@ -972,7 +974,9 @@ async function startServer() {
                pe: {
                   ltp: pe?.ltp ?? null,
                   perc_change: pe?.perc_change ?? null,
+                  oi: pe?.oi ?? null,
                   oi_formatted: formatVal(pe?.oi, 100000, 'L'),
+                  volume: pe?.volume ?? null,
                   vol_formatted: formatVal(pe?.volume, 1000, 'K'),
                   is_active: pe?.ltp != null && pe?.ltp > 0,
                   iv: formatGreek(peGreeks?.iv, 2),
