@@ -40,8 +40,13 @@ const TradingTerminal = ({
         }
         setLoading(false);
 
-        // 2. Connect to WebSocket
-        ws = new WebSocket(`${import.meta.env.VITE_WS_URL || 'ws://localhost:8080'}/market-data`);
+        // 2. Connect to WebSocket dynamically based on environment
+        const wsBase = (import.meta as any).env?.VITE_WS_URL?.trim() || 
+          (typeof window !== 'undefined'
+            ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
+            : 'ws://localhost:3000');
+            
+        ws = new WebSocket(`${wsBase}/market-data`);
         
         ws.onmessage = async (event) => {
           const tickData = JSON.parse(event.data); 
@@ -74,10 +79,9 @@ const TradingTerminal = ({
     return () => {
       if (ws) ws.close();
     };
-  }, [instrumentKey, onPriceUpdate]); // Added onPriceUpdate to dependencies just to be React-strict
+  }, [instrumentKey, onPriceUpdate]);
 
   return (
-    // FIX: Added flex-1 and min-h-[400px] to ensure the canvas never collapses to 0-height
     <div className="flex-1 w-full h-full relative min-h-100 flex flex-col">
       {loading && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/50 backdrop-blur-sm z-10">
@@ -94,7 +98,6 @@ const TradingTerminal = ({
         </div>
       )}
       
-      {/* Wrapper to ensure the chart binds strictly to the parent bounds */}
       <div className="absolute inset-0">
          <LiveChart ref={chartRef} symbol={instrumentKey} />
       </div>
