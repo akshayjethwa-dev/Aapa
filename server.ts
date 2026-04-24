@@ -10,8 +10,9 @@ import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
 import protobuf from "protobufjs";
+import Redis from "ioredis";
 
-// Removed Redis completely to prevent 500 crashes on flaky connections
+// Rate limiting is kept local to prevent auth crashes on flaky connections
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 
 import helmet from "helmet";
@@ -33,7 +34,6 @@ import { encrypt, decrypt } from "./src/utils/encryption";
 import { requireKyc } from "./src/middleware/requireKyc";
 import { getBrokerService, OrderRequest } from "./src/lib/brokers/index";
 
-// 1. ADDED IMPORT FOR THE NEW USER PROFILE ROUTER
 import userProfileRouter from "./src/routes/userProfile";
 import watchlistsRouter from "./src/routes/watchlists";
 
@@ -41,6 +41,13 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 dotenv.config();
+
+// =========================================================================
+// PHASE 1: REDIS INITIALIZATION (For Data Caching, NOT Session Auth)
+// =========================================================================
+const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
+redis.on('error', (err) => logger.error('[Redis] Cache Client Error:', err));
+redis.on('connect', () => logger.info('[Redis] Successfully connected for caching.'));
 
 interface ExtWebSocket extends WebSocket {
   isAlive: boolean;
@@ -69,7 +76,6 @@ const getMarketPhase = (): 'LIVE' | 'PRE_OPEN' | 'CLOSED' => {
     if (p.type === 'weekday') weekday = p.value;
   });
 
-  // Weekends are closed
   if (weekday === 'Sat' || weekday === 'Sun') return 'CLOSED';
 
   const timeInMinutes = hour * 60 + minute;
@@ -104,11 +110,30 @@ const getUpstoxTokenExpiry = () => {
 async function startServer() {
   const app = express();
   const server = http.createServer(app);
-  const wss = new WebSocketServer({ server });
+
+  const allowedOrigins = [
+    process.env.VITE_APP_URL?.trim() || "https://aapacapital.com",
+    "https://aapa-production.up.railway.app", 
+    "http://localhost:3000",
+    "http://localhost:5173", 
+  ];
 
   // =========================================================================
-  // --- SYMBOL MAPPINGS & MARKET DATA INITIALIZATION ---
+  // PHASE 3: RAILWAY WEBSOCKETS - Strict CORS Verification & Health
   // =========================================================================
+  const wss = new WebSocketServer({ 
+    server,
+    verifyClient: (info, callback) => {
+      const origin = info.origin;
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(true);
+      } else {
+        logger.warn(`[WS CORS] Blocked WebSocket connection from unauthorized origin: ${origin}`);
+        callback(false, 401, 'Unauthorized Origin');
+      }
+    }
+  });
+
   const primaryIndices = ["NIFTY 50", "SENSEX", "BANKNIFTY", "FINNIFTY", "MIDCAP NIFTY", "SMALLCAP NIFTY"];
   const secondaryIndices = ["NIFTY IT", "NIFTY AUTO", "NIFTY PHARMA", "NIFTY METAL", "NIFTY FMCG", "NIFTY REALTY"];
   const stocks = ["RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "BHARTIARTL", "SBIN", "LICI", "ITC", "HINDUNILVR"];
@@ -214,6 +239,7 @@ async function startServer() {
     });
   });
 
+  // Keep-alive heartbeat: Prevents Railway load balancer from dropping idle connections
   const pingInterval = setInterval(() => {
     wss.clients.forEach((client) => {
       const ws = client as ExtWebSocket;
@@ -225,7 +251,7 @@ async function startServer() {
       ws.isAlive = false;
       ws.ping();
     });
-  }, 30000); 
+  }, 25000); 
 
   const tokenRefreshInterval = setInterval(async () => {
     try {
@@ -258,7 +284,6 @@ async function startServer() {
           
           if (refreshData && refreshData.access_token) {
              const newRefreshToken = refreshData.refresh_token ? encrypt(String(refreshData.refresh_token)) : tokenRow.refresh_token;
-             
              const newExpiry = getUpstoxTokenExpiry();
              
              await query(
@@ -301,13 +326,6 @@ async function startServer() {
     })
   );
 
-  const allowedOrigins = [
-    process.env.VITE_APP_URL?.trim() || "https://aapacapital.com",
-    "https://aapa-production.up.railway.app", 
-    "http://localhost:3000",
-    "http://localhost:5173", 
-  ];
-
   app.use(
     cors({
       origin: function (origin, callback) {
@@ -316,7 +334,7 @@ async function startServer() {
         if (allowedOrigins.includes(origin)) {
           return callback(null, true);
         } else {
-          logger.warn(`[CORS] Blocked request from unauthorized origin: ${origin}`);
+          logger.warn(`[HTTP CORS] Blocked request from unauthorized origin: ${origin}`);
           return callback(null, false);
         }
       },
@@ -361,7 +379,7 @@ async function startServer() {
     next();
   });
 
-  // --- AUTH MIDDLEWARE DEFINED HERE ---
+  // --- AUTH MIDDLEWARE ---
   const authenticateToken = (req: any, res: any, next: any) => {
     const authHeader = req.headers["authorization"];
     const token = authHeader && authHeader.split(" ")[1];
@@ -374,7 +392,6 @@ async function startServer() {
     });
   };
 
-  // 2. WIRE IN THE NEW USER PROFILE ROUTER (After Middleware is defined)
   app.use("/api/user", authenticateToken, userProfileRouter);
   app.use("/api/watchlists", authenticateToken, watchlistsRouter);
 
@@ -611,7 +628,6 @@ async function startServer() {
     }
   );
 
-  // PATCH /api/user/onboarding — Save onboarding step progress
   app.patch('/api/user/onboarding', authenticateToken, async (req: any, res: any) => {
     try {
       const userId = req.user.id;
@@ -642,7 +658,6 @@ async function startServer() {
         values
       );
 
-      // Return updated profile
       const result = await query(
         `SELECT id, email, mobile, role, balance, is_kyc_approved, kyc_status, has_upstox_account,
                 onboarding_step, first_login_completed_at, created_at 
@@ -660,9 +675,6 @@ async function startServer() {
     }
   });
 
-  // =========================================================================
-  // LINKED BROKERS — GET /api/user/brokers
-  // =========================================================================
   app.get("/api/user/brokers", authenticateToken, async (req: any, res, next) => {
     try {
       const { rows } = await query(
@@ -689,9 +701,6 @@ async function startServer() {
     }
   });
 
-  // =========================================================================
-  // LINKED BROKERS — DELETE /api/auth/uptox (Disconnect Upstox)
-  // =========================================================================
   app.delete("/api/auth/uptox", authenticateToken, async (req: any, res, next) => {
     try {
       const userId = req.user.id;
@@ -1001,7 +1010,7 @@ async function startServer() {
   });
 
   // =========================================================================
-  // MARKET HISTORY — GET /api/market/history
+  // PHASE 1: MARKET HISTORY — GET /api/market/history (WITH REDIS CACHE)
   // =========================================================================
   app.get("/api/market/history", authenticateToken, async (req: any, res, next) => {
     try {
@@ -1009,8 +1018,29 @@ async function startServer() {
       if (!instrument) return res.status(400).json({ status: "error", error: "Missing instrument parameter" });
 
       const resolvedKey = resolveInstrumentKey(String(instrument));
+      
+      const reqInterval = interval || 'day';
+      const toDateObj = to ? new Date(String(to)) : new Date();
+      const fromDateObj = from ? new Date(String(from)) : new Date(toDateObj.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-      // Fetch the connected user's Upstox token
+      const to_date = toDateObj.toISOString().split('T')[0];
+      const from_date = fromDateObj.toISOString().split('T')[0];
+
+      // 1. Generate unique cache key
+      const cacheKey = `historical:${resolvedKey}:${reqInterval}:${from_date}:${to_date}`;
+
+      // 2. Check Redis Cache
+      try {
+        const cachedData = await redis.get(cacheKey);
+        if (cachedData) {
+          logger.info(`[Market History] Serving ${resolvedKey} from Redis cache`);
+          return res.json({ status: "success", candles: JSON.parse(cachedData) });
+        }
+      } catch (redisErr) {
+        logger.warn(`[Redis] Cache read failed for ${cacheKey}, falling back to API.`, redisErr);
+      }
+
+      // 3. Fetch the connected user's Upstox token
       const { rows } = await query("SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = 'upstox'", [req.user.id]);
       const userToken = rows[0];
 
@@ -1020,16 +1050,7 @@ async function startServer() {
 
       const decryptedToken = decrypt(String(userToken.access_token));
 
-      // Set defaults for interval and dates
-      const reqInterval = interval || 'day';
-      const toDateObj = to ? new Date(String(to)) : new Date();
-      const fromDateObj = from ? new Date(String(from)) : new Date(toDateObj.getTime() - 30 * 24 * 60 * 60 * 1000);
-
-      // Upstox expects dates in YYYY-MM-DD format
-      const to_date = toDateObj.toISOString().split('T')[0];
-      const from_date = fromDateObj.toISOString().split('T')[0];
-
-      // Request to Upstox API
+      // 4. Request to Upstox API
       const response = await fetch(`https://api.upstox.com/v2/historical-candle/${encodeURIComponent(resolvedKey)}/${reqInterval}/${to_date}/${from_date}`, {
         headers: { 
           "Authorization": `Bearer ${decryptedToken}`, 
@@ -1044,10 +1065,9 @@ async function startServer() {
 
       const data = await response.json();
 
-      // Normalize the response to send back to the frontend
+      // Normalize the response
       if (data.status === 'success' && data.data && data.data.candles) {
          const formattedCandles = data.data.candles.map((candle: any) => {
-           // Upstox returns: [timestamp, open, high, low, close, volume, oi]
            return {
              timestamp: candle[0],
              open: Number(candle[1]),
@@ -1056,6 +1076,15 @@ async function startServer() {
              close: Number(candle[4])
            };
          });
+
+         // 5. Save to Redis Cache
+         try {
+           // Cache 'day' intervals for 12 hours (43200s), intraday for 5 minutes (300s)
+           const ttl = reqInterval === 'day' ? 43200 : 300;
+           await redis.setex(cacheKey, ttl, JSON.stringify(formattedCandles));
+         } catch (redisErr) {
+           logger.warn(`[Redis] Cache write failed for ${cacheKey}`, redisErr);
+         }
 
          return res.json({ status: "success", candles: formattedCandles });
       }
@@ -1103,12 +1132,10 @@ async function startServer() {
           combinedPositions = [...combinedPositions, ...positions];
 
           if (fundsData && typeof fundsData === 'object' && 'available' in fundsData) {
-            // Structured FundsData — merge segments
             structuredFunds.available       += (fundsData as any).available       ?? 0;
             structuredFunds.used            += (fundsData as any).used            ?? 0;
             structuredFunds.opening_balance += (fundsData as any).opening_balance ?? 0;
             structuredFunds.collateral      += (fundsData as any).collateral      ?? 0;
-            // Keep equity and fno from the last broker (Upstox only for now)
             structuredFunds.equity = (fundsData as any).equity ?? structuredFunds.equity;
             structuredFunds.fno    = (fundsData as any).fno    ?? structuredFunds.fno;
           }
@@ -1121,7 +1148,7 @@ async function startServer() {
       res.json({
         holdings: combinedHoldings,
         positions: combinedPositions,
-        funds: structuredFunds        // Now an object, not a number
+        funds: structuredFunds 
       });
 
     } catch (e: any) { 
@@ -1129,7 +1156,6 @@ async function startServer() {
     }
   });
 
-    // ── GET /api/orders ── Fetch & normalize orders from all connected brokers ──
   app.get("/api/orders", authenticateToken, async (req: any, res, next) => {
     try {
       const { rows: tokens } = await query(
@@ -1154,13 +1180,10 @@ async function startServer() {
         }
       }
 
-      // Sort newest first
       combinedOrders.sort(
         (a, b) => new Date(b.placed_at).getTime() - new Date(a.placed_at).getTime()
       );
 
-      // Final safety-net normalization in case a future broker service
-      // doesn't normalize — ensures frontend always sees a consistent status set.
       const VALID_STATUSES = new Set([
         'pending', 'open', 'partially_filled', 'completed', 'cancelled', 'rejected'
       ]);
@@ -1199,7 +1222,6 @@ async function startServer() {
     }
   });
 
-  // ── POST /api/positions/squareoff ─────────────────────────────────────────
   app.post("/api/positions/squareoff", authenticateToken, requireKyc, async (req: any, res) => {
     try {
       const { symbol, product, quantity, instrument_token } = req.body;
@@ -1246,7 +1268,6 @@ async function startServer() {
     }
   });
 
-  // ── POST /api/positions/convert ───────────────────────────────────────────
   app.post("/api/positions/convert", authenticateToken, async (req: any, res) => {
     try {
       const { symbol, from_product, to_product, quantity, instrument_token } = req.body;
@@ -1351,7 +1372,6 @@ async function startServer() {
           const orderRes = await brokerService.placeOrder(decryptedToken, orderRequest);
 
           if (orderRes.success) {
-            // Include exchange_order_id as requested
             const exchangeOrderId = orderRes.raw_response?.data?.order_id ?? orderRes.order_id ?? null;
 
             const insertRes = await query(
@@ -1416,13 +1436,11 @@ async function startServer() {
     }
   );
 
-  // ── PUT /api/orders/:id ── Modify an open order ────────────────────────────
   app.put('/api/orders/:id', authenticateToken, async (req: any, res) => {
     const userId  = req.user.id;
     const orderId = req.params.id;
 
     try {
-      // 1. Fetch order from DB to get exchange_order_id and validate ownership
       const { rows } = await query(
         `SELECT * FROM orders WHERE order_id = $1 AND user_id = $2`,
         [orderId, userId]
@@ -1432,13 +1450,11 @@ async function startServer() {
       }
       const order = rows[0];
 
-      // 2. Only allow modify on open/pending orders
       const cancellableStatuses = ['open', 'pending', 'trigger pending'];
       if (!cancellableStatuses.includes(order.status?.toLowerCase())) {
         return res.status(400).json({ success: false, message: `Cannot modify order with status: ${order.status}` });
       }
 
-      // 3. Get fresh Upstox token for this user
       const tokenRow = await query(
         `SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = 'upstox'`,
         [userId]
@@ -1453,7 +1469,6 @@ async function startServer() {
         order_type, validity = 'DAY'
       } = req.body;
 
-      // 4. Call Upstox Modify Order API
       const upstoxRes = await fetch(
         `https://api.upstox.com/v2/order/modify`,
         {
@@ -1484,7 +1499,6 @@ async function startServer() {
         });
       }
 
-      // 5. Update our DB row
       await query(
         `UPDATE orders
          SET quantity      = $1,
@@ -1504,13 +1518,11 @@ async function startServer() {
     }
   });
 
-  // ── DELETE /api/orders/:id ── Cancel an open order ─────────────────────────
   app.delete('/api/orders/:id', authenticateToken, async (req: any, res) => {
     const userId  = req.user.id;
     const orderId = req.params.id;
 
     try {
-      // 1. Fetch order
       const { rows } = await query(
         `SELECT * FROM orders WHERE order_id = $1 AND user_id = $2`,
         [orderId, userId]
@@ -1525,7 +1537,6 @@ async function startServer() {
         return res.status(400).json({ success: false, message: `Cannot cancel order with status: ${order.status}` });
       }
 
-      // 2. Get Upstox token
       const tokenRow = await query(
         `SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = 'upstox'`,
         [userId]
@@ -1535,7 +1546,6 @@ async function startServer() {
       }
       const upstoxToken = decrypt(String(tokenRow.rows[0].access_token));
 
-      // 3. Call Upstox Cancel API
       const upstoxRes = await fetch(
         `https://api.upstox.com/v2/order/cancel?order_id=${order.exchange_order_id || order.broker_order_id}`,
         {
@@ -1556,7 +1566,6 @@ async function startServer() {
         });
       }
 
-      // 4. Update DB status
       await query(
         `UPDATE orders
          SET status       = 'cancelled',
@@ -1626,9 +1635,6 @@ async function startServer() {
       const indexKeys = Object.values(indexMap).flat();
       const allKeysList = [...stockKeys, ...indexKeys];
 
-      // =========================================================================
-      // 1. FETCH INITIAL SNAPSHOT (Gets closing prices if market is closed)
-      // =========================================================================
       try {
         const encodedKeys = allKeysList.map(k => encodeURIComponent(k)).join(",");
         
@@ -1680,9 +1686,6 @@ async function startServer() {
         logger.warn("[Upstox] Failed to fetch initial V3 Quotes snapshot", snapshotErr);
       }
 
-      // =========================================================================
-      // 2. CONNECT WEBSOCKET (Listens for live ticks when market is open)
-      // =========================================================================
       const authRes = await fetch("https://api.upstox.com/v3/feed/market-data-feed/authorize", {
         headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
       });
@@ -1747,7 +1750,6 @@ async function startServer() {
           if (payload.feeds) {
             Object.entries(payload.feeds).forEach(([key, feedData]: [string, any]) => {
               
-              // FIX 1: Safely access both 'ff' and 'fullFeed' as protobufjs parsing can yield either depending on the environment
               const rawPrice = 
                 feedData?.ff?.marketFF?.ltpc?.ltp || 
                 feedData?.ff?.indexFF?.ltpc?.ltp || 
@@ -1756,7 +1758,6 @@ async function startServer() {
                 feedData?.ltpc?.ltp ||
                 feedData?.firstLevelWithGreeks?.ltpc?.ltp;
               
-              // FIX 2: Upstox V3 MarketFeed sends pure 'double' prices. Do not divide by 100!
               const price = rawPrice ? Number(rawPrice) : null;
               
               if (price) {
@@ -1791,7 +1792,6 @@ async function startServer() {
 
       upstoxMarketWs.on("close", (code, reason) => {
         logger.warn(`[Upstox WS] Market Data Closed. Code: ${code}, Reason: ${reason?.toString() || 'Unknown'}. Reconnecting in 5s...`);
-        // DON'T reuse stale token — re-init from DB which gets a fresh token
         setTimeout(() => initUpstoxWebSockets(), 5000);
       });
 
@@ -1951,7 +1951,6 @@ async function startServer() {
     }
   }, 1000);
 
-  // --- MARKET STATUS & HEALTH CHECK ENDPOINT ---
   app.get("/api/market-status", async (req, res, next) => {
     try {
       const apiKeySet = !!process.env.UPTOX_API_KEY;
@@ -2017,9 +2016,11 @@ async function startServer() {
     logger.info(`[Server] Received ${signal}. Starting graceful shutdown...`);
 
     clearInterval(pingInterval);
+    clearInterval(tokenRefreshInterval);
 
     if (upstoxMarketWs) upstoxMarketWs.close();
     if (upstoxPortfolioWs) upstoxPortfolioWs.close();
+    redis.quit();
 
     server.close(() => { logger.info("[Server] HTTP server stopped accepting new requests."); });
 

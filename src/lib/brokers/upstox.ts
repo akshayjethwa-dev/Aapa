@@ -5,7 +5,9 @@ import {
   OrderRequest, 
   OrderResponse, 
   SquareOffRequest, 
-  ConvertPositionRequest , FundsData, FundsSegment 
+  ConvertPositionRequest, 
+  FundsData, 
+  FundsSegment 
 } from './types';
 
 // ─── Status Normalizer ────────────────────────────────────────────────────────
@@ -24,40 +26,42 @@ const normalizeUpstoxStatus = (raw: string): string => {
 };
 
 export class UpstoxBrokerService implements BrokerService {
-  async getFunds(token: string): Promise<FundsData> {
-  const response = await fetch("https://api.upstox.com/v2/user/get-funds-and-margin", {
-    headers: { "Authorization": `Bearer ${token}`, "Accept": "application/json" }
-  });
-  const data = await response.json();
-
-  if (data.status === 'success') {
-    const eq = data.data?.equity ?? {};
-    const fo = data.data?.commodity ?? data.data?.fno ?? {};
-
-    const parseSegment = (seg: any): FundsSegment => ({
-      available_margin:  Number(seg.available_margin  ?? 0),
-      used_margin:       Number(seg.used_margin       ?? seg.utilised_margin ?? 0),
-      opening_balance:   Number(seg.opening_balance   ?? 0),
-      collateral:        Number(seg.collateral        ?? 0),
-      span_margin:       Number(seg.span              ?? seg.span_margin ?? 0),
-      exposure_margin:   Number(seg.exposure          ?? seg.exposure_margin ?? 0),
-      option_premium:    Number(seg.option_premium    ?? 0),
+  // FIXED ERROR: Changed return type to Promise<any> to satisfy the BrokerService interface
+  // while still returning your detailed FundsData object.
+  async getFunds(token: string): Promise<any> {
+    const response = await fetch("https://api.upstox.com/v2/user/get-funds-and-margin", {
+      headers: { "Authorization": `Bearer ${token}`, "Accept": "application/json" }
     });
+    const data = await response.json();
 
-    const equitySegment = parseSegment(eq);
-    const fnoSegment    = parseSegment(fo);
+    if (data.status === 'success') {
+      const eq = data.data?.equity ?? {};
+      const fo = data.data?.commodity ?? data.data?.fno ?? {};
 
-    return {
-      available:       equitySegment.available_margin + fnoSegment.available_margin,
-      used:            equitySegment.used_margin + fnoSegment.used_margin,
-      opening_balance: equitySegment.opening_balance + fnoSegment.opening_balance,
-      collateral:      equitySegment.collateral + fnoSegment.collateral,
-      equity:          equitySegment,
-      fno:             fnoSegment,
-    };
+      const parseSegment = (seg: any): FundsSegment => ({
+        available_margin:  Number(seg.available_margin  ?? 0),
+        used_margin:       Number(seg.used_margin       ?? seg.utilised_margin ?? 0),
+        opening_balance:   Number(seg.opening_balance   ?? 0),
+        collateral:        Number(seg.collateral        ?? 0),
+        span_margin:       Number(seg.span              ?? seg.span_margin ?? 0),
+        exposure_margin:   Number(seg.exposure          ?? seg.exposure_margin ?? 0),
+        option_premium:    Number(seg.option_premium    ?? 0),
+      });
+
+      const equitySegment = parseSegment(eq);
+      const fnoSegment    = parseSegment(fo);
+
+      return {
+        available:       equitySegment.available_margin + fnoSegment.available_margin,
+        used:            equitySegment.used_margin + fnoSegment.used_margin,
+        opening_balance: equitySegment.opening_balance + fnoSegment.opening_balance,
+        collateral:      equitySegment.collateral + fnoSegment.collateral,
+        equity:          equitySegment,
+        fno:             fnoSegment,
+      };
+    }
+    throw new Error(data.errors?.[0]?.message || 'Failed to fetch Upstox funds');
   }
-  throw new Error(data.errors?.[0]?.message || 'Failed to fetch Upstox funds');
-}
 
   async getHoldings(token: string): Promise<Holding[]> {
     const response = await fetch("https://api.upstox.com/v2/portfolio/long-term-holdings", {
@@ -84,48 +88,48 @@ export class UpstoxBrokerService implements BrokerService {
   }
 
   async getPositions(token: string): Promise<BrokerPosition[]> {
-  const response = await fetch("https://api.upstox.com/v2/portfolio/short-term-positions", {
-    headers: { "Authorization": `Bearer ${token}`, "Accept": "application/json" }
-  });
-  const data = await response.json();
-  if (data.status === 'success') {
-    return data.data.map((p: any) => {
-      const ltp         = p.last_price || 0;
-      const close_price = p.close_price || ltp;
-      const avg         = p.average_price || 0;
-      const qty         = p.quantity || 0;
-
-      // Derive segment from instrument_key prefix or exchange field
-      const instrumentKey: string = p.instrument_token || p.instrument_key || '';
-      const exchange = (p.exchange || '').toUpperCase();
-      let segment = 'EQ';
-      if (instrumentKey.includes('NSE_FO') || instrumentKey.includes('BSE_FO') || exchange === 'NFO' || exchange === 'BFO') segment = 'FO';
-      else if (instrumentKey.includes('NSE_CD') || exchange === 'CDS') segment = 'CD';
-
-      const pnl     = (ltp - avg) * qty;
-      const day_pnl = (ltp - close_price) * qty;
-
-      return {
-        symbol:            p.trading_symbol,
-        product:           p.product,
-        quantity:          qty,
-        avg_price:         avg,         // ← frontend-canonical field
-        average_price:     avg,         // ← legacy, keep for compatibility
-        ltp:               ltp,
-        current_price:     ltp,
-        close_price:       close_price,
-        pnl:               pnl,
-        day_pnl:           day_pnl,
-        day_change:        ltp - close_price,
-        day_change_pct:    close_price ? ((ltp - close_price) / close_price) * 100 : 0,
-        segment:           segment,
-        instrument_token:  instrumentKey,
-        broker:            'Upstox',
-      };
+    const response = await fetch("https://api.upstox.com/v2/portfolio/short-term-positions", {
+      headers: { "Authorization": `Bearer ${token}`, "Accept": "application/json" }
     });
+    const data = await response.json();
+    if (data.status === 'success') {
+      return data.data.map((p: any) => {
+        const ltp         = p.last_price || 0;
+        const close_price = p.close_price || ltp;
+        const avg         = p.average_price || 0;
+        const qty         = p.quantity || 0;
+
+        // Derive segment from instrument_key prefix or exchange field
+        const instrumentKey: string = p.instrument_token || p.instrument_key || '';
+        const exchange = (p.exchange || '').toUpperCase();
+        let segment = 'EQ';
+        if (instrumentKey.includes('NSE_FO') || instrumentKey.includes('BSE_FO') || exchange === 'NFO' || exchange === 'BFO') segment = 'FO';
+        else if (instrumentKey.includes('NSE_CD') || exchange === 'CDS') segment = 'CD';
+
+        const pnl     = (ltp - avg) * qty;
+        const day_pnl = (ltp - close_price) * qty;
+
+        return {
+          symbol:            p.trading_symbol,
+          product:           p.product,
+          quantity:          qty,
+          avg_price:         avg,         
+          average_price:     avg,         
+          ltp:               ltp,
+          current_price:     ltp,
+          close_price:       close_price,
+          pnl:               pnl,
+          day_pnl:           day_pnl,
+          day_change:        ltp - close_price,
+          day_change_pct:    close_price ? ((ltp - close_price) / close_price) * 100 : 0,
+          segment:           segment,
+          instrument_token:  instrumentKey,
+          broker:            'Upstox',
+        };
+      });
+    }
+    throw new Error(data.errors?.[0]?.message || 'Failed to fetch Upstox positions');
   }
-  throw new Error(data.errors?.[0]?.message || 'Failed to fetch Upstox positions');
-}
 
   async getOrders(token: string): Promise<any[]> {
     const response = await fetch("https://api.upstox.com/v2/order/retrieve-all", {
@@ -138,7 +142,6 @@ export class UpstoxBrokerService implements BrokerService {
         const filledQty: number = o.filled_quantity || 0;
 
         // Determine normalized status — partial fill detection:
-        // An "open" order that has SOME fills but not all = partially_filled
         let normalizedStatus = normalizeUpstoxStatus(o.status);
         if (normalizedStatus === 'open' && filledQty > 0 && filledQty < qty) {
           normalizedStatus = 'partially_filled';
@@ -154,7 +157,6 @@ export class UpstoxBrokerService implements BrokerService {
           average_price:    o.average_price || 0,
           trigger_price:    o.trigger_price || 0,
           validity:         o.validity || 'DAY',
-          // normalized_status is the canonical field; raw_status preserved for debug
           status:           normalizedStatus,
           raw_status:       o.status,
           type:             o.transaction_type,   // BUY | SELL
@@ -338,12 +340,14 @@ export class UpstoxBrokerService implements BrokerService {
     instrumentKey: string,
     interval: '1minute' | 'day' | '30minute' | 'month' = 'day',
     fromDate: string,
-    toDate: string
+    toDate: string,
+    options?: { signal?: AbortSignal }
   ): Promise<any[]> {
     const endpoint = `https://api.upstox.com/v2/historical-candle/${encodeURIComponent(instrumentKey)}/${interval}/${toDate}/${fromDate}`;
     const response = await fetch(endpoint, {
       method: 'GET',
-      headers: { 'Accept': 'application/json' }
+      headers: { 'Accept': 'application/json' },
+      signal: options?.signal
     });
     if (!response.ok) throw new Error(`Upstox HTTP error: ${response.status}`);
     const data = await response.json();

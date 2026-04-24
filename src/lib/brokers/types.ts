@@ -1,3 +1,18 @@
+export interface StockOverview {
+  symbol: string;
+  exchange: string;
+  ltp: number;
+  prev_close: number;
+  open: number;
+  day_high: number;
+  day_low: number;
+  week52_high: number;
+  week52_low: number;
+  upper_circuit: number | null;
+  lower_circuit: number | null;
+  tick_size: number;
+}
+
 export interface OrderRequest {
   symbol:         string;
   type:           string;
@@ -86,7 +101,7 @@ export interface BrokerService {
   getPositions(token: string): Promise<BrokerPosition[]>;
   placeOrder(token: string, order: OrderRequest): Promise<OrderResponse>;
   getOrders?(token: string): Promise<any[]>;
-  // ── NEW ──
   squareOff?(token: string, req: SquareOffRequest): Promise<OrderResponse>;
   convertPosition?(token: string, req: ConvertPositionRequest): Promise<{ success: boolean; message?: string }>;
+  getQuote?(token: string, instrumentKey: string, symbol: string): Promise<StockOverview>;
 }
