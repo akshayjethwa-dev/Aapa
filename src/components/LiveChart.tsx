@@ -1,5 +1,8 @@
 import React, { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
 import { createChart, ColorType, Time, CandlestickData } from 'lightweight-charts';
+import { useAuthStore } from '../store/authStore';
+import { wsClient } from '../lib/brokers/websocket';
+import { useMarketDataStore } from '../store/marketDataStore';
 
 export interface LiveChartRef {
   // Use the library's native strict types for the data
@@ -10,15 +13,46 @@ export interface LiveChartRef {
 const LiveChart = forwardRef<LiveChartRef, { symbol: string }>(({ symbol }, ref) => {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   
+  // Real-time market data hooks
+  const token = useAuthStore((state) => state.token);
+  const tickData = useMarketDataStore((state) => state.ticks[symbol]);
+
   // Using 'any' internally for the refs prevents interface mismatches 
   // while keeping the component props fully type-safe.
   const chartRef = useRef<any>(null);
   const seriesRef = useRef<any>(null);
 
+  // 1. WebSocket Subscription
+  useEffect(() => {
+    if (token && symbol) {
+      wsClient.connect(token);
+      wsClient.subscribe([symbol], 'full');
+    }
+    return () => {
+      if (symbol) wsClient.unsubscribe([symbol]);
+    };
+  }, [token, symbol]);
+
+  // 2. Push Real-time Ticks to Chart
+  useEffect(() => {
+    if (tickData && tickData.ltp && seriesRef.current) {
+      const time = Math.floor(Date.now() / 1000) as Time;
+      // In a real app, you might build a proper OHLC candle from ticks.
+      // Here we just plot the LTP as a 1-second candle for demonstration.
+      seriesRef.current.update({
+        time,
+        open: tickData.ltp,
+        high: tickData.ltp,
+        low: tickData.ltp,
+        close: tickData.ltp,
+      });
+    }
+  }, [tickData]);
+
   useEffect(() => {
     if (!chartContainerRef.current) return;
 
-    // 1. Create the Chart Instance
+    // Create the Chart Instance
     const chart = createChart(chartContainerRef.current, {
       layout: {
         background: { type: ColorType.Solid, color: 'transparent' },
@@ -36,7 +70,7 @@ const LiveChart = forwardRef<LiveChartRef, { symbol: string }>(({ symbol }, ref)
       height: chartContainerRef.current.clientHeight,
     });
 
-    // 2. Add Candlestick Series
+    // Add Candlestick Series
     // FIX: Cast chart as 'any' to bypass the aggressive TS typing error 
     // for addCandlestickSeries while retaining exact functionality.
     const candlestickSeries = (chart as any).addCandlestickSeries({

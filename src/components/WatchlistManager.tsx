@@ -4,13 +4,16 @@
 // Used by Market.tsx to provide: tab switcher, CRUD dialogs, drag-to-reorder.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { motion, AnimatePresence, Reorder } from 'framer-motion';
 import {
   Plus, Pencil, Trash2, X, Check, Search, GripVertical, Star
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { apiClient } from '../api/client';
+import { useAuthStore } from '../store/authStore';
+import { wsClient } from '../lib/brokers/websocket';
+import { useMarketDataStore } from '../store/marketDataStore';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -249,7 +252,7 @@ export function WatchlistToolbar({
 interface NewWatchlistDialogProps {
   isOpen: boolean;
   onClose: () => void;
-  onCreate: (name: string) => Promise<any>; // FIXED: accept any promise return type
+  onCreate: (name: string) => Promise<any>; 
 }
 
 export function NewWatchlistDialog({
@@ -506,7 +509,7 @@ interface AddSymbolSheetProps {
   existingSymbols: string[];
   stocks: Record<string, any>;
   onClose: () => void;
-  onAdd: (watchlistId: string, symbol: string) => Promise<any>; // FIXED: accept any promise return type
+  onAdd: (watchlistId: string, symbol: string) => Promise<any>;
 }
 
 export function AddSymbolSheet({
@@ -669,10 +672,33 @@ export function WatchlistSymbolRow({
   onStockClick,
   onRemove,
 }: WatchlistSymbolRowProps) {
-  const ltp = typeof quote === 'number' ? quote : (quote?.ltp || 0);
-  const changePct = quote?.day_change_pct;
-  const isPositive = changePct !== undefined && changePct >= 0;
+  const token = useAuthStore(state => state.token);
+  const tickData = useMarketDataStore(state => state.ticks[item.symbol]);
   const [showRemove, setShowRemove] = useState(false);
+
+  // Hook into Upstox WebSocket on mount
+  useEffect(() => {
+    if (token && item.symbol) {
+      wsClient.connect(token);
+      // 'ltpc' mode sends only LTP and Close Price, perfect for watchlists
+      wsClient.subscribe([item.symbol], 'ltpc'); 
+    }
+    return () => {
+      if (item.symbol) wsClient.unsubscribe([item.symbol]);
+    };
+  }, [token, item.symbol]);
+
+  // Use real-time WebSocket tick data, fallback to static quote if WS is connecting
+  const ltp = tickData?.ltp || (typeof quote === 'number' ? quote : (quote?.ltp || 0));
+  const closePrice = tickData?.close || (typeof quote === 'object' ? quote?.close_price : 0);
+  
+  // Calculate day change percentage based on Live close vs live LTP
+  let changePct = quote?.day_change_pct;
+  if (closePrice && ltp && closePrice > 0) {
+    changePct = ((ltp - closePrice) / closePrice) * 100;
+  }
+  
+  const isPositive = changePct !== undefined && changePct >= 0;
 
   return (
     <Reorder.Item

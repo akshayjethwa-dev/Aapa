@@ -5,6 +5,8 @@ import { ChevronRight, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 import { formatCurrency, cn } from '../lib/utils';
 import { useAuthStore } from '../store/authStore';
+import { wsClient } from '../lib/brokers/websocket';
+import { useMarketDataStore } from '../store/marketDataStore';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 export interface OrderConfig {
@@ -65,6 +67,21 @@ const OrderWindow = ({
   onKycRequired?: () => void;
 }) => {
   const { user, token } = useAuthStore();
+  
+  // Real-time tick data hook
+  const tickData = useMarketDataStore((state) => state.ticks[config.symbol]);
+  const livePrice = tickData?.ltp || config.price;
+
+  useEffect(() => {
+    if (token && config.symbol) {
+      wsClient.connect(token);
+      wsClient.subscribe([config.symbol]);
+    }
+    return () => {
+      if (config.symbol) wsClient.unsubscribe([config.symbol]);
+    };
+  }, [token, config.symbol]);
+
   const isOption   = !!config.strike;
   const isModify   = !!config._isModify;
 
@@ -101,7 +118,7 @@ const OrderWindow = ({
     : config.symbol.replace(' 50', '');
 
   const numQty       = Number(quantity) || 0;
-  const numPrice     = needsPrice ? (Number(price) || 0) : config.price;
+  const numPrice     = needsPrice ? (Number(price) || 0) : livePrice;
   const nominalValue = numQty * numPrice;
   const lotSize      = isOption ? (LOT_SIZES[config.symbol] ?? 1) : 1;
   const lots         = isOption && lotSize > 1 ? Math.round(numQty / lotSize) : null;
@@ -117,8 +134,8 @@ const OrderWindow = ({
     if (isSLType) {
       const tp = Number(triggerPrice);
       if (!tp || tp <= 0) return 'Enter a valid trigger price';
-      if (config.side === 'BUY'  && tp < config.price) return `Trigger (${tp}) must be ≥ LTP (${config.price}) for BUY SL`;
-      if (config.side === 'SELL' && tp > config.price) return `Trigger (${tp}) must be ≤ LTP (${config.price}) for SELL SL`;
+      if (config.side === 'BUY'  && tp < livePrice) return `Trigger (${tp}) must be ≥ LTP (${livePrice}) for BUY SL`;
+      if (config.side === 'SELL' && tp > livePrice) return `Trigger (${tp}) must be ≤ LTP (${livePrice}) for SELL SL`;
       if (orderType === 'SL') {
         if (config.side === 'BUY'  && numPrice < tp) return 'Limit price must be ≥ trigger price for BUY SL';
         if (config.side === 'SELL' && numPrice > tp) return 'Limit price must be ≤ trigger price for SELL SL';
@@ -284,7 +301,7 @@ const OrderWindow = ({
             </div>
             <div className="bg-zinc-900/40 rounded-xl p-3 text-center">
               <p className="text-[8px] font-bold text-zinc-600 uppercase tracking-widest mb-1">LTP</p>
-              <p className="text-sm font-black text-white">{formatCurrency(config.price)}</p>
+              <p className="text-sm font-black text-white">{formatCurrency(livePrice)}</p>
             </div>
           </div>
         )}
@@ -354,11 +371,11 @@ const OrderWindow = ({
         {needsPrice && (
           <div className="space-y-2">
             <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest ml-1">
-              Limit Price <span className="text-zinc-700 normal-case tracking-normal font-normal">— LTP: {formatCurrency(config.price)}</span>
+              Limit Price <span className="text-zinc-700 normal-case tracking-normal font-normal">— LTP: {formatCurrency(livePrice)}</span>
             </p>
             <input type="number" inputMode="decimal" value={price}
               onChange={e => { setPrice(e.target.value); setShowConfirm(false); }}
-              placeholder={String(config.price)}
+              placeholder={String(livePrice)}
               className="w-full h-12 bg-zinc-900 rounded-xl px-4 text-white font-bold text-base border border-zinc-800 focus:border-zinc-600 outline-none" />
           </div>
         )}
@@ -367,7 +384,7 @@ const OrderWindow = ({
         {isSLType && (
           <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="space-y-2">
             <p className="text-[10px] font-bold text-amber-500 uppercase tracking-widest ml-1">
-              Trigger Price <span className="text-zinc-600 normal-case tracking-normal font-normal">— LTP: {formatCurrency(config.price)}</span>
+              Trigger Price <span className="text-zinc-600 normal-case tracking-normal font-normal">— LTP: {formatCurrency(livePrice)}</span>
             </p>
             <input type="number" inputMode="decimal" value={triggerPrice}
               onChange={e => { setTriggerPrice(e.target.value); setShowConfirm(false); }}
