@@ -28,11 +28,60 @@ const normalizeUpstoxStatus = (raw: string): string => {
   return 'pending'; 
 };
 
+// --- QUEUE MECHANISM FOR BACKEND BROKER FETCH ---
+let isUpstoxRefreshing = false;
+let upstoxFailedQueue: Array<{ resolve: (token: string) => void, reject: (error: any) => void }> = [];
+
+const processUpstoxQueue = (error: any, token: string | null = null) => {
+  upstoxFailedQueue.forEach(prom => {
+    if (error) prom.reject(error);
+    else prom.resolve(token as string);
+  });
+  upstoxFailedQueue = [];
+};
+
+export type TokenRefreshCallback = () => Promise<string>;
+
 export class UpstoxBrokerService implements BrokerService {
-  async getFunds(token: string): Promise<any> {
-    const response = await fetch("https://api.upstox.com/v2/user/get-funds-and-margin", {
+  
+  // Custom fetch wrapper that intercepts 401/403s and queues parallel requests
+  private async fetchWithRetry(url: string, options: any, onTokenRefresh?: TokenRefreshCallback): Promise<Response> {
+    let response = await fetch(url, options);
+    
+    if ((response.status === 401 || response.status === 403) && onTokenRefresh) {
+      if (isUpstoxRefreshing) {
+        // If already refreshing, pause this request and add to queue
+        return new Promise<string>((resolve, reject) => {
+          upstoxFailedQueue.push({ resolve, reject });
+        }).then(newToken => {
+          // Replay with new token
+          options.headers["Authorization"] = `Bearer ${newToken}`;
+          return fetch(url, options);
+        });
+      }
+
+      // First request to hit 401 triggers the refresh
+      isUpstoxRefreshing = true;
+      try {
+        const newToken = await onTokenRefresh();
+        processUpstoxQueue(null, newToken);
+        
+        options.headers["Authorization"] = `Bearer ${newToken}`;
+        response = await fetch(url, options);
+      } catch (err) {
+        processUpstoxQueue(err, null);
+        throw err;
+      } finally {
+        isUpstoxRefreshing = false;
+      }
+    }
+    return response;
+  }
+
+  async getFunds(token: string, onTokenRefresh?: TokenRefreshCallback): Promise<any> {
+    const response = await this.fetchWithRetry("https://api.upstox.com/v2/user/get-funds-and-margin", {
       headers: { "Authorization": `Bearer ${token}`, "Accept": "application/json" }
-    });
+    }, onTokenRefresh);
     const data = await response.json();
 
     if (data.status === 'success') {
@@ -64,10 +113,10 @@ export class UpstoxBrokerService implements BrokerService {
     throw new Error(data.errors?.[0]?.message || 'Failed to fetch Upstox funds');
   }
 
-  async getHoldings(token: string): Promise<Holding[]> {
-    const response = await fetch("https://api.upstox.com/v2/portfolio/long-term-holdings", {
+  async getHoldings(token: string, onTokenRefresh?: TokenRefreshCallback): Promise<Holding[]> {
+    const response = await this.fetchWithRetry("https://api.upstox.com/v2/portfolio/long-term-holdings", {
       headers: { "Authorization": `Bearer ${token}`, "Accept": "application/json" }
-    });
+    }, onTokenRefresh);
     const data = await response.json();
     if (data.status === 'success') {
       return data.data.map((h: any) => {
@@ -88,10 +137,10 @@ export class UpstoxBrokerService implements BrokerService {
     throw new Error(data.errors?.[0]?.message || 'Failed to fetch Upstox holdings');
   }
 
-  async getPositions(token: string): Promise<BrokerPosition[]> {
-    const response = await fetch("https://api.upstox.com/v2/portfolio/short-term-positions", {
+  async getPositions(token: string, onTokenRefresh?: TokenRefreshCallback): Promise<BrokerPosition[]> {
+    const response = await this.fetchWithRetry("https://api.upstox.com/v2/portfolio/short-term-positions", {
       headers: { "Authorization": `Bearer ${token}`, "Accept": "application/json" }
-    });
+    }, onTokenRefresh);
     const data = await response.json();
     if (data.status === 'success') {
       return data.data.map((p: any) => {
@@ -131,10 +180,10 @@ export class UpstoxBrokerService implements BrokerService {
     throw new Error(data.errors?.[0]?.message || 'Failed to fetch Upstox positions');
   }
 
-  async getOrders(token: string): Promise<any[]> {
-    const response = await fetch("https://api.upstox.com/v2/order/retrieve-all", {
+  async getOrders(token: string, onTokenRefresh?: TokenRefreshCallback): Promise<any[]> {
+    const response = await this.fetchWithRetry("https://api.upstox.com/v2/order/retrieve-all", {
       headers: { "Authorization": `Bearer ${token}`, "Accept": "application/json" }
-    });
+    }, onTokenRefresh);
     const data = await response.json();
     if (data.status === 'success') {
       return data.data.map((o: any) => {
@@ -171,7 +220,7 @@ export class UpstoxBrokerService implements BrokerService {
     throw new Error(data.errors?.[0]?.message || 'Failed to fetch Upstox orders');
   }
 
-  async placeOrder(token: string, order: OrderRequest): Promise<OrderResponse> {
+  async placeOrder(token: string, order: OrderRequest, onTokenRefresh?: TokenRefreshCallback): Promise<OrderResponse> {
     try {
       const orderType = order.order_type.toUpperCase();
       const validity  = (order.validity ?? 'DAY').toUpperCase();
@@ -204,7 +253,7 @@ export class UpstoxBrokerService implements BrokerService {
          payload.trailing_ticks = 20; // Required by Upstox (minimum trailing ticks)
       }
 
-      const response = await fetch('https://api.upstox.com/v2/order/place', {
+      const response = await this.fetchWithRetry('https://api.upstox.com/v2/order/place', {
         method:  'POST',
         headers: {
           Authorization:  `Bearer ${token}`,
@@ -212,7 +261,7 @@ export class UpstoxBrokerService implements BrokerService {
           Accept:         'application/json',
         },
         body: JSON.stringify(payload),
-      });
+      }, onTokenRefresh);
 
       const data = await response.json();
       if (data.status === 'success') {
@@ -224,7 +273,7 @@ export class UpstoxBrokerService implements BrokerService {
     }
   }
 
-  async squareOff(token: string, req: SquareOffRequest): Promise<OrderResponse> {
+  async squareOff(token: string, req: SquareOffRequest, onTokenRefresh?: TokenRefreshCallback): Promise<OrderResponse> {
     try {
       const instrumentToken = req.instrument_token
         ?? (req.symbol.includes('|') ? req.symbol : `NSE_EQ|${req.symbol}`);
@@ -252,7 +301,7 @@ export class UpstoxBrokerService implements BrokerService {
         is_amo:             false,
       };
 
-      const response = await fetch('https://api.upstox.com/v2/order/place', {
+      const response = await this.fetchWithRetry('https://api.upstox.com/v2/order/place', {
         method:  'POST',
         headers: {
           Authorization:  `Bearer ${token}`,
@@ -260,7 +309,7 @@ export class UpstoxBrokerService implements BrokerService {
           Accept:         'application/json',
         },
         body: JSON.stringify(payload),
-      });
+      }, onTokenRefresh);
 
       const data = await response.json();
       if (data.status === 'success') {
@@ -278,7 +327,8 @@ export class UpstoxBrokerService implements BrokerService {
 
   async convertPosition(
     token: string,
-    req: ConvertPositionRequest
+    req: ConvertPositionRequest,
+    onTokenRefresh?: TokenRefreshCallback
   ): Promise<{ success: boolean; message?: string }> {
     try {
       const instrumentToken = req.instrument_token
@@ -302,7 +352,7 @@ export class UpstoxBrokerService implements BrokerService {
         position_type:    'TOD',
       };
 
-      const response = await fetch('https://api.upstox.com/v2/order/convert-position', {
+      const response = await this.fetchWithRetry('https://api.upstox.com/v2/order/convert-position', {
         method:  'PUT',
         headers: {
           Authorization:  `Bearer ${token}`,
@@ -310,7 +360,7 @@ export class UpstoxBrokerService implements BrokerService {
           Accept:         'application/json',
         },
         body: JSON.stringify(payload),
-      });
+      }, onTokenRefresh);
 
       const data = await response.json();
       if (data.status === 'success') {
@@ -352,17 +402,18 @@ export class UpstoxBrokerService implements BrokerService {
   async getIntradayCandles(
     token: string,
     instrumentKey: string,
-    interval: string = '1minute'
+    interval: string = '1minute',
+    onTokenRefresh?: TokenRefreshCallback
   ): Promise<CandleData[]> {
     try {
       const url = `https://api.upstox.com/v2/historical-candle/intraday/${encodeURIComponent(instrumentKey)}/${interval}`;
-      const response = await fetch(url, {
+      const response = await this.fetchWithRetry(url, {
         method: 'GET',
         headers: {
           'Accept': 'application/json',
           'Authorization': `Bearer ${token}`
         }
-      });
+      }, onTokenRefresh);
 
       if (response.status === 401 || response.status === 403) {
         console.error(`[Upstox] 🔴 API Error ${response.status}: Missing 'Historical API' scope or token expired.`);
@@ -402,6 +453,7 @@ export class UpstoxBrokerService implements BrokerService {
     toDate: string,
     options?: { signal?: AbortSignal }
   ): Promise<any[]> {
+    // Historical candles often do not require authentication headers natively on Upstox
     const endpoint = `https://api.upstox.com/v2/historical-candle/${encodeURIComponent(instrumentKey)}/${interval}/${toDate}/${fromDate}`;
     const response = await fetch(endpoint, {
       method: 'GET',

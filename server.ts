@@ -399,6 +399,41 @@ async function startServer() {
   };
 
   // =========================================================================
+  // HELPER: REACTIVE TOKEN REFRESH CALLBACK FOR AXIOS/FETCH INTERCEPTORS
+  // =========================================================================
+  const createTokenRefreshCallback = (userId: number, broker: string, encryptedRefreshToken: string) => {
+    return async (): Promise<string> => {
+      const apiKey = process.env.UPTOX_API_KEY?.trim() ?? "";
+      const apiSecret = process.env.UPTOX_API_SECRET?.trim() ?? "";
+      
+      if (!apiKey || !apiSecret) {
+        throw new Error("Missing Upstox API credentials for token refresh");
+      }
+
+      const decryptedRefreshToken = decrypt(encryptedRefreshToken);
+      if (!decryptedRefreshToken) throw new Error("Failed to decrypt refresh token");
+
+      const brokerService = getBrokerService(broker) as any;
+      const newTokens = await brokerService.refreshAccessToken(apiKey, apiSecret, decryptedRefreshToken);
+
+      const newEncryptedAccess = encrypt(String(newTokens.access_token));
+      // Upstox sometimes doesn't return a new refresh token, so fallback to the old one
+      const newEncryptedRefresh = newTokens.refresh_token ? encrypt(String(newTokens.refresh_token)) : encryptedRefreshToken;
+      const newExpiry = getUpstoxTokenExpiry(); // Your existing function
+
+      await query(
+        `UPDATE user_tokens 
+         SET access_token = $1, refresh_token = $2, expires_at = $3, updated_at = NOW() 
+         WHERE user_id = $4 AND broker = $5`,
+        [newEncryptedAccess, newEncryptedRefresh, newExpiry, userId, broker]
+      );
+
+      logger.info(`[Reactive Refresh] Successfully refreshed token for user ${userId}`);
+      return newTokens.access_token;
+    };
+  };
+
+  // =========================================================================
   // API ROUTERS
   // =========================================================================
   app.use("/api/user", authenticateToken, userProfileRouter);
@@ -1109,7 +1144,7 @@ async function startServer() {
 
   app.get("/api/portfolio", authenticateToken, async (req: any, res, next) => {
     try {
-      const { rows: tokens } = await query("SELECT broker, access_token FROM user_tokens WHERE user_id = $1", [req.user.id]);
+      const { rows: tokens } = await query("SELECT broker, access_token, refresh_token FROM user_tokens WHERE user_id = $1", [req.user.id]);
       
       let combinedHoldings: any[] = [];
       let combinedPositions: any[] = [];
@@ -1130,12 +1165,17 @@ async function startServer() {
           const decryptedToken = decrypt(String(token.access_token));
           if (!decryptedToken) continue;
 
-          const brokerService = getBrokerService(String(token.broker));
-          
+          // CAST TO ANY HERE
+          const brokerService = getBrokerService(String(token.broker)) as any;
+
+          // 2. CREATE THE CALLBACK
+          const onRefresh = createTokenRefreshCallback(req.user.id, String(token.broker), String(token.refresh_token));
+
+          // 3. PASS THE CALLBACK TO THE METHODS
           const [holdings, positions, fundsData] = await Promise.all([
-            brokerService.getHoldings(decryptedToken).catch(() => []),
-            brokerService.getPositions(decryptedToken).catch(() => []),
-            brokerService.getFunds(decryptedToken).catch(() => null)
+            brokerService.getHoldings(decryptedToken, onRefresh).catch(() => []),
+            brokerService.getPositions(decryptedToken, onRefresh).catch(() => []),
+            brokerService.getFunds(decryptedToken, onRefresh).catch(() => null)
           ]);
 
           combinedHoldings  = [...combinedHoldings, ...holdings];
@@ -1169,7 +1209,7 @@ async function startServer() {
   app.get("/api/orders", authenticateToken, async (req: any, res, next) => {
     try {
       const { rows: tokens } = await query(
-        "SELECT broker, access_token FROM user_tokens WHERE user_id = $1",
+        "SELECT broker, access_token, refresh_token FROM user_tokens WHERE user_id = $1",
         [req.user.id]
       );
       let combinedOrders: any[] = [];
@@ -1182,7 +1222,8 @@ async function startServer() {
 
           const brokerService = getBrokerService(String(token.broker)) as any;
           if (brokerService.getOrders) {
-            const orders = await brokerService.getOrders(decryptedToken);
+            const onRefresh = createTokenRefreshCallback(req.user.id, String(token.broker), String(token.refresh_token));
+            const orders = await brokerService.getOrders(decryptedToken, onRefresh);
             combinedOrders = [...combinedOrders, ...orders];
           }
         } catch (e) {
@@ -1210,7 +1251,7 @@ async function startServer() {
 
   app.get("/api/positions", authenticateToken, async (req: any, res, next) => {
     try {
-      const { rows: tokens } = await query("SELECT broker, access_token FROM user_tokens WHERE user_id = $1", [req.user.id]);
+      const { rows: tokens } = await query("SELECT broker, access_token, refresh_token FROM user_tokens WHERE user_id = $1", [req.user.id]);
       let combinedPositions: any[] = [];
 
       for (const token of tokens) {
@@ -1219,8 +1260,10 @@ async function startServer() {
           const decryptedToken = decrypt(String(token.access_token));
           if (!decryptedToken) continue;
 
-          const brokerService = getBrokerService(String(token.broker));
-          const positions = await brokerService.getPositions(decryptedToken);
+          // CAST TO ANY HERE
+          const brokerService = getBrokerService(String(token.broker)) as any;
+          const onRefresh = createTokenRefreshCallback(req.user.id, String(token.broker), String(token.refresh_token));
+          const positions = await brokerService.getPositions(decryptedToken, onRefresh);
           combinedPositions = [...combinedPositions, ...positions];
         } catch (e) {
           logger.warn(`[Positions] ${token.broker} error:`, e);
@@ -1241,8 +1284,9 @@ async function startServer() {
       }
 
       const broker = 'upstox';
+      // ADDED: Select refresh_token for the callback
       const { rows } = await query(
-        "SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = $2",
+        "SELECT access_token, refresh_token FROM user_tokens WHERE user_id = $1 AND broker = $2",
         [req.user.id, broker]
       );
 
@@ -1260,12 +1304,14 @@ async function startServer() {
         return res.status(501).json({ success: false, message: "Square off not supported for this broker." });
       }
 
+      // ADDED: Create the callback and pass it down
+      const onRefresh = createTokenRefreshCallback(req.user.id, broker, String(rows[0].refresh_token));
       const result = await brokerService.squareOff(decryptedToken, {
         symbol,
         product,
         quantity: Number(quantity),
         instrument_token,
-      });
+      }, onRefresh);
 
       if (result.success) {
         logger.info(`[SquareOff] User ${req.user.id} squared off ${quantity} × ${symbol}`);
@@ -1290,8 +1336,9 @@ async function startServer() {
       }
 
       const broker = 'upstox';
+      // ADDED: Select refresh_token for the callback
       const { rows } = await query(
-        "SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = $2",
+        "SELECT access_token, refresh_token FROM user_tokens WHERE user_id = $1 AND broker = $2",
         [req.user.id, broker]
       );
 
@@ -1309,9 +1356,11 @@ async function startServer() {
         return res.status(501).json({ success: false, message: "Position conversion not supported for this broker." });
       }
 
+      // ADDED: Create the callback and pass it down
+      const onRefresh = createTokenRefreshCallback(req.user.id, broker, String(rows[0].refresh_token));
       const result = await brokerService.convertPosition(decryptedToken, {
         symbol, from_product, to_product, quantity: Number(quantity), instrument_token,
-      });
+      }, onRefresh);
 
       if (result.success) {
         logger.info(`[Convert] User ${req.user.id} converted ${symbol} ${from_product} → ${to_product}`);
@@ -1355,7 +1404,7 @@ async function startServer() {
         const broker = 'upstox'; 
         const userId = req.user.id;
         
-        const { rows } = await query("SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = $2", [userId, broker]);
+        const { rows } = await query("SELECT access_token, refresh_token FROM user_tokens WHERE user_id = $1 AND broker = $2", [userId, broker]);
         const userToken = rows[0];
 
         if (!userToken || !userToken.access_token) return res.status(400).json({ success: false, code: 'NO_BROKER', message: `Please connect your ${broker} account.` });
@@ -1374,7 +1423,8 @@ async function startServer() {
         }
 
         try {
-          const brokerService = getBrokerService(String(broker));
+          // CAST TO ANY HERE
+          const brokerService = getBrokerService(String(broker)) as any;
 
           // =========================================================================
           // BACKEND PRE-TRADE VALIDATION & MARGIN RECALCULATION
@@ -1420,7 +1470,8 @@ async function startServer() {
             stoploss_price
           };
           
-          const orderRes = await brokerService.placeOrder(decryptedToken, orderRequest);
+          const onRefresh = createTokenRefreshCallback(userId, broker, String(userToken.refresh_token));
+          const orderRes = await brokerService.placeOrder(decryptedToken, orderRequest, onRefresh);
 
           if (orderRes.success) {
             const exchangeOrderId = orderRes.raw_response?.data?.order_id ?? orderRes.order_id ?? null;
