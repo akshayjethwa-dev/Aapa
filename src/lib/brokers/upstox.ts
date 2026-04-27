@@ -10,6 +10,15 @@ import {
   FundsSegment 
 } from './types';
 
+// Add this interface for lightweight-charts
+export interface CandleData {
+  time: number; // Unix timestamp in seconds
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+}
+
 // ─── Status Normalizer ────────────────────────────────────────────────────────
 // Upstox raw statuses → normalized app statuses
 // Upstox statuses: open, complete, cancelled, rejected, modify_pending,
@@ -113,8 +122,8 @@ export class UpstoxBrokerService implements BrokerService {
           symbol:            p.trading_symbol,
           product:           p.product,
           quantity:          qty,
-          avg_price:         avg,         
-          average_price:     avg,         
+          avg_price:         avg,        
+          average_price:     avg,        
           ltp:               ltp,
           current_price:     ltp,
           close_price:       close_price,
@@ -334,6 +343,54 @@ export class UpstoxBrokerService implements BrokerService {
       return { access_token: data.access_token, refresh_token: data.refresh_token };
     }
     throw new Error(data.errors?.[0]?.message || 'Failed to refresh Upstox token');
+  }
+
+  // ─── ADDED: Dedicated Intraday Fetcher for Lightweight Charts (Task 2.2) ───
+  async getIntradayCandles(
+    token: string,
+    instrumentKey: string,
+    interval: string = '1minute'
+  ): Promise<CandleData[]> {
+    try {
+      const url = `https://api.upstox.com/v2/historical-candle/intraday/${encodeURIComponent(instrumentKey)}/${interval}`;
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      // NEW: Explicitly handle Scope / Authorization errors gracefully
+      if (response.status === 401 || response.status === 403) {
+        console.error(`[Upstox] 🔴 API Error ${response.status}: Missing 'Historical API' scope or token expired. Please check Upstox Developer Console.`);
+        return []; // Return empty array so Lightweight Charts doesn't crash
+      }
+
+      if (!response.ok) {
+        console.error(`[Upstox] HTTP error fetching candles: ${response.status}`);
+        return [];
+      }
+
+      const result = await response.json();
+
+      if (result.status === 'success' && result.data && result.data.candles) {
+        return result.data.candles.map((candle: any[]) => {
+          const timeInSeconds = Math.floor(new Date(candle[0]).getTime() / 1000);
+          return {
+            time: timeInSeconds as any, 
+            open: parseFloat(candle[1]),
+            high: parseFloat(candle[2]),
+            low: parseFloat(candle[3]),
+            close: parseFloat(candle[4]),
+          };
+        }).reverse();
+      }
+      return [];
+    } catch (error) {
+      console.error("[Upstox] 🔴 Error fetching intraday candles:", error);
+      return [];
+    }
   }
 
   async getHistoricalCandles(

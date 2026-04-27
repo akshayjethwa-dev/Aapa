@@ -6,7 +6,6 @@ const TradingViewWidget = React.memo(({ symbol, height = "100%" }: { symbol: str
   const containerRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
-  // Generate a unique ID for the TV container so React doesn't reuse ghost DOM nodes
   const widgetId = `tv-widget-${useId().replace(/:/g, '')}`;
 
   useEffect(() => {
@@ -16,20 +15,20 @@ const TradingViewWidget = React.memo(({ symbol, height = "100%" }: { symbol: str
     setError(false);
     
     const currentContainer = containerRef.current;
-    // 1. Aggressive cleanup of previous widget artifacts
-    currentContainer.innerHTML = '';
-    
-    // 2. Create exact DOM structure TV expects with a unique ID
+    const tvSymbol = getTradingViewSymbol(symbol);
+
+    // 1. Create a completely isolated container for the widget.
+    // This prevents React reconciliation errors because React doesn't track this inner element.
     const widgetContainer = document.createElement('div');
     widgetContainer.id = widgetId;
     widgetContainer.className = 'tradingview-widget-container__widget';
     widgetContainer.style.height = '100%';
     widgetContainer.style.width = '100%';
-    currentContainer.appendChild(widgetContainer);
     
-    const tvSymbol = getTradingViewSymbol(symbol);
+    // Append it to the React-managed ref
+    currentContainer.appendChild(widgetContainer);
 
-    // 3. Script injection
+    // 2. Script injection isolated to the new container
     const script = document.createElement("script");
     script.src = "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
     script.type = "text/javascript";
@@ -66,16 +65,17 @@ const TradingViewWidget = React.memo(({ symbol, height = "100%" }: { symbol: str
     };
     
     script.innerHTML = JSON.stringify(config);
-    currentContainer.appendChild(script);
+    widgetContainer.appendChild(script);
 
     // Fade out loader to allow iframe paint
     const overlayTimeoutId = setTimeout(() => setLoading(false), 1200); 
 
-    // 4. Guaranteed cleanup function on unmount or symbol change
+    // 3. Guaranteed cleanup function on unmount or symbol change
     return () => {
       clearTimeout(overlayTimeoutId);
-      if (currentContainer) {
-        currentContainer.innerHTML = ''; 
+      // Cleanly remove only our isolated container
+      if (currentContainer.contains(widgetContainer)) {
+        currentContainer.removeChild(widgetContainer);
       }
     };
   }, [symbol, widgetId]);
