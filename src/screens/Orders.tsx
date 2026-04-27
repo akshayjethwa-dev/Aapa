@@ -172,8 +172,22 @@ const Orders = ({ onBack }: { onBack: () => void }) => {
 
   useEffect(() => {
     fetchOrders();
+    
+    // Background polling fallback
     const interval = setInterval(fetchOrders, 8000);
-    return () => clearInterval(interval);
+    
+    // TASK 3.1: INSTANT WEBSOCKET REFRESH 
+    // Listen for the custom event dispatched by App.tsx when a WS message arrives
+    const handleBrokerUpdate = () => {
+      fetchOrders();
+    };
+    
+    window.addEventListener('broker_portfolio_updated', handleBrokerUpdate);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('broker_portfolio_updated', handleBrokerUpdate);
+    };
   }, [token]);
 
   // ── Filtered list ──────────────────────────────────────────────────────────

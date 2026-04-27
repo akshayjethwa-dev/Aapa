@@ -35,7 +35,6 @@ import Orders from './screens/Orders';
 // NEW: symbol search + stock detail
 import SymbolSearch from './components/SymbolSearch';
 import StockDetail from './screens/StockDetail';
-import type { SymbolDefinition } from './constants/symbols';
 
 export type MarketPhase = 'LIVE' | 'PRE_OPEN' | 'CLOSED';
 
@@ -292,14 +291,35 @@ function App() {
             }
           }
 
+          // =========================================================================
+          // TASK 3.1: ENHANCED ORDER UPDATE NOTIFICATIONS
+          // =========================================================================
           if (message.type === 'order_update') {
-            const statusStr = message.data.status
-              ? String(message.data.status).toUpperCase()
-              : 'UPDATED';
-            toast.info(`Upstox Order: ${statusStr}`, {
-              description: `Order ID: ${message.data.order_id}`,
-            });
+            const rawStatus = message.data.status ? String(message.data.status).toLowerCase() : 'updated';
+            const symbol = message.data.trading_symbol || 'Order';
+            const orderId = message.data.order_id;
+            const messageTxt = message.data.status_message;
 
+            // Trigger contextual toasts
+            if (rawStatus === 'complete' || rawStatus === 'completed') {
+              toast.success(`Success: Order Filled`, {
+                description: `${symbol} - Order ID: ${orderId}`,
+              });
+            } else if (rawStatus === 'rejected') {
+              toast.error(`Order Rejected: ${symbol}`, {
+                description: messageTxt || `Order ID: ${orderId} was rejected.`,
+              });
+            } else if (rawStatus === 'cancelled') {
+              toast.info(`Order Cancelled: ${symbol}`, {
+                description: `Order ID: ${orderId} was cancelled.`,
+              });
+            } else {
+              toast.info(`Order Updated: ${symbol}`, {
+                description: `Status: ${rawStatus.toUpperCase()}`,
+              });
+            }
+
+            // Sync auth/profile background
             apiClient
               .get('/api/user/profile')
               .then((res) => {
@@ -309,10 +329,11 @@ function App() {
               })
               .catch(console.error);
 
-            window.dispatchEvent(new CustomEvent('broker_portfolio_updated'));
+            // Emit local event so Orders.tsx can refetch instantly
+            window.dispatchEvent(new CustomEvent('broker_portfolio_updated', { detail: message.data }));
           }
         } catch (e) {
-          // ignore
+          // ignore parse errors
         }
       };
 
@@ -343,7 +364,7 @@ function App() {
   // =========================================================================
   // Symbol search selection handler
   // =========================================================================
-  const handleSymbolSelected = (symbolMeta: SymbolDefinition) => {
+  const handleSymbolSelected = (symbolMeta: { name: string; type: string; [key: string]: any }) => {
     setIsSearchOpen(false);
 
     if (symbolMeta.type === 'INDEX') {
@@ -435,11 +456,7 @@ function App() {
                 <Positions key="positions" stocks={stocks} />
               )}
               {activeTab === 'portfolio' && (
-                <Portfolio
-                  key="portfolio"
-                  stocks={stocks}
-                  onGoToPositions={() => setActiveTab('positions')}
-                />
+                <Portfolio key="portfolio" />
               )}
               {activeTab === 'orders' && (
                 <Orders key="orders" onBack={() => setActiveTab('more')} />
