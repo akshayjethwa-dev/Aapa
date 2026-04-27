@@ -316,15 +316,18 @@ async function startServer() {
 
   app.set("trust proxy", 1);
 
+  // ── FIX: Updated CSP to allow external fonts, images, and 'unsafe-eval' (for TradingView & Recharts) ──
   app.use(
     helmet({
       contentSecurityPolicy: process.env.NODE_ENV === "production" 
         ? {
             directives: {
               ...helmet.contentSecurityPolicy.getDefaultDirectives(),
-              "script-src": ["'self'", "'unsafe-inline'", "https://s3.tradingview.com", "https://www.tradingview.com"],
+              "script-src": ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https://s3.tradingview.com", "https://www.tradingview.com"],
               "frame-src": ["'self'", "https://s3.tradingview.com", "https://www.tradingview.com"],
-              "style-src": ["'self'", "'unsafe-inline'"],
+              "style-src": ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+              "font-src": ["'self'", "https://fonts.gstatic.com", "data:"],
+              "img-src": ["'self'", "data:", "https:", "http:"],
             },
           }
         : false,
@@ -1837,6 +1840,7 @@ async function startServer() {
         }, 1000);
       });
 
+      // ── FIX: Extract Previous Close directly from WebSocket feed for accurate day change ──
       upstoxMarketWs.on("message", (data: any) => {
         try {
           const decoded = FeedResponse.decode(data as Buffer);
@@ -1858,16 +1862,28 @@ async function startServer() {
                 feedData?.fullFeed?.indexFF?.ltpc?.ltp || 
                 feedData?.ltpc?.ltp ||
                 feedData?.firstLevelWithGreeks?.ltpc?.ltp;
+                
+              const rawClose = 
+                feedData?.ff?.marketFF?.ltpc?.cp || 
+                feedData?.ff?.indexFF?.ltpc?.cp || 
+                feedData?.fullFeed?.marketFF?.ltpc?.cp || 
+                feedData?.fullFeed?.indexFF?.ltpc?.cp || 
+                feedData?.ltpc?.cp ||
+                feedData?.firstLevelWithGreeks?.ltpc?.cp;
               
               const price = rawPrice ? Number(rawPrice) : null;
+              const closePrice = rawClose ? Number(rawClose) : null;
               
               if (price) {
                 const symbol = reverseMap[key] || (key.includes('|') ? key.split('|')[1] : null);
                 if (symbol && allSymbols.includes(symbol)) {
-                  const prevClose = marketData[symbol]?.prevClose || price;
+                  // Prioritize WS live close, then fallback to snapshot, lastly zero
+                  const prevClose = closePrice || marketData[symbol]?.prevClose || price;
+                  
                   marketData[symbol] = {
                     ...marketData[symbol],
                     ltp: price,
+                    prevClose: prevClose,
                     day_change: price - prevClose,
                     day_change_pct: prevClose ? ((price - prevClose) / prevClose) * 100 : 0
                   };
