@@ -8,9 +8,31 @@ import Sparkline from '../components/Sparkline';
 import FullChartModal from '../components/FullChartModal';
 import { INDEX_CONSTITUENTS } from '../constants/marketData';
 
+// Helper to reliably extract or calculate price and changes
+const getPriceData = (quote: any) => {
+  if (!quote) return { ltp: 0, change: 0, changePct: 0 };
+  if (typeof quote === 'number') return { ltp: quote, change: 0, changePct: 0 };
+  
+  const ltp = quote.ltp || quote.price || 0;
+  const close = quote.close || quote.prevClose || quote.close_price || quote.previous_close || 0;
+  
+  let change = quote.day_change || quote.change || 0;
+  let changePct = quote.day_change_pct || quote.changePercent || 0;
+
+  // Dynamically calculate if exact fields are missing but raw data is present
+  if (!change && ltp && close) {
+    change = ltp - close;
+  }
+  if (!changePct && ltp && close) {
+    changePct = (change / close) * 100;
+  }
+
+  return { ltp, change, changePct };
+};
+
 const IndexOverview = ({ indexName, stocks, onClose, onOpenOptionChain }: { 
   indexName: string, 
-  stocks: Record<string, number>, 
+  stocks: Record<string, any>, 
   onClose: () => void,
   onOpenOptionChain: () => void 
 }) => {
@@ -18,28 +40,30 @@ const IndexOverview = ({ indexName, stocks, onClose, onOpenOptionChain }: {
   const [viewMode, setViewMode] = useState<'list' | 'heatmap'>('list');
   const [activeChart, setActiveChart] = useState<any>(null);
   
-  const price = stocks[indexName] || 0;
-  const change = 1.24; // Mock
+  const { ltp: price, change, changePct } = getPriceData(stocks[indexName]);
   const isPositive = change >= 0;
 
   const constituents = useMemo(() => {
     const symbols = INDEX_CONSTITUENTS[indexName] || [];
-    return symbols.map(symbol => ({
-      symbol,
-      price: stocks[symbol] || (Math.random() * 2000 + 500),
-      change: (Math.random() * 4 - 1.5),
-      volume: Math.floor(Math.random() * 50000000) + 1000000
-    }));
+    return symbols.map(symbol => {
+      const { ltp, change, changePct } = getPriceData(stocks[symbol]);
+      return {
+        symbol,
+        price: ltp || (Math.random() * 2000 + 500),
+        change: change || (Math.random() * 4 - 1.5),
+        changePct: changePct || (Math.random() * 2 - 1),
+        volume: Math.floor(Math.random() * 50000000) + 1000000
+      };
+    });
   }, [indexName, stocks]);
 
   const sortedConstituents = useMemo(() => {
     return [...constituents].sort((a, b) => {
-      if (sortBy === 'change') return b.change - a.change;
+      if (sortBy === 'change') return b.changePct - a.changePct;
       return b.volume - a.volume;
     });
   }, [constituents, sortBy]);
 
-  // Mock chart data
   const chartData = useMemo(() => {
     return Array.from({ length: 20 }, (_, i) => ({
       time: i,
@@ -66,7 +90,7 @@ const IndexOverview = ({ indexName, stocks, onClose, onOpenOptionChain }: {
             <div className="flex items-center gap-2">
               <span className="text-sm font-bold">{price.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
               <span className={cn("text-[10px] font-bold", isPositive ? "text-emerald-600" : "text-rose-600")}>
-                {isPositive ? '+' : ''}{change}%
+                {isPositive ? '+' : ''}{change.toFixed(2)} ({isPositive ? '+' : ''}{changePct.toFixed(2)}%)
               </span>
             </div>
           </div>
@@ -170,7 +194,7 @@ const IndexOverview = ({ indexName, stocks, onClose, onOpenOptionChain }: {
                     <div className="text-right">
                       <p className="text-sm font-bold text-zinc-900">{formatCurrency(stock.price)}</p>
                       <p className={cn("text-[10px] font-black", stock.change >= 0 ? "text-emerald-600" : "text-rose-600")}>
-                        {stock.change >= 0 ? '+' : ''}{stock.change.toFixed(2)}%
+                        {stock.change >= 0 ? '+' : ''}{stock.change.toFixed(2)} ({stock.changePct.toFixed(2)}%)
                       </p>
                     </div>
                   </div>
@@ -185,14 +209,14 @@ const IndexOverview = ({ indexName, stocks, onClose, onOpenOptionChain }: {
                 key={stock.symbol}
                 className={cn(
                   "aspect-square rounded-xl p-2 flex flex-col justify-between border",
-                  stock.change >= 1 ? "bg-emerald-500 text-black border-emerald-600" :
-                  stock.change > 0 ? "bg-emerald-100 text-emerald-900 border-emerald-200" :
-                  stock.change > -1 ? "bg-rose-100 text-rose-900 border-rose-200" :
+                  stock.changePct >= 1 ? "bg-emerald-500 text-black border-emerald-600" :
+                  stock.changePct > 0 ? "bg-emerald-100 text-emerald-900 border-emerald-200" :
+                  stock.changePct > -1 ? "bg-rose-100 text-rose-900 border-rose-200" :
                   "bg-rose-500 text-white border-rose-600"
                 )}
               >
                 <p className="text-[10px] font-black uppercase tracking-tighter">{stock.symbol}</p>
-                <p className="text-[11px] font-bold">{stock.change.toFixed(2)}%</p>
+                <p className="text-[11px] font-bold">{stock.changePct.toFixed(2)}%</p>
               </div>
             ))}
           </div>

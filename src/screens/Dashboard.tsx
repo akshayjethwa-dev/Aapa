@@ -11,6 +11,28 @@ import { apiClient } from '../api/client';
 import MarketStatusPill from '../components/MarketStatusPill';
 import { MarketPhase } from '../types';
 
+// Helper to reliably extract or calculate price and changes
+const getPriceData = (quote: any) => {
+  if (!quote) return { ltp: 0, change: 0, changePct: 0 };
+  if (typeof quote === 'number') return { ltp: quote, change: 0, changePct: 0 };
+  
+  const ltp = quote.ltp || quote.price || 0;
+  const close = quote.close || quote.prevClose || quote.close_price || quote.previous_close || 0;
+  
+  let change = quote.day_change || quote.change || 0;
+  let changePct = quote.day_change_pct || quote.changePercent || 0;
+
+  // Dynamically calculate if exact fields are missing but raw data is present
+  if (!change && ltp && close) {
+    change = ltp - close;
+  }
+  if (!changePct && ltp && close) {
+    changePct = (change / close) * 100;
+  }
+
+  return { ltp, change, changePct };
+};
+
 const Dashboard = ({ 
   stocks, 
   onMarketClick, 
@@ -57,16 +79,12 @@ const Dashboard = ({
     };
   }, [fetchPortfolio]);
 
-  // ── FIX: Listen for Upstox auth success from the popup window ──────────────
-  // After successful OAuth, the callback page posts UPTOX_AUTH_SUCCESS.
-  // We refresh the user profile so is_uptox_connected flips to true and
-  // the "Step 2: Connect Your Broker" box disappears immediately.
   useEffect(() => {
     const handleMessage = async (event: MessageEvent) => {
       if (event.data?.type === 'UPTOX_AUTH_SUCCESS') {
         toast.success('Upstox connected successfully!');
-        await refreshUser();      // updates is_uptox_connected in authStore
-        await fetchPortfolio();   // load holdings/positions right away
+        await refreshUser();      
+        await fetchPortfolio();   
       }
     };
     window.addEventListener('message', handleMessage);
@@ -112,28 +130,21 @@ const Dashboard = ({
 
   const displayFunds = availableFunds !== null ? availableFunds : (user?.balance || 0);
 
-  // ── Portfolio Math Engine (Holdings + Positions) ───────────────────────────
-  // When market is CLOSED, stocks dict has no live feed.
-  // We fall back to current_price from the broker API (last close price).
   let totalInvested = 0;
   let currentValue = 0;
 
   holdings.forEach(h => {
-    const quote = stocks[h.symbol];
-    const ltp = typeof quote === 'number'
-      ? quote
-      : (quote?.ltp || h.current_price || h.last_price || h.average_price);
+    const { ltp } = getPriceData(stocks[h.symbol]);
+    const finalPrice = ltp || h.current_price || h.last_price || h.average_price;
     totalInvested += (h.quantity * h.average_price);
-    currentValue  += (h.quantity * ltp);
+    currentValue  += (h.quantity * finalPrice);
   });
 
   positions.forEach(p => {
-    const quote = stocks[p.symbol];
-    const ltp = typeof quote === 'number'
-      ? quote
-      : (quote?.ltp || p.current_price || p.last_price || p.average_price);
+    const { ltp } = getPriceData(stocks[p.symbol]);
+    const finalPrice = ltp || p.current_price || p.last_price || p.average_price;
     totalInvested += (p.quantity * (p.avgPrice || p.average_price));
-    currentValue  += (p.quantity * ltp);
+    currentValue  += (p.quantity * finalPrice);
   });
 
   const totalPnL = currentValue - totalInvested;
@@ -182,15 +193,14 @@ const Dashboard = ({
     const list = Object.entries(stocks)
       .filter(([s]) => !primaryIndices.includes(s) && !secondaryIndices.includes(s))
       .map(([symbol, quote]) => {
-        const price  = typeof quote === 'number' ? quote : (quote?.ltp || 0);
-        const change = typeof quote === 'number' ? 0     : (quote?.day_change_pct || 0);
-        return { symbol, price, change };
+        const { ltp, change, changePct } = getPriceData(quote);
+        return { symbol, price: ltp, change, changePct };
       });
       
     if (gainerLoserTab === 'Gainers') {
-      list.sort((a, b) => b.change - a.change);
+      list.sort((a, b) => b.changePct - a.changePct);
     } else {
-      list.sort((a, b) => a.change - b.change);
+      list.sort((a, b) => a.changePct - b.changePct);
     }
     return list.slice(0, 5);
   }, [stocks, gainerLoserTab]);
@@ -206,10 +216,8 @@ const Dashboard = ({
         </div>
         <div className="px-5 overflow-x-auto scrollbar-hide flex gap-3 py-2">
           {[...primaryIndices, ...secondaryIndices].map(index => {
-            const quote     = stocks[index];
-            const ltp       = typeof quote === 'number' ? quote : (quote?.ltp || 0);
-            const changePct = typeof quote === 'number' ? 0     : (quote?.day_change_pct || 0);
-            const isPositive = changePct >= 0;
+            const { ltp, change, changePct } = getPriceData(stocks[index]);
+            const isPositive = change >= 0;
 
             return (
               <motion.div
@@ -230,7 +238,7 @@ const Dashboard = ({
                       isPositive ? "bg-emerald-500/10 text-emerald-500" : "bg-rose-500/10 text-rose-500"
                     )}>
                       {isPositive ? <ArrowUpRight size={10} /> : <ArrowDownRight size={10} />}
-                      <span>{isPositive ? '+' : ''}{changePct.toFixed(2)}%</span>
+                      <span>{isPositive ? '+' : ''}{change.toFixed(2)} ({isPositive ? '+' : ''}{changePct.toFixed(2)}%)</span>
                     </div>
                   </div>
                 </div>
@@ -318,11 +326,9 @@ const Dashboard = ({
                   Holdings ({holdings.length} stocks)
                 </p>
                 {holdings.slice(0, 3).map(h => {
-                  const quote = stocks[h.symbol];
-                  const ltp   = typeof quote === 'number'
-                    ? quote
-                    : (quote?.ltp || h.current_price || h.last_price || h.average_price);
-                  const pnl   = (ltp - h.average_price) * h.quantity;
+                  const { ltp } = getPriceData(stocks[h.symbol]);
+                  const finalPrice = ltp || h.current_price || h.last_price || h.average_price;
+                  const pnl = (finalPrice - h.average_price) * h.quantity;
                   return (
                     <div key={h.symbol} className="flex justify-between items-center">
                       <div>
@@ -330,7 +336,7 @@ const Dashboard = ({
                         <p className="text-[9px] text-zinc-600 uppercase">{h.quantity} qty</p>
                       </div>
                       <div className="text-right">
-                        <p className="text-[11px] font-bold text-white">{formatCurrency(h.quantity * ltp)}</p>
+                        <p className="text-[11px] font-bold text-white">{formatCurrency(h.quantity * finalPrice)}</p>
                         <p className={cn("text-[9px] font-bold", pnl >= 0 ? "text-emerald-500" : "text-rose-500")}>
                           {pnl >= 0 ? '+' : ''}{formatCurrency(pnl)}
                         </p>
@@ -359,11 +365,9 @@ const Dashboard = ({
           </div>
           <div className="space-y-2.5">
             {positions.map((pos, i) => {
-              const quote = stocks[pos.symbol];
-              const ltp   = typeof quote === 'number'
-                ? quote
-                : (quote?.ltp || pos.current_price || pos.last_price || pos.average_price);
-              const pnl   = (ltp - (pos.avgPrice || pos.average_price)) * pos.quantity;
+              const { ltp } = getPriceData(stocks[pos.symbol]);
+              const finalPrice = ltp || pos.current_price || pos.last_price || pos.average_price;
+              const pnl = (finalPrice - (pos.avgPrice || pos.average_price)) * pos.quantity;
 
               return (
                 <div key={pos.symbol} className="bg-zinc-900/30 border border-zinc-800/50 rounded-2xl p-4 space-y-3">
@@ -383,7 +387,7 @@ const Dashboard = ({
                       <p className={cn("text-sm font-black tracking-tighter", pnl >= 0 ? "text-emerald-500" : "text-rose-500")}>
                         {formatCurrency(pnl)}
                       </p>
-                      <p className="text-[10px] font-bold text-zinc-500 mt-1">LTP: <span className="text-white">{formatCurrency(ltp)}</span></p>
+                      <p className="text-[10px] font-bold text-zinc-500 mt-1">LTP: <span className="text-white">{formatCurrency(finalPrice)}</span></p>
                     </div>
                   </div>
                   <button
@@ -438,7 +442,7 @@ const Dashboard = ({
           ))}
         </div>
         <div className="space-y-2">
-          {sortedGainersLosers.map(({ symbol, price, change }: { symbol: string, price: number, change: number }) => (
+          {sortedGainersLosers.map(({ symbol, price, change, changePct }: { symbol: string, price: number, change: number, changePct: number }) => (
             <div key={symbol} className="bg-zinc-900/20 border border-zinc-800/30 rounded-xl p-3 flex justify-between items-center">
               <div className="flex items-center gap-3">
                 <div className="w-9 h-9 rounded-xl bg-zinc-900 flex items-center justify-center font-bold text-[11px] text-zinc-500">
@@ -452,7 +456,7 @@ const Dashboard = ({
               <div className="text-right">
                 <p className="text-[13px] font-bold text-white">{formatCurrency(price)}</p>
                 <p className={cn("text-[9px] font-bold", change >= 0 ? "text-emerald-500" : "text-rose-500")}>
-                  {change >= 0 ? '+' : ''}{change.toFixed(2)}%
+                  {change >= 0 ? '+' : ''}{change.toFixed(2)} ({changePct.toFixed(2)}%)
                 </p>
               </div>
             </div>
