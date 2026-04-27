@@ -15,10 +15,9 @@ export interface OrderConfig {
   strike?: number;
   optionType?: 'CE' | 'PE';
   expiry?: string;
-  price: number;
+  price?: number;
   defaultQty?: number;
   defaultProduct?: 'MIS' | 'NRML' | 'Intraday' | 'Delivery';
-  // ── Modify-mode extras (injected by Orders.tsx) ──
   _isModify?: boolean;
   _orderId?: string;
   _orderType?: 'MARKET' | 'LIMIT' | 'SL' | 'SL-M';
@@ -68,9 +67,9 @@ const OrderWindow = ({
 }) => {
   const { user, token } = useAuthStore();
   
-  // Real-time tick data hook
+  // Real-time tick data hook - Highly reactive subscription
   const tickData = useMarketDataStore((state) => state.ticks[config.symbol]);
-  const livePrice = tickData?.ltp || config.price;
+  const livePrice = tickData?.ltp || config.price || 0;
 
   useEffect(() => {
     if (token && config.symbol) {
@@ -94,19 +93,21 @@ const OrderWindow = ({
   const [orderType,    setOrderType]    = useState<OrderTypeValue>(config._orderType ?? 'MARKET');
   const [validity,     setValidity]     = useState<ValidityValue>(config._validity ?? 'DAY');
   const [product,      setProduct]      = useState(resolvedDefaultProduct);
-  const [price,        setPrice]        = useState<number | string>(config.price || 0);
+  const [price,        setPrice]        = useState<number | string>(config.price || livePrice);
   const [triggerPrice, setTriggerPrice] = useState<number | string>(config._triggerPrice ?? '');
   const [loading,      setLoading]      = useState(false);
   const [showConfirm,  setShowConfirm]  = useState(false);
 
+  // Re-initialize state if the symbol changes
   useEffect(() => {
     setQuantity(config.defaultQty ?? 1);
-    setPrice(config.price || 0);
+    setPrice(config.price || livePrice);
     setTriggerPrice(config._triggerPrice ?? '');
     setShowConfirm(false);
     setOrderType(config._orderType ?? 'MARKET');
     setValidity(config._validity ?? 'DAY');
     setProduct(config.defaultProduct ? (PRODUCT_DISPLAY[config.defaultProduct] ?? 'Intraday') : 'Intraday');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config.symbol, config.strike, config.optionType, config.side]);
 
   // ── Derived ────────────────────────────────────────────────────────────────
@@ -118,8 +119,10 @@ const OrderWindow = ({
     : config.symbol.replace(' 50', '');
 
   const numQty       = Number(quantity) || 0;
+  // If it's a market order, bind Estimated Value strictly to live ticking price
   const numPrice     = needsPrice ? (Number(price) || 0) : livePrice;
   const nominalValue = numQty * numPrice;
+  
   const lotSize      = isOption ? (LOT_SIZES[config.symbol] ?? 1) : 1;
   const lots         = isOption && lotSize > 1 ? Math.round(numQty / lotSize) : null;
   const MAX_QTY      = config.strike ? 1800 : 10000;
@@ -286,7 +289,7 @@ const OrderWindow = ({
           )}
         </div>
 
-        {/* Option context strip */}
+        {/* Option context strip - Reactive LTP injection here */}
         {config.strike && (
           <div className="grid grid-cols-3 gap-3 pb-5 border-b border-zinc-900">
             <div className="bg-zinc-900/40 rounded-xl p-3 text-center">
@@ -301,7 +304,8 @@ const OrderWindow = ({
             </div>
             <div className="bg-zinc-900/40 rounded-xl p-3 text-center">
               <p className="text-[8px] font-bold text-zinc-600 uppercase tracking-widest mb-1">LTP</p>
-              <p className="text-sm font-black text-white">{formatCurrency(livePrice)}</p>
+              {/* Dynamic update multiple times per second */}
+              <p className="text-sm font-black text-white transition-colors duration-200">{formatCurrency(livePrice)}</p>
             </div>
           </div>
         )}
@@ -371,7 +375,7 @@ const OrderWindow = ({
         {needsPrice && (
           <div className="space-y-2">
             <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest ml-1">
-              Limit Price <span className="text-zinc-700 normal-case tracking-normal font-normal">— LTP: {formatCurrency(livePrice)}</span>
+              Limit Price <span className="text-zinc-700 normal-case tracking-normal font-normal">— LTP: <span className="text-white">{formatCurrency(livePrice)}</span></span>
             </p>
             <input type="number" inputMode="decimal" value={price}
               onChange={e => { setPrice(e.target.value); setShowConfirm(false); }}
@@ -384,7 +388,7 @@ const OrderWindow = ({
         {isSLType && (
           <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="space-y-2">
             <p className="text-[10px] font-bold text-amber-500 uppercase tracking-widest ml-1">
-              Trigger Price <span className="text-zinc-600 normal-case tracking-normal font-normal">— LTP: {formatCurrency(livePrice)}</span>
+              Trigger Price <span className="text-zinc-600 normal-case tracking-normal font-normal">— LTP: <span className="text-zinc-400">{formatCurrency(livePrice)}</span></span>
             </p>
             <input type="number" inputMode="decimal" value={triggerPrice}
               onChange={e => { setTriggerPrice(e.target.value); setShowConfirm(false); }}
@@ -435,12 +439,12 @@ const OrderWindow = ({
           {!needsPrice && (
             <div className="flex justify-between text-[11px]">
               <span className="text-zinc-500">Est. Price</span>
-              <span className="text-zinc-400 font-bold">Market</span>
+              <span className="text-zinc-400 font-bold">Market (LTP: {formatCurrency(livePrice)})</span>
             </div>
           )}
           <div className="border-t border-zinc-800 pt-2 flex justify-between text-[11px]">
             <span className="text-zinc-500">Est. Value</span>
-            <span className={cn('font-bold', isValueHigh ? 'text-amber-400' : 'text-white')}>
+            <span className={cn('font-bold transition-colors duration-200', isValueHigh ? 'text-amber-400' : 'text-white')}>
               {formatCurrency(nominalValue)}
             </span>
           </div>

@@ -1,3 +1,4 @@
+// src/lib/brokers/websocket.ts
 import * as protobuf from 'protobufjs';
 import { useMarketDataStore } from '../../store/marketDataStore';
 
@@ -59,7 +60,7 @@ export class UpstoxWebSocketClient {
 
       // 3. Connect to WebSocket
       this.ws = new WebSocket(wsUrl);
-      this.ws.binaryType = 'arraybuffer'; // Crucial for Protobuf
+      this.ws.binaryType = 'arraybuffer'; // Crucial for Protobuf binary feed
 
       this.ws.onopen = this.handleOpen.bind(this);
       this.ws.onmessage = this.handleMessage.bind(this);
@@ -126,7 +127,11 @@ export class UpstoxWebSocketClient {
         instrumentKeys: instrumentKeys
       }
     };
-    this.ws.send(Buffer.from(JSON.stringify(payload)));
+    
+    // FIX: Replaced Node.js `Buffer.from` with Browser-native `TextEncoder`
+    // This prevents Vite/React crash when trying to use Node Globals
+    const encodedPayload = new TextEncoder().encode(JSON.stringify(payload));
+    this.ws.send(encodedPayload);
   }
 
   private handleOpen() {
@@ -143,6 +148,12 @@ export class UpstoxWebSocketClient {
   private async handleMessage(event: MessageEvent) {
     if (!this.protoRoot) return;
 
+    // FIX: Safety check to ensure we are receiving an ArrayBuffer before trying to parse
+    if (!(event.data instanceof ArrayBuffer)) {
+      console.warn('[Upstox WS] Received non-binary message:', event.data);
+      return;
+    }
+
     try {
       const buffer = new Uint8Array(event.data);
       const FeedResponse = this.protoRoot.lookupType("com.upstox.marketdatafeederv3udapi.rpc.proto.FeedResponse");
@@ -152,7 +163,7 @@ export class UpstoxWebSocketClient {
       if (decoded.feeds) {
         const batchUpdates: Record<string, any> = {};
 
-        // Parse Protobuf payload into our store format
+        // Parse Protobuf payload into our Zustand store format
         Object.entries(decoded.feeds).forEach(([key, feed]: [string, any]) => {
           let tickData: any = {};
 
@@ -183,7 +194,9 @@ export class UpstoxWebSocketClient {
           }
         });
 
-        // Dispatch to Zustand store
+        // 🎯 DIRECT INJECTION: This directly pushes the tick into your global store.
+        // Zustand handles this completely outside the React render cycle, 
+        // preventing UI lag while ensuring OrderWindow gets the live price instantly.
         if (Object.keys(batchUpdates).length > 0) {
           useMarketDataStore.getState().updateMultipleTicks(batchUpdates);
         }

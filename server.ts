@@ -1369,6 +1369,42 @@ async function startServer() {
 
         try {
           const brokerService = getBrokerService(String(broker));
+
+          // =========================================================================
+          // NEW: BACKEND PRE-TRADE VALIDATION & MARGIN RECALCULATION
+          // =========================================================================
+          // 1. Fetch live LTP natively on the backend (prevents frontend spoofing/latency)
+          const cachedLtp = marketData[friendlySymbol]?.ltp || marketData[brokerSymbol]?.ltp || 0;
+          const executionPrice = order_type === 'MARKET' ? cachedLtp : Number(price);
+
+          // 2. Fetch User's Live Funds from Broker API
+          let availableFunds = null;
+          if (brokerService.getFunds) {
+               const fundsData = await brokerService.getFunds(decryptedToken).catch(() => null);
+               if (fundsData && typeof fundsData === 'object' && 'available' in fundsData) {
+                    availableFunds = Number((fundsData as any).available) || 0;
+               }
+          }
+
+          // 3. Exact Margin Calculation natively on backend
+          // We apply strict checking for BUY orders (Equities/Option buying). 
+          // (Option Selling involves SPAN margin which is handled deeply by Upstox, so we skip strict blocking for SELLs here).
+          if (type === 'BUY' && executionPrice > 0 && availableFunds !== null) {
+              // Add a 2% buffer for MARKET orders to account for slippage before execution
+              const bufferMultiplier = order_type === 'MARKET' ? 1.02 : 1.00;
+              const requiredMargin = quantity * executionPrice * bufferMultiplier;
+
+              if (requiredMargin > availableFunds) {
+                  logger.warn(`[Pre-Trade Block] User ${userId} rejected natively. Req: ₹${requiredMargin}, Avail: ₹${availableFunds}`);
+                  return res.status(400).json({
+                      success: false,
+                      code: 'INSUFFICIENT_MARGIN',
+                      message: `Insufficient Margin. Estimated required: ₹${requiredMargin.toLocaleString('en-IN', { minimumFractionDigits: 2 })}, Available Funds: ₹${availableFunds.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`
+                  });
+              }
+          }
+          // =========================================================================
+
           const orderRequest: OrderRequest = {
             symbol: brokerSymbol,
             type,
@@ -1384,6 +1420,7 @@ async function startServer() {
           if (orderRes.success) {
             const exchangeOrderId = orderRes.raw_response?.data?.order_id ?? orderRes.order_id ?? null;
 
+            // Notice we log `executionPrice` instead of trusting the frontend 0 value for MARKET orders
             const insertRes = await query(
               `INSERT INTO orders (
                 order_id, user_id, exchange_order_id, broker_order_id, symbol, type, order_type,
@@ -1398,7 +1435,7 @@ async function startServer() {
               ) RETURNING order_id`,
               [
                 userId, exchangeOrderId, orderRes.order_id, friendlySymbol, type, order_type,
-                quantity, price, trigger_price || 0, validity || 'DAY', product,
+                quantity, executionPrice, trigger_price || 0, validity || 'DAY', product,
                 broker, JSON.stringify(orderRes.raw_response)
               ]
             );
@@ -1417,7 +1454,7 @@ async function startServer() {
               ) VALUES (
                 gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, 'failed', $8, $9
               )`,
-              [userId, friendlySymbol, type, order_type, quantity, price, broker, errorMsg, JSON.stringify(orderRes.raw_response)]
+              [userId, friendlySymbol, type, order_type, quantity, executionPrice, broker, errorMsg, JSON.stringify(orderRes.raw_response)]
             );
             
             return res.status(400).json({ 
