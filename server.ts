@@ -314,7 +314,7 @@ async function startServer() {
     }
   }, 5 * 60 * 1000); 
 
-  app.set("trust proxy", 1);
+  app.set("trust proxy", true);
 
   // ── FIX: Updated CSP to allow external fonts, images, and 'unsafe-eval' (for TradingView & Recharts) ──
   app.use(
@@ -355,8 +355,8 @@ async function startServer() {
   app.use(cookieParser());
 
   const authLimiter = rateLimit({
-    windowMs: 5 * 60 * 1000,
-    max: 20,
+    windowMs: 5 * 60 * 1000, // 5 minutes
+    max: 100, // Increased from 20 to 100 to prevent developer lockouts
     message: { error: "Too many login attempts. Please try again in 5 minutes." },
     standardHeaders: true,
     legacyHeaders: false,

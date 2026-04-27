@@ -14,6 +14,13 @@ const TradingTerminal = ({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // FIX: Keep a stable reference to the latest onPriceUpdate function.
+  // This prevents the WebSocket from reconnecting every time the parent re-renders.
+  const onPriceUpdateRef = useRef(onPriceUpdate);
+  useEffect(() => {
+    onPriceUpdateRef.current = onPriceUpdate;
+  }, [onPriceUpdate]);
+
   useEffect(() => {
     let ws: WebSocket;
 
@@ -71,8 +78,9 @@ const TradingTerminal = ({
                 close: Number(tickData.ltp)
               });
 
-              if (onPriceUpdate) {
-                onPriceUpdate(tickData.ltp);
+              // FIX: Call the tracked ref function safely without triggering the useEffect loop
+              if (onPriceUpdateRef.current) {
+                onPriceUpdateRef.current(tickData.ltp);
               }
             }
           } catch(e) {
@@ -92,7 +100,7 @@ const TradingTerminal = ({
     return () => {
       if (ws) ws.close();
     };
-  }, [instrumentKey, onPriceUpdate]);
+  }, [instrumentKey]); // FIX: Removed onPriceUpdate from this dependency array!
 
   return (
     <div className="flex-1 w-full h-full relative min-h-100 flex flex-col">
