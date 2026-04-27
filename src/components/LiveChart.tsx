@@ -15,27 +15,28 @@ interface LiveChartProps {
 const LiveChart = forwardRef<LiveChartRef, LiveChartProps>(({ symbol, height = '100%', theme = 'dark' }, ref) => {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const seriesRef = useRef<any>(null); // Track the series instance
+  const seriesRef = useRef<any>(null); 
   const currentCandleRef = useRef<any>(null);
 
-  // Expose methods to the parent TradingTerminal
   useImperativeHandle(ref, () => ({
     setHistoricalData: (data: any[]) => {
-      if (seriesRef.current && data.length > 0) {
-        seriesRef.current.setData(data);
-        currentCandleRef.current = data[data.length - 1];
-        chartRef.current?.timeScale().fitContent();
+      try {
+        if (seriesRef.current && data.length > 0) {
+          seriesRef.current.setData(data);
+          currentCandleRef.current = data[data.length - 1];
+          chartRef.current?.timeScale().fitContent();
+        }
+      } catch (e) {
+        console.error("Failed to set historical data:", e);
       }
     },
     updateTick: (tick: any) => {
-      if (!seriesRef.current) return;
+      if (!seriesRef.current || !tick || isNaN(tick.close)) return;
       
       let updatedCandle;
-      // If no candle exists yet, or the tick rolls over into a new minute
       if (!currentCandleRef.current || tick.time > currentCandleRef.current.time) {
         updatedCandle = { ...tick };
       } else {
-        // Merge the live tick into the current minute candle
         const prev = currentCandleRef.current;
         updatedCandle = {
           time: prev.time,
@@ -46,8 +47,12 @@ const LiveChart = forwardRef<LiveChartRef, LiveChartProps>(({ symbol, height = '
         };
       }
 
-      seriesRef.current.update(updatedCandle);
-      currentCandleRef.current = updatedCandle;
+      try {
+        seriesRef.current.update(updatedCandle);
+        currentCandleRef.current = updatedCandle;
+      } catch (e) {
+        console.warn("Skipping bad tick data:", e);
+      }
     }
   }));
 
@@ -70,7 +75,6 @@ const LiveChart = forwardRef<LiveChartRef, LiveChartProps>(({ symbol, height = '
       crosshair: { mode: 0 }
     });
 
-    // V5 Correct Syntax: Pass CandlestickSeries to addSeries
     const candlestickSeries = chart.addSeries(CandlestickSeries, {
       upColor: '#10b981', 
       downColor: '#ef4444', 
@@ -91,7 +95,6 @@ const LiveChart = forwardRef<LiveChartRef, LiveChartProps>(({ symbol, height = '
       }
     };
     window.addEventListener('resize', handleResize);
-    
     setTimeout(handleResize, 100);
 
     return () => {

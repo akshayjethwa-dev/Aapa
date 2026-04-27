@@ -18,7 +18,6 @@ const UpstoxNativeChart: React.FC<UpstoxNativeChartProps> = ({ symbol, instrumen
   useEffect(() => {
     if (!chartContainerRef.current) return;
 
-    // 1. Initialize the Chart UI
     const chart = createChart(chartContainerRef.current, {
       layout: {
         background: { type: ColorType.Solid, color: 'transparent' },
@@ -30,15 +29,11 @@ const UpstoxNativeChart: React.FC<UpstoxNativeChartProps> = ({ symbol, instrumen
       },
       width: chartContainerRef.current.clientWidth,
       height: chartContainerRef.current.clientHeight,
-      timeScale: {
-        timeVisible: true,
-        secondsVisible: false,
-      },
+      timeScale: { timeVisible: true, secondsVisible: false },
     });
 
     chartRef.current = chart;
 
-    // 2. Add Candlestick Series using the v5 standard API
     const candlestickSeries = chart.addSeries(CandlestickSeries, {
       upColor: '#10B981', 
       downColor: '#EF4444', 
@@ -59,7 +54,6 @@ const UpstoxNativeChart: React.FC<UpstoxNativeChartProps> = ({ symbol, instrumen
 
     const abortController = new AbortController();
 
-    // 3. Fetch Upstox Data
     const fetchUpstoxData = async () => {
       try {
         setLoading(true);
@@ -70,7 +64,9 @@ const UpstoxNativeChart: React.FC<UpstoxNativeChartProps> = ({ symbol, instrumen
         fromDate.setMonth(fromDate.getMonth() - 1);
         
         const upstoxService = new UpstoxBrokerService();
-        const rawData = await upstoxService.getHistoricalCandles(
+        
+        // Fix: Explicitly cast 'rawData' as 'any' so TypeScript allows property access
+        const rawData: any = await upstoxService.getHistoricalCandles(
           instrumentToken, 
           'day', 
           fromDate.toISOString().split('T')[0], 
@@ -80,18 +76,33 @@ const UpstoxNativeChart: React.FC<UpstoxNativeChartProps> = ({ symbol, instrumen
 
         if (abortController.signal.aborted) return;
 
-        const formattedData = rawData.map((candle: any) => ({
-          time: (Math.floor(new Date(candle[0]).getTime() / 1000)) as Time,
-          open: Number(candle[1]),
-          high: Number(candle[2]),
-          low: Number(candle[3]),
-          close: Number(candle[4]),
-        }));
+        // Safely extract the data array whether it's wrapped in { data: { candles: [] } } or direct
+        const candlesArray = Array.isArray(rawData) ? rawData : 
+                             (rawData?.data?.candles || rawData?.candles || rawData?.data || []);
 
-        formattedData.sort((a, b) => (a.time as number) - (b.time as number));
+        if (!Array.isArray(candlesArray) || candlesArray.length === 0) {
+          throw new Error("No data returned from Upstox");
+        }
 
-        candlestickSeries.setData(formattedData);
-        chart.timeScale().fitContent();
+        const formattedData = candlesArray.map((candle: any) => ({
+          time: (Math.floor(new Date(candle[0] || candle.timestamp || candle.time).getTime() / 1000)) as Time,
+          open: Number(candle[1] ?? candle.open),
+          high: Number(candle[2] ?? candle.high),
+          low: Number(candle[3] ?? candle.low),
+          close: Number(candle[4] ?? candle.close),
+        })).filter(d => !isNaN(d.time as number) && !isNaN(d.close)); // Drop invalid rows
+
+        // Sort chronologically and deduplicate (Lightweight Charts crashes on duplicates)
+        const uniqueData = formattedData
+          .sort((a, b) => (a.time as number) - (b.time as number))
+          .filter((v: any, i: number, a: any[]) => i === 0 || v.time !== a[i - 1].time);
+
+        if (uniqueData.length > 0) {
+          candlestickSeries.setData(uniqueData);
+          chart.timeScale().fitContent();
+        } else {
+          setError(true);
+        }
       } catch (err: any) {
         if (err.name !== 'AbortError') {
           console.error("Failed to fetch Upstox chart data:", err);
@@ -104,9 +115,7 @@ const UpstoxNativeChart: React.FC<UpstoxNativeChartProps> = ({ symbol, instrumen
       }
     };
 
-    if (instrumentToken) {
-      fetchUpstoxData();
-    }
+    if (instrumentToken) fetchUpstoxData();
 
     return () => {
       abortController.abort(); 

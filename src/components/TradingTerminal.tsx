@@ -25,16 +25,24 @@ const TradingTerminal = ({
         // 1. Fetch historical data
         const response = await apiClient.get(`/api/market/history?instrument=${instrumentKey}`);
         
-        if (response.data && response.data.candles) {
-          const formattedData = response.data.candles.map((c: any) => ({
-            time: (Math.floor(new Date(c.timestamp).getTime() / 1000)) as Time, 
-            open: c.open,
-            high: c.high,
-            low: c.low,
-            close: c.close
-          }));
+        // Safely extract candles
+        const candles = response.data?.data?.candles || response.data?.candles || response.data || [];
+        
+        if (Array.isArray(candles) && candles.length > 0) {
+          const formattedData = candles.map((c: any) => ({
+            time: (Math.floor(new Date(c.timestamp || c.time || c[0]).getTime() / 1000)) as Time, 
+            open: Number(c.open || c[1]),
+            high: Number(c.high || c[2]),
+            low: Number(c.low || c[3]),
+            close: Number(c.close || c[4])
+          })).filter(d => !isNaN(d.time as number) && !isNaN(d.close));
 
-          chartRef.current?.setHistoricalData(formattedData);
+          // Sort and deduplicate
+          const uniqueData = formattedData
+            .sort((a, b) => (a.time as number) - (b.time as number))
+            .filter((v, i, a) => i === 0 || v.time !== a[i - 1].time);
+
+          chartRef.current?.setHistoricalData(uniqueData);
         }
         setLoading(false);
 
@@ -51,19 +59,16 @@ const TradingTerminal = ({
             const tickData = JSON.parse(event.data); 
             
             if (tickData.instrumentKey === instrumentKey && tickData.ltp) {
-              // Extract timestamp, fallback to Date.now
               const tickTimeMs = tickData.timestamp || tickData.exchange_timestamp || Date.now();
               const tickTimeSeconds = Math.floor(tickTimeMs / 1000);
-              
-              // Map continuous ticks securely into 1-minute candle blocks
               const minuteTime = (tickTimeSeconds - (tickTimeSeconds % 60)) as Time;
               
               chartRef.current?.updateTick({
                 time: minuteTime, 
-                open: tickData.open ?? tickData.ltp,
-                high: tickData.high ? Math.max(tickData.ltp, tickData.high) : tickData.ltp,
-                low: tickData.low ? Math.min(tickData.ltp, tickData.low) : tickData.ltp,
-                close: tickData.ltp
+                open: Number(tickData.open ?? tickData.ltp),
+                high: Number(tickData.high ?? tickData.ltp),
+                low: Number(tickData.low ?? tickData.ltp),
+                close: Number(tickData.ltp)
               });
 
               if (onPriceUpdate) {
