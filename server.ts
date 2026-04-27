@@ -316,7 +316,7 @@ async function startServer() {
 
   app.set("trust proxy", true);
 
-  // ── FIX: Updated CSP to allow external fonts, images, and 'unsafe-eval' (for TradingView & Recharts) ──
+  // ── FIX: Updated CSP to allow external fonts, images, 'unsafe-eval' (for TradingView & Recharts), and Upstox APIs ──
   app.use(
     helmet({
       contentSecurityPolicy: process.env.NODE_ENV === "production" 
@@ -328,6 +328,14 @@ async function startServer() {
               "style-src": ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
               "font-src": ["'self'", "https://fonts.gstatic.com", "data:"],
               "img-src": ["'self'", "data:", "https:", "http:"],
+              // ADDED THIS LINE to whitelist Upstox API and WebSockets
+              "connect-src": [
+                "'self'", 
+                "https://api.upstox.com", 
+                "wss://api.upstox.com", 
+                "ws:", 
+                "wss:"
+              ],
             },
           }
         : false,

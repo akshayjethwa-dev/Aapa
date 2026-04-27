@@ -7,7 +7,6 @@ import ErrorBoundary from './ErrorBoundary';
 
 const FullChartModal = ({ instrument, onClose }: { instrument: any, onClose: () => void }) => {
   const [timeframe, setTimeframe] = useState('5m');
-  // Initialize with the prop LTP, but update when the WebSocket pushes new data
   const [livePrice, setLivePrice] = useState(instrument.ltp); 
 
   return (
@@ -54,11 +53,12 @@ const FullChartModal = ({ instrument, onClose }: { instrument: any, onClose: () 
         </div>
       </div>
 
-      {/* Chart Area - Now using Real Data via TradingTerminal */}
+      {/* Chart Area */}
       <div className="flex-1 relative bg-black min-h-100 w-full flex flex-col">
         <ErrorBoundary>
           <TradingTerminal 
             instrumentKey={instrument.symbol} 
+            timeframe={timeframe} // FIX: Pass timeframe to Terminal
             onPriceUpdate={(newPrice) => setLivePrice(newPrice)} 
           />
         </ErrorBoundary>
