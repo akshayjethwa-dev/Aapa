@@ -1,3 +1,4 @@
+// src/lib/brokers/upstox.ts
 import { 
   BrokerService, 
   Holding, 
@@ -10,33 +11,24 @@ import {
   FundsSegment 
 } from './types';
 
-// Add this interface for lightweight-charts
 export interface CandleData {
-  time: number; // Unix timestamp in seconds
+  time: number;
   open: number;
   high: number;
   low: number;
   close: number;
 }
 
-// ─── Status Normalizer ────────────────────────────────────────────────────────
-// Upstox raw statuses → normalized app statuses
-// Upstox statuses: open, complete, cancelled, rejected, modify_pending,
-//                  trigger_pending, put_order_req_received, validation_pending,
-//                  open_pending, not_cancelled, modify_after_market_order_req_received
 const normalizeUpstoxStatus = (raw: string): string => {
   const s = (raw || '').toLowerCase().trim();
   if (s === 'complete') return 'completed';
   if (s === 'cancelled' || s === 'not_cancelled') return 'cancelled';
   if (s === 'rejected') return 'rejected';
-  if (s === 'open') return 'open'; // open = live, resting order on exchange
-  // Partially filled: open order with some fills — handled in getOrders mapping
-  return 'pending'; // catch-all for queued/validation states
+  if (s === 'open') return 'open';
+  return 'pending'; 
 };
 
 export class UpstoxBrokerService implements BrokerService {
-  // FIXED ERROR: Changed return type to Promise<any> to satisfy the BrokerService interface
-  // while still returning your detailed FundsData object.
   async getFunds(token: string): Promise<any> {
     const response = await fetch("https://api.upstox.com/v2/user/get-funds-and-margin", {
       headers: { "Authorization": `Bearer ${token}`, "Accept": "application/json" }
@@ -108,7 +100,6 @@ export class UpstoxBrokerService implements BrokerService {
         const avg         = p.average_price || 0;
         const qty         = p.quantity || 0;
 
-        // Derive segment from instrument_key prefix or exchange field
         const instrumentKey: string = p.instrument_token || p.instrument_key || '';
         const exchange = (p.exchange || '').toUpperCase();
         let segment = 'EQ';
@@ -150,7 +141,6 @@ export class UpstoxBrokerService implements BrokerService {
         const qty: number = o.quantity || 0;
         const filledQty: number = o.filled_quantity || 0;
 
-        // Determine normalized status — partial fill detection:
         let normalizedStatus = normalizeUpstoxStatus(o.status);
         if (normalizedStatus === 'open' && filledQty > 0 && filledQty < qty) {
           normalizedStatus = 'partially_filled';
@@ -168,9 +158,9 @@ export class UpstoxBrokerService implements BrokerService {
           validity:         o.validity || 'DAY',
           status:           normalizedStatus,
           raw_status:       o.status,
-          type:             o.transaction_type,   // BUY | SELL
-          order_type:       o.order_type,         // MARKET | LIMIT | SL | SL-M
-          product:          o.product,            // MIS | CNC | NRML
+          type:             o.transaction_type,   
+          order_type:       o.order_type,         
+          product:          o.product,            
           placed_at:        o.order_timestamp,
           modified_at:      o.exchange_timestamp || null,
           completed_at:     normalizedStatus === 'completed' ? (o.exchange_timestamp || null) : null,
@@ -186,9 +176,15 @@ export class UpstoxBrokerService implements BrokerService {
       const orderType = order.order_type.toUpperCase();
       const validity  = (order.validity ?? 'DAY').toUpperCase();
 
+      // Bracket orders enforce the BO product code
+      let productCode = order.product.toUpperCase() === 'INTRADAY' ? 'I' : 'D';
+      if (order.is_bracket) {
+        productCode = 'BO'; // Bracket Order override
+      }
+
       const payload: Record<string, any> = {
         quantity:           order.quantity,
-        product:            order.product.toUpperCase() === 'INTRADAY' ? 'I' : 'D',
+        product:            productCode,
         validity:           validity,
         price:              ['MARKET', 'SL-M'].includes(orderType) ? 0 : (order.price ?? 0),
         trigger_price:      ['SL', 'SL-M'].includes(orderType) ? (order.trigger_price ?? 0) : 0,
@@ -199,6 +195,14 @@ export class UpstoxBrokerService implements BrokerService {
         disclosed_quantity: 0,
         is_amo:             false,
       };
+
+      // --- MAPPING LOGIC: Bracket Order Spreads ---
+      // Upstox requires 'squareoff' and 'stoploss' specifically for BO Orders
+      if (order.is_bracket) {
+         payload.squareoff = order.target_price || 0; 
+         payload.stoploss = order.stoploss_price || 0; 
+         payload.trailing_ticks = 20; // Required by Upstox (minimum trailing ticks)
+      }
 
       const response = await fetch('https://api.upstox.com/v2/order/place', {
         method:  'POST',
@@ -220,7 +224,6 @@ export class UpstoxBrokerService implements BrokerService {
     }
   }
 
-  // ── squareOff ──────────────────────────────────────────────────────────────
   async squareOff(token: string, req: SquareOffRequest): Promise<OrderResponse> {
     try {
       const instrumentToken = req.instrument_token
@@ -231,6 +234,7 @@ export class UpstoxBrokerService implements BrokerService {
         if (p === 'MIS')  return 'I';
         if (p === 'CNC')  return 'D';
         if (p === 'NRML') return 'M';
+        if (p === 'BO')   return 'BO';
         return 'I';
       })();
 
@@ -272,7 +276,6 @@ export class UpstoxBrokerService implements BrokerService {
     }
   }
 
-  // ── convertPosition ────────────────────────────────────────────────────────
   async convertPosition(
     token: string,
     req: ConvertPositionRequest
@@ -286,6 +289,7 @@ export class UpstoxBrokerService implements BrokerService {
         if (up === 'MIS')  return 'I';
         if (up === 'CNC')  return 'D';
         if (up === 'NRML') return 'M';
+        if (up === 'BO')   return 'BO';
         return up;
       };
 
@@ -345,7 +349,6 @@ export class UpstoxBrokerService implements BrokerService {
     throw new Error(data.errors?.[0]?.message || 'Failed to refresh Upstox token');
   }
 
-  // ─── ADDED: Dedicated Intraday Fetcher for Lightweight Charts (Task 2.2) ───
   async getIntradayCandles(
     token: string,
     instrumentKey: string,
@@ -361,10 +364,9 @@ export class UpstoxBrokerService implements BrokerService {
         }
       });
 
-      // NEW: Explicitly handle Scope / Authorization errors gracefully
       if (response.status === 401 || response.status === 403) {
-        console.error(`[Upstox] 🔴 API Error ${response.status}: Missing 'Historical API' scope or token expired. Please check Upstox Developer Console.`);
-        return []; // Return empty array so Lightweight Charts doesn't crash
+        console.error(`[Upstox] 🔴 API Error ${response.status}: Missing 'Historical API' scope or token expired.`);
+        return []; 
       }
 
       if (!response.ok) {

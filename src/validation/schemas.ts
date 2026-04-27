@@ -19,15 +19,19 @@ export const placeOrderSchema = z.object({
   symbol:        z.string().min(1, 'Trading symbol is required'),
   type:          z.enum(['BUY', 'SELL', 'buy', 'sell']),
   order_type:    z.enum(['MARKET', 'LIMIT', 'SL', 'SL-M', 'market', 'limit', 'sl', 'sl-m']),
-  validity:      z.enum(['DAY', 'IOC']).optional().default('DAY'),   // ← NEW
+  validity:      z.enum(['DAY', 'IOC']).optional().default('DAY'),
   quantity:      z.coerce.number().int().positive('Quantity must be greater than zero'),
   price:         z.coerce.number().nonnegative('Price cannot be negative').optional().default(0),
-  trigger_price: z.coerce.number().nonnegative('Trigger price cannot be negative').optional().default(0), // ← NEW
+  trigger_price: z.coerce.number().nonnegative('Trigger price cannot be negative').optional().default(0),
   product:       z.string().optional().default('I'),
   broker:        z.enum(['upstox', 'angelone']).optional().default('upstox'),
   expiry:        z.string().optional(),
   strike:        z.coerce.number().optional(),
   optionType:    z.enum(['CE', 'PE', 'ce', 'pe']).optional(),
+  // --- NEW BRACKET ORDER (OCO) FIELDS ---
+  is_bracket:     z.boolean().optional().default(false),
+  target_price:   z.coerce.number().nonnegative('Target spread cannot be negative').optional(),
+  stoploss_price: z.coerce.number().nonnegative('Stoploss spread cannot be negative').optional(),
 }).superRefine((data, ctx) => {
   const ot = data.order_type.toUpperCase();
 
@@ -47,6 +51,24 @@ export const placeOrderSchema = z.object({
       message: 'Trigger price must be greater than 0 for SL/SL-M orders',
       path: ['trigger_price'],
     });
+  }
+
+  // BRACKET orders require valid spreads
+  if (data.is_bracket) {
+    if ((data.target_price ?? 0) <= 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Target spread must be greater than 0 for bracket orders',
+        path: ['target_price'],
+      });
+    }
+    if ((data.stoploss_price ?? 0) <= 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Stop loss spread must be greater than 0 for bracket orders',
+        path: ['stoploss_price'],
+      });
+    }
   }
 });
 

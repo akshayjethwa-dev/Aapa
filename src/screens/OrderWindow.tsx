@@ -89,14 +89,20 @@ const OrderWindow = ({
     : 'Intraday';
 
   // ── State ──────────────────────────────────────────────────────────────────
-  const [quantity,     setQuantity]     = useState<number | string>(config.defaultQty ?? 1);
-  const [orderType,    setOrderType]    = useState<OrderTypeValue>(config._orderType ?? 'MARKET');
-  const [validity,     setValidity]     = useState<ValidityValue>(config._validity ?? 'DAY');
-  const [product,      setProduct]      = useState(resolvedDefaultProduct);
-  const [price,        setPrice]        = useState<number | string>(config.price || livePrice);
-  const [triggerPrice, setTriggerPrice] = useState<number | string>(config._triggerPrice ?? '');
-  const [loading,      setLoading]      = useState(false);
-  const [showConfirm,  setShowConfirm]  = useState(false);
+  const [quantity,       setQuantity]       = useState<number | string>(config.defaultQty ?? 1);
+  const [orderType,      setOrderType]      = useState<OrderTypeValue>(config._orderType ?? 'MARKET');
+  const [validity,       setValidity]       = useState<ValidityValue>(config._validity ?? 'DAY');
+  const [product,        setProduct]        = useState(resolvedDefaultProduct);
+  const [price,          setPrice]          = useState<number | string>(config.price || livePrice);
+  const [triggerPrice,   setTriggerPrice]   = useState<number | string>(config._triggerPrice ?? '');
+  
+  // Bracket Order (OCO) State
+  const [isBracket,      setIsBracket]      = useState(false);
+  const [targetSpread,   setTargetSpread]   = useState<number | string>('');
+  const [stoplossSpread, setStoplossSpread] = useState<number | string>('');
+
+  const [loading,        setLoading]        = useState(false);
+  const [showConfirm,    setShowConfirm]    = useState(false);
 
   // Re-initialize state if the symbol changes
   useEffect(() => {
@@ -107,6 +113,9 @@ const OrderWindow = ({
     setOrderType(config._orderType ?? 'MARKET');
     setValidity(config._validity ?? 'DAY');
     setProduct(config.defaultProduct ? (PRODUCT_DISPLAY[config.defaultProduct] ?? 'Intraday') : 'Intraday');
+    setIsBracket(false);
+    setTargetSpread('');
+    setStoplossSpread('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config.symbol, config.strike, config.optionType, config.side]);
 
@@ -134,6 +143,14 @@ const OrderWindow = ({
     if (numQty <= 0)                 return 'Quantity must be greater than 0';
     if (isQtyExceeded)               return `Max quantity is ${MAX_QTY}`;
     if (needsPrice && numPrice <= 0) return 'Enter a valid limit price';
+    
+    // Bracket specific validations
+    if (isBracket) {
+      if (!targetSpread || Number(targetSpread) <= 0) return 'Enter a valid target spread for Bracket Order';
+      if (!stoplossSpread || Number(stoplossSpread) <= 0) return 'Enter a valid stop loss spread for Bracket Order';
+      if (orderType !== 'LIMIT') return 'Bracket orders generally require a LIMIT order type.';
+    }
+
     if (isSLType) {
       const tp = Number(triggerPrice);
       if (!tp || tp <= 0) return 'Enter a valid trigger price';
@@ -156,18 +173,22 @@ const OrderWindow = ({
     setLoading(true);
     try {
       const payload = {
-        broker:        'upstox',
-        symbol:        config.symbol,
-        type:          config.side,
-        order_type:    orderType,
-        validity:      validity,
-        quantity:      numQty,
-        price:         needsPrice ? numPrice : 0,
-        trigger_price: isSLType ? Number(triggerPrice) : 0,
-        product:       PRODUCT_API[product] ?? product.toLowerCase(),
-        expiry:        config.expiry,
-        strike:        config.strike,
-        optionType:    config.optionType,
+        broker:         'upstox',
+        symbol:         config.symbol,
+        type:           config.side,
+        order_type:     orderType,
+        validity:       validity,
+        quantity:       numQty,
+        price:          needsPrice ? numPrice : 0,
+        trigger_price:  isSLType ? Number(triggerPrice) : 0,
+        product:        PRODUCT_API[product] ?? product.toLowerCase(),
+        expiry:         config.expiry,
+        strike:         config.strike,
+        optionType:     config.optionType,
+        // --- Added Bracket (OCO) Properties ---
+        is_bracket:     isBracket,
+        target_price:   isBracket ? Number(targetSpread) : undefined,
+        stoploss_price: isBracket ? Number(stoplossSpread) : undefined,
       };
 
       // ── MODIFY path: PUT /api/orders/:id ──────────────────────────────────
@@ -225,7 +246,7 @@ const OrderWindow = ({
       }
       if (data.success) {
         onOrderPlaced(); onClose();
-        toast.success(`${orderType} order placed via Upstox!`);
+        toast.success(isBracket ? 'Bracket order placed via Upstox!' : `${orderType} order placed via Upstox!`);
       } else {
         if (data.code === 'INSUFFICIENT_MARGIN') toast.error(`⚠️ Margin Alert: ${data.message}`);
         else toast.error(data.message || data.error || 'Order failed');
@@ -316,7 +337,11 @@ const OrderWindow = ({
           <div className="grid grid-cols-4 gap-2">
             {ORDER_TYPES.map(({ label, value }) => (
               <button key={value}
-                onClick={() => { setOrderType(value); setShowConfirm(false); }}
+                onClick={() => { 
+                  setOrderType(value); 
+                  if (isBracket && value !== 'LIMIT') setIsBracket(false); // Bracket typically needs LIMIT entry
+                  setShowConfirm(false); 
+                }}
                 className={cn('py-2.5 rounded-xl text-[11px] font-black uppercase tracking-widest transition-all',
                   orderType === value
                     ? isModify
@@ -329,27 +354,50 @@ const OrderWindow = ({
           <p className="text-[9px] text-zinc-600 ml-1">{ORDER_TYPES.find(o => o.value === orderType)?.desc}</p>
         </div>
 
-        {/* Validity */}
-        <div className="space-y-2">
-          <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest ml-1">Validity</p>
-          <div className="grid grid-cols-2 gap-2">
-            {VALIDITY_OPTIONS.map(({ label, value, desc }) => (
-              <button key={value}
-                onClick={() => { setValidity(value); setShowConfirm(false); }}
-                className={cn('py-2.5 rounded-xl text-[11px] font-black uppercase tracking-widest transition-all text-left px-4',
-                  validity === value
-                    ? 'bg-zinc-700 text-white border border-zinc-500'
-                    : 'bg-zinc-900/60 text-zinc-500 hover:bg-zinc-800 border border-transparent'
-                )}>
-                <span>{label}</span>
-                <p className="text-[8px] font-medium text-zinc-600 normal-case tracking-normal mt-0.5">{desc}</p>
-              </button>
-            ))}
-          </div>
+        {/* Bracket Order Toggle */}
+        <div className="space-y-3 pt-3 border-t border-zinc-900">
+            <div className="flex items-center justify-between ml-1">
+                <div className="flex items-center gap-2">
+                    <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Bracket Order (OCO)</p>
+                    <div className="px-1.5 py-0.5 rounded-md bg-amber-500/10 text-amber-500 text-[8px] font-black uppercase">Beta</div>
+                </div>
+                <button
+                    onClick={() => {
+                        setIsBracket(!isBracket);
+                        // Bracket orders generally require a limit entry price and Intraday product
+                        if (!isBracket && orderType !== 'LIMIT') setOrderType('LIMIT');
+                        if (!isBracket && product === 'Delivery') setProduct('Intraday');
+                        setShowConfirm(false);
+                    }}
+                    className={cn('w-10 h-5 rounded-full relative transition-colors', isBracket ? 'bg-amber-500' : 'bg-zinc-800')}
+                >
+                    <div className={cn('w-4 h-4 bg-white rounded-full absolute top-0.5 transition-all', isBracket ? 'left-5' : 'left-1')} />
+                </button>
+            </div>
+
+            {isBracket && (
+                <motion.div initial={{opacity: 0, height: 0}} animate={{opacity: 1, height: 'auto'}} className="grid grid-cols-2 gap-3 overflow-hidden">
+                    <div className="space-y-2 mt-1">
+                        <p className="text-[9px] font-bold text-emerald-500 uppercase tracking-widest ml-1">Target Spread</p>
+                        <input type="number" inputMode="decimal" value={targetSpread}
+                            onChange={e => { setTargetSpread(e.target.value); setShowConfirm(false); }}
+                            placeholder="e.g., 10 pts"
+                            className="w-full h-11 bg-emerald-500/5 rounded-xl px-4 text-emerald-400 font-bold text-sm border border-emerald-500/20 focus:border-emerald-500/50 outline-none placeholder:text-zinc-700" />
+                    </div>
+                    <div className="space-y-2 mt-1">
+                        <p className="text-[9px] font-bold text-rose-500 uppercase tracking-widest ml-1">Stop Loss Spread</p>
+                        <input type="number" inputMode="decimal" value={stoplossSpread}
+                            onChange={e => { setStoplossSpread(e.target.value); setShowConfirm(false); }}
+                            placeholder="e.g., 5 pts"
+                            className="w-full h-11 bg-rose-500/5 rounded-xl px-4 text-rose-400 font-bold text-sm border border-rose-500/20 focus:border-rose-500/50 outline-none placeholder:text-zinc-700" />
+                    </div>
+                </motion.div>
+            )}
+            {isBracket && <p className="text-[9px] text-zinc-500 ml-1">Spreads are absolute points (e.g. entry at 100 with target spread 10 places target at 110).</p>}
         </div>
 
         {/* Quantity */}
-        <div className="space-y-2">
+        <div className="space-y-2 pt-3 border-t border-zinc-900">
           <div className="flex items-center justify-between ml-1">
             <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Quantity</p>
             {lots !== null && <p className="text-[9px] text-zinc-600">{lots} lot{lots !== 1 ? 's' : ''} × {lotSize}</p>}
@@ -400,13 +448,17 @@ const OrderWindow = ({
           </motion.div>
         )}
 
-        {/* Product */}
+        {/* Product Selection */}
         <div className="space-y-2">
           <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest ml-1">Product</p>
           <div className="grid grid-cols-2 gap-2">
             {['Intraday', 'Delivery'].map(p => (
-              <button key={p} onClick={() => { setProduct(p); setShowConfirm(false); }}
+              <button key={p} onClick={() => { 
+                  if (!isBracket) setProduct(p); 
+                  setShowConfirm(false); 
+                }}
                 className={cn('py-3 rounded-xl text-[11px] font-black uppercase tracking-widest transition-all',
+                  isBracket && p === 'Delivery' ? 'opacity-50 cursor-not-allowed bg-zinc-900/60 text-zinc-600' :
                   product === p ? 'bg-zinc-700 text-white border border-zinc-500' : 'bg-zinc-900/60 text-zinc-500 hover:bg-zinc-800 border border-transparent'
                 )}>{p}</button>
             ))}
@@ -418,7 +470,7 @@ const OrderWindow = ({
           <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest mb-3">Order Summary</p>
           <div className="flex justify-between text-[11px]">
             <span className="text-zinc-500">Type</span>
-            <span className="text-white font-bold">{orderType} · {validity}</span>
+            <span className="text-white font-bold">{isBracket ? 'BRACKET OCO' : orderType} · {validity}</span>
           </div>
           <div className="flex justify-between text-[11px]">
             <span className="text-zinc-500">Qty</span>
@@ -466,7 +518,7 @@ const OrderWindow = ({
       </div>
 
       {/* CTA button */}
-      <div className="px-5 pb-8 pt-4 border-t border-zinc-900">
+      <div className="px-5 pb-8 pt-4 border-t border-zinc-900 bg-black">
         <button
           onClick={handlePlaceOrder}
           disabled={loading || isQtyExceeded}
@@ -484,7 +536,7 @@ const OrderWindow = ({
           {loading
             ? isModify ? 'Modifying Order…' : 'Placing Order…'
             : showConfirm
-            ? isModify ? 'Confirm Modify' : `Confirm ${config.side} ${orderType}`
+            ? isModify ? 'Confirm Modify' : `Confirm ${config.side} ${isBracket ? 'Bracket' : orderType}`
             : isModify ? `Modify Order` : `${config.side} ${displaySymbol}`}
         </button>
       </div>

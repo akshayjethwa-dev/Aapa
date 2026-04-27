@@ -33,9 +33,11 @@ const runMigrations = async () => {
       { file: "009_add_risk_profile.sql",                     label: "009 Risk Profile"                },
       { file: "010_user_watchlists.sql",                      label: "010 User Watchlists"             },
       { file: "011_add_order_validity_trigger_price.sql",     label: "011 Order Validity & Trigger"    },
-      { file: "012_order_modify_cancel_fields.sql",           label: "012 Order Modify & Cancel Fields" }, 
+      { file: "012_order_modify_cancel_fields.sql",           label: "012 Order Modify & Cancel Fields"}, 
       { file: "013_fix_onboarding_complete.sql",              label: "013 Fix Onboarding Complete"     },
       { file: "014_add_instruments_table.sql",                label: "014 Add Instruments Table"       },
+      // --- NEW MIGRATION ADDED HERE ---
+      { file: "015_add_bracket_order_fields.sql",             label: "015 Add Bracket Order Fields"    },
     ];
 
     for (const migration of migrations) {

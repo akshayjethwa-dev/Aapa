@@ -1345,7 +1345,13 @@ async function startServer() {
            });
         }
         
-        const { symbol, type, order_type, validity, quantity, price, trigger_price, product, expiry, strike, optionType } = req.body;
+        // --- EXTRACT BRACKET FIELDS FROM req.body ---
+        const { 
+          symbol, type, order_type, validity, quantity, price, 
+          trigger_price, product, expiry, strike, optionType,
+          is_bracket, target_price, stoploss_price
+        } = req.body;
+        
         const broker = 'upstox'; 
         const userId = req.user.id;
         
@@ -1371,13 +1377,11 @@ async function startServer() {
           const brokerService = getBrokerService(String(broker));
 
           // =========================================================================
-          // NEW: BACKEND PRE-TRADE VALIDATION & MARGIN RECALCULATION
+          // BACKEND PRE-TRADE VALIDATION & MARGIN RECALCULATION
           // =========================================================================
-          // 1. Fetch live LTP natively on the backend (prevents frontend spoofing/latency)
           const cachedLtp = marketData[friendlySymbol]?.ltp || marketData[brokerSymbol]?.ltp || 0;
           const executionPrice = order_type === 'MARKET' ? cachedLtp : Number(price);
 
-          // 2. Fetch User's Live Funds from Broker API
           let availableFunds = null;
           if (brokerService.getFunds) {
                const fundsData = await brokerService.getFunds(decryptedToken).catch(() => null);
@@ -1386,11 +1390,7 @@ async function startServer() {
                }
           }
 
-          // 3. Exact Margin Calculation natively on backend
-          // We apply strict checking for BUY orders (Equities/Option buying). 
-          // (Option Selling involves SPAN margin which is handled deeply by Upstox, so we skip strict blocking for SELLs here).
           if (type === 'BUY' && executionPrice > 0 && availableFunds !== null) {
-              // Add a 2% buffer for MARKET orders to account for slippage before execution
               const bufferMultiplier = order_type === 'MARKET' ? 1.02 : 1.00;
               const requiredMargin = quantity * executionPrice * bufferMultiplier;
 
@@ -1405,6 +1405,7 @@ async function startServer() {
           }
           // =========================================================================
 
+          // --- PASS BRACKET FIELDS INTO OrderRequest ---
           const orderRequest: OrderRequest = {
             symbol: brokerSymbol,
             type,
@@ -1414,13 +1415,16 @@ async function startServer() {
             price,
             trigger_price: trigger_price ?? 0,
             product,
+            is_bracket,
+            target_price,
+            stoploss_price
           };
+          
           const orderRes = await brokerService.placeOrder(decryptedToken, orderRequest);
 
           if (orderRes.success) {
             const exchangeOrderId = orderRes.raw_response?.data?.order_id ?? orderRes.order_id ?? null;
 
-            // Notice we log `executionPrice` instead of trusting the frontend 0 value for MARKET orders
             const insertRes = await query(
               `INSERT INTO orders (
                 order_id, user_id, exchange_order_id, broker_order_id, symbol, type, order_type,
@@ -1480,8 +1484,7 @@ async function startServer() {
           });
         }
       } catch (e) { next(e); }
-    }
-  );
+  });
 
   app.put('/api/orders/:id', authenticateToken, async (req: any, res) => {
     const userId  = req.user.id;

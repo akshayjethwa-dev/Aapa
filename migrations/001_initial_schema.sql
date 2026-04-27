@@ -1,3 +1,4 @@
+-- migrations/001_initial_schema.sql
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 CREATE TABLE IF NOT EXISTS users (
@@ -31,6 +32,11 @@ CREATE TABLE IF NOT EXISTS orders (
   quantity INTEGER,
   price NUMERIC(15, 2),
   status VARCHAR(30) DEFAULT 'completed',
+  -- NEW BRACKET ORDER FIELDS ADDED HERE --
+  is_bracket BOOLEAN DEFAULT false,
+  target_price NUMERIC(15, 2),
+  stoploss_price NUMERIC(15, 2),
+  -----------------------------------------
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 

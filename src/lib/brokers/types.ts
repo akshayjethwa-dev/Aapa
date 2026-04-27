@@ -22,6 +22,10 @@ export interface OrderRequest {
   price?:         number;
   trigger_price?: number;
   product:        string;
+  // --- Bracket Order (OCO) Fields ---
+  is_bracket?:    boolean;
+  target_price?:  number; // Expressed as spread (e.g., 10 points)
+  stoploss_price?: number; // Expressed as spread (e.g., 5 points)
 }
 
 export interface FundsSegment {
@@ -58,16 +62,16 @@ export interface BrokerPosition {
   symbol:            string;
   product:           string;
   quantity:          number;
-  avg_price:         number;        // ← ADD: canonical frontend field
-  average_price:     number;        // ← KEEP: legacy compatibility
-  ltp:               number;        // ← ADD: last traded price
+  avg_price:         number;
+  average_price:     number;
+  ltp:               number;
   current_price:     number;
   close_price:       number;
-  pnl:               number;        // ← ADD: unrealised P&L
-  day_pnl:           number;        // ← ADD: day P&L
+  pnl:               number;
+  day_pnl:           number;
   day_change:        number;
   day_change_pct:    number;
-  segment:           string;        // ← ADD: EQ | FO | CD
+  segment:           string;
   instrument_token?: string;
   broker:            string;
 }
@@ -79,7 +83,6 @@ export interface OrderResponse {
   raw_response?: any;
 }
 
-// ── NEW ──────────────────────────────────────────────────────────────────────
 export interface SquareOffRequest {
   symbol:            string;
   product:           string;
