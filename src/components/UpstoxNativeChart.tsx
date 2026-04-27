@@ -38,7 +38,7 @@ const UpstoxNativeChart: React.FC<UpstoxNativeChartProps> = ({ symbol, instrumen
 
     chartRef.current = chart;
 
-    // 2. Add Candlestick Series 
+    // 2. Add Candlestick Series using the v5 standard API
     const candlestickSeries = chart.addSeries(CandlestickSeries, {
       upColor: '#10B981', 
       downColor: '#EF4444', 
@@ -69,7 +69,6 @@ const UpstoxNativeChart: React.FC<UpstoxNativeChartProps> = ({ symbol, instrumen
         const fromDate = new Date();
         fromDate.setMonth(fromDate.getMonth() - 1);
         
-        // Instantiate the service and call the real backend API function
         const upstoxService = new UpstoxBrokerService();
         const rawData = await upstoxService.getHistoricalCandles(
           instrumentToken, 
@@ -81,7 +80,6 @@ const UpstoxNativeChart: React.FC<UpstoxNativeChartProps> = ({ symbol, instrumen
 
         if (abortController.signal.aborted) return;
 
-        // Explicitly cast time to the strict 'Time' type and parse prices as Numbers
         const formattedData = rawData.map((candle: any) => ({
           time: (Math.floor(new Date(candle[0]).getTime() / 1000)) as Time,
           open: Number(candle[1]),
@@ -130,7 +128,6 @@ const UpstoxNativeChart: React.FC<UpstoxNativeChartProps> = ({ symbol, instrumen
   return (
     <div className="relative w-full h-full rounded-2xl overflow-hidden">
       <div ref={chartContainerRef} className="absolute inset-0" />
-      
       {loading && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/50 backdrop-blur-sm z-10">
           <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mb-4" />

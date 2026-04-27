@@ -27,7 +27,6 @@ const TradingTerminal = ({
         
         if (response.data && response.data.candles) {
           const formattedData = response.data.candles.map((c: any) => ({
-            // Explicitly cast the calculated number to the branded Time type
             time: (Math.floor(new Date(c.timestamp).getTime() / 1000)) as Time, 
             open: c.open,
             high: c.high,
@@ -35,12 +34,11 @@ const TradingTerminal = ({
             close: c.close
           }));
 
-          // Load initial data into the chart
           chartRef.current?.setHistoricalData(formattedData);
         }
         setLoading(false);
 
-        // 2. Connect to WebSocket dynamically based on environment
+        // 2. Connect to WebSocket
         const wsBase = (import.meta as any).env?.VITE_WS_URL?.trim() || 
           (typeof window !== 'undefined'
             ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
@@ -49,21 +47,31 @@ const TradingTerminal = ({
         ws = new WebSocket(`${wsBase}/market-data`);
         
         ws.onmessage = async (event) => {
-          const tickData = JSON.parse(event.data); 
-          
-          if (tickData.instrumentKey === instrumentKey) {
-            // Explicitly cast the current tick timestamp as Time
-            chartRef.current?.updateTick({
-              time: Math.floor(Date.now() / 1000) as Time, 
-              open: tickData.open,
-              high: Math.max(tickData.ltp, tickData.high),
-              low: Math.min(tickData.ltp, tickData.low),
-              close: tickData.ltp
-            });
+          try {
+            const tickData = JSON.parse(event.data); 
+            
+            if (tickData.instrumentKey === instrumentKey && tickData.ltp) {
+              // Extract timestamp, fallback to Date.now
+              const tickTimeMs = tickData.timestamp || tickData.exchange_timestamp || Date.now();
+              const tickTimeSeconds = Math.floor(tickTimeMs / 1000);
+              
+              // Map continuous ticks securely into 1-minute candle blocks
+              const minuteTime = (tickTimeSeconds - (tickTimeSeconds % 60)) as Time;
+              
+              chartRef.current?.updateTick({
+                time: minuteTime, 
+                open: tickData.open ?? tickData.ltp,
+                high: tickData.high ? Math.max(tickData.ltp, tickData.high) : tickData.ltp,
+                low: tickData.low ? Math.min(tickData.ltp, tickData.low) : tickData.ltp,
+                close: tickData.ltp
+              });
 
-            if (onPriceUpdate) {
-              onPriceUpdate(tickData.ltp);
+              if (onPriceUpdate) {
+                onPriceUpdate(tickData.ltp);
+              }
             }
+          } catch(e) {
+            console.warn("Could not parse tick data", e);
           }
         };
 
