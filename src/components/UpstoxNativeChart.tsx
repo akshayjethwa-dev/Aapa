@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createChart, ColorType, IChartApi, CandlestickSeries, Time } from 'lightweight-charts';
 import { AlertTriangle } from 'lucide-react';
-import { UpstoxBrokerService } from '../lib/brokers/upstox'; 
+import { apiClient } from '../api/client';
 
 interface UpstoxNativeChartProps {
   symbol: string;
@@ -18,6 +18,7 @@ const UpstoxNativeChart: React.FC<UpstoxNativeChartProps> = ({ symbol, instrumen
   useEffect(() => {
     if (!chartContainerRef.current) return;
 
+    // 1. Initialize the Chart UI
     const chart = createChart(chartContainerRef.current, {
       layout: {
         background: { type: ColorType.Solid, color: 'transparent' },
@@ -29,11 +30,15 @@ const UpstoxNativeChart: React.FC<UpstoxNativeChartProps> = ({ symbol, instrumen
       },
       width: chartContainerRef.current.clientWidth,
       height: chartContainerRef.current.clientHeight,
-      timeScale: { timeVisible: true, secondsVisible: false },
+      timeScale: {
+        timeVisible: true,
+        secondsVisible: false,
+      },
     });
 
     chartRef.current = chart;
 
+    // 2. Add Candlestick Series 
     const candlestickSeries = chart.addSeries(CandlestickSeries, {
       upColor: '#10B981', 
       downColor: '#EF4444', 
@@ -54,47 +59,37 @@ const UpstoxNativeChart: React.FC<UpstoxNativeChartProps> = ({ symbol, instrumen
 
     const abortController = new AbortController();
 
-    const fetchUpstoxData = async () => {
+    // 3. Fetch Data via Backend API (avoids direct Upstox 400 errors and handles auth securely)
+    const fetchChartData = async () => {
       try {
         setLoading(true);
         setError(false);
         
-        const toDate = new Date();
-        const fromDate = new Date();
-        fromDate.setMonth(fromDate.getMonth() - 1);
-        
-        const upstoxService = new UpstoxBrokerService();
-        
-        // Fix: Explicitly cast 'rawData' as 'any' so TypeScript allows property access
-        const rawData: any = await upstoxService.getHistoricalCandles(
-          instrumentToken, 
-          'day', 
-          fromDate.toISOString().split('T')[0], 
-          toDate.toISOString().split('T')[0],
-          { signal: abortController.signal } 
+        // Fetch 1 month of daily data from your backend proxy
+        const response = await apiClient.get(
+            `/api/market/history?instrument=${instrumentToken}&interval=day`, 
+            { signal: abortController.signal }
         );
 
         if (abortController.signal.aborted) return;
 
-        // Safely extract the data array whether it's wrapped in { data: { candles: [] } } or direct
-        const candlesArray = Array.isArray(rawData) ? rawData : 
-                             (rawData?.data?.candles || rawData?.candles || rawData?.data || []);
-
-        if (!Array.isArray(candlesArray) || candlesArray.length === 0) {
-          throw new Error("No data returned from Upstox");
+        const candles = response.data?.candles || response.data?.data?.candles || [];
+        
+        if (!Array.isArray(candles) || candles.length === 0) {
+            throw new Error("No data returned");
         }
 
-        const formattedData = candlesArray.map((candle: any) => ({
-          time: (Math.floor(new Date(candle[0] || candle.timestamp || candle.time).getTime() / 1000)) as Time,
-          open: Number(candle[1] ?? candle.open),
-          high: Number(candle[2] ?? candle.high),
-          low: Number(candle[3] ?? candle.low),
-          close: Number(candle[4] ?? candle.close),
-        })).filter(d => !isNaN(d.time as number) && !isNaN(d.close)); // Drop invalid rows
+        const formattedData = candles.map((candle: any) => ({
+          time: (Math.floor(new Date(candle.timestamp || candle[0] || candle.time).getTime() / 1000)) as Time,
+          open: Number(candle.open || candle[1]),
+          high: Number(candle.high || candle[2]),
+          low: Number(candle.low || candle[3]),
+          close: Number(candle.close || candle[4]),
+        })).filter((d: any) => !isNaN(d.time as number) && !isNaN(d.close));
 
         // Sort chronologically and deduplicate (Lightweight Charts crashes on duplicates)
         const uniqueData = formattedData
-          .sort((a, b) => (a.time as number) - (b.time as number))
+          .sort((a: any, b: any) => (a.time as number) - (b.time as number))
           .filter((v: any, i: number, a: any[]) => i === 0 || v.time !== a[i - 1].time);
 
         if (uniqueData.length > 0) {
@@ -104,8 +99,8 @@ const UpstoxNativeChart: React.FC<UpstoxNativeChartProps> = ({ symbol, instrumen
           setError(true);
         }
       } catch (err: any) {
-        if (err.name !== 'AbortError') {
-          console.error("Failed to fetch Upstox chart data:", err);
+        if (err.name !== 'CanceledError' && err.name !== 'AbortError') {
+          console.error("Failed to fetch chart data:", err);
           setError(true);
         }
       } finally {
@@ -115,7 +110,9 @@ const UpstoxNativeChart: React.FC<UpstoxNativeChartProps> = ({ symbol, instrumen
       }
     };
 
-    if (instrumentToken) fetchUpstoxData();
+    if (instrumentToken) {
+      fetchChartData();
+    }
 
     return () => {
       abortController.abort(); 
@@ -129,7 +126,7 @@ const UpstoxNativeChart: React.FC<UpstoxNativeChartProps> = ({ symbol, instrumen
       <div className="flex flex-col items-center justify-center w-full h-full bg-zinc-900/50 rounded-2xl border border-zinc-800">
         <AlertTriangle className="text-zinc-600 mb-3" size={28} />
         <p className="text-xs font-bold text-zinc-400">Data Fetch Failed</p>
-        <p className="text-[10px] text-zinc-500 mt-1">Check Upstox API connection</p>
+        <p className="text-[10px] text-zinc-500 mt-1">Check API connection</p>
       </div>
     );
   }
@@ -137,10 +134,11 @@ const UpstoxNativeChart: React.FC<UpstoxNativeChartProps> = ({ symbol, instrumen
   return (
     <div className="relative w-full h-full rounded-2xl overflow-hidden">
       <div ref={chartContainerRef} className="absolute inset-0" />
+      
       {loading && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/50 backdrop-blur-sm z-10">
           <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mb-4" />
-          <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Loading Upstox Data...</p>
+          <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Loading Data...</p>
         </div>
       )}
     </div>
