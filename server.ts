@@ -201,49 +201,123 @@ async function startServer() {
   const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret";
   const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || "fallback-refresh-secret";
 
-  wss.on("connection", (socket, req) => {
-    const ws = socket as ExtWebSocket;
-    ws.isAlive = true;
+  // =========================================================================
+// WEBSOCKET CONNECTION HANDLER
+// Handles both legacy (path-less) connections AND /ws/market path
+// =========================================================================
+wss.on("connection", (socket, req) => {
+  const ws = socket as ExtWebSocket;
+  ws.isAlive = true;
 
-    const ip = req.socket.remoteAddress;
-    const url = new URL(req.url || "", `http://${req.headers.host || "localhost"}`);
-    const token = url.searchParams.get("token");
+  const ip = req.socket.remoteAddress;
+  const url = new URL(req.url || "", `http://${req.headers.host || "localhost"}`);
+  const queryToken = url.searchParams.get("token");
+  const isMarketPath = url.pathname === "/ws/market";
 
-    if (!token) {
-      logger.warn(`[WebSocket] Connection rejected: No token provided from ${ip}`);
-      ws.close(4003, "TokenExpired");
-      return;
-    }
+  if (!queryToken) {
+    logger.warn(`[WebSocket] Rejected: No token from ${ip}`);
+    ws.close(4003, "TokenExpired");
+    return;
+  }
 
-    jwt.verify(token, JWT_SECRET, (err: any, decoded: any) => {
+  if (isMarketPath) {
+    // ── /ws/market: validate token against DB Upstox token ──────────────
+    (async () => {
+      try {
+        // Find the user whose stored Upstox access_token matches the query token
+        const { rows } = await query(
+          `SELECT user_id FROM user_tokens
+           WHERE broker = 'upstox' AND expires_at > NOW()
+           LIMIT 200`
+        );
+
+        let matchedUserId: number | null = null;
+        for (const row of rows) {
+          try {
+            const decrypted = decrypt(String(
+              (await query(
+                "SELECT access_token FROM user_tokens WHERE user_id=$1 AND broker='upstox'",
+                [row.user_id]
+              )).rows[0]?.access_token
+            ));
+            if (decrypted === queryToken) {
+              matchedUserId = row.user_id;
+              break;
+            }
+          } catch { /* skip */ }
+        }
+
+        if (!matchedUserId) {
+          logger.warn(`[WS /ws/market] Token mismatch from ${ip}`);
+          ws.close(4001, "Unauthorized");
+          return;
+        }
+
+        ws.userId = matchedUserId;
+        logger.info(`[WS /ws/market] User ${matchedUserId} connected from ${ip}`);
+
+        ws.on("pong", () => { ws.isAlive = true; });
+
+        ws.on("close", () => {
+          logger.info(`[WS /ws/market] User ${matchedUserId} disconnected`);
+        });
+
+        ws.on("error", (err) => {
+          logger.error(`[WS /ws/market] User ${matchedUserId} error:`, err);
+        });
+
+        // Send an immediate snapshot from marketData cache on connect
+        const phase = getMarketPhase();
+        const snapshot: Record<string, any> = {};
+        for (const [sym, d] of Object.entries(marketData)) {
+          snapshot[sym] = {
+            instrument_token: sym,
+            last_price: d.ltp,
+            change: d.day_change,
+            change_percent: d.day_change_pct,
+            ohlc: { open: d.open, high: d.high, low: d.low, close: d.prevClose },
+            timestamp: new Date().toISOString(),
+          };
+        }
+        ws.send(JSON.stringify({ tickers: snapshot, marketPhase: phase }));
+
+      } catch (err) {
+        logger.error("[WS /ws/market] Auth error:", err);
+        ws.close(4001, "Unauthorized");
+      }
+    })();
+
+  } else {
+    // ── Legacy path: validate app JWT ─────────────────────────────────────
+    jwt.verify(queryToken, JWT_SECRET, (err: any, decoded: any) => {
       if (err) {
-        logger.warn(`[WebSocket] Connection rejected: Invalid token from ${ip}`);
+        logger.warn(`[WebSocket] Rejected: Invalid JWT from ${ip}`);
         ws.close(4001, "Unauthorized");
         return;
       }
 
       ws.userId = decoded.id;
-      logger.info(`[WebSocket] Authenticated User ID: ${ws.userId} connected from ${ip}. Total clients: ${wss.clients.size}`);
+      logger.info(
+        `[WebSocket] User ${ws.userId} connected from ${ip}. Total: ${wss.clients.size}`
+      );
 
-      ws.on("pong", () => {
-        ws.isAlive = true;
-      });
+      ws.on("pong", () => { ws.isAlive = true; });
 
-      ws.send(JSON.stringify({ 
-        type: "ticker", 
+      ws.send(JSON.stringify({
+        type: "ticker",
         data: marketData,
-        marketPhase: getMarketPhase() 
+        marketPhase: getMarketPhase()
       }));
 
       ws.on("close", () => {
-        logger.info(`[WebSocket] User ID: ${ws.userId} disconnected. Remaining clients: ${wss.clients.size}`);
+        logger.info(`[WebSocket] User ${ws.userId} disconnected. Remaining: ${wss.clients.size}`);
       });
-
       ws.on("error", (err) => {
-        logger.error(`[WebSocket] User ID: ${ws.userId} error:`, err);
+        logger.error(`[WebSocket] User ${ws.userId} error:`, err);
       });
     });
-  });
+  }
+});
 
   // Keep-alive heartbeat: Prevents Railway load balancer from dropping idle connections
   const pingInterval = setInterval(() => {
@@ -450,6 +524,140 @@ async function startServer() {
   app.use("/api/user", authenticateToken, userProfileRouter);
   app.use("/api/watchlists", authenticateToken, watchlistsRouter);
   app.use("/api/instruments", instrumentRoutes); // <-- NEW INSTRUMENTS SEARCH ROUTE
+
+  // =========================================================================
+// TASK 3.1: SNAPSHOT REST ENDPOINT
+// GET /api/broker/upstox/market/snapshot
+//
+// Returns the latest cached ticker prices. Called by the mobile hook on
+// every foreground resume so data is fresh while the new socket connects.
+// Backed by Redis with a 30-second TTL (refreshed by the live Upstox feed).
+// =========================================================================
+app.get("/api/broker/upstox/market/snapshot", authenticateToken, async (req: any, res, next) => {
+  try {
+    const SNAPSHOT_CACHE_KEY = "market:snapshot:latest";
+    const SNAPSHOT_TTL_SECONDS = 30;
+
+    // 1. Try Redis cache first (populated every tick by the live Upstox feed)
+    try {
+      const cached = await redis.get(SNAPSHOT_CACHE_KEY);
+      if (cached) {
+        logger.info("[Snapshot] Serving from Redis cache");
+        return res.json(JSON.parse(cached));
+      }
+    } catch (redisErr) {
+      logger.warn("[Snapshot] Redis read failed, falling back to live fetch:", redisErr);
+    }
+
+    // 2. Cache miss — fetch live LTP from Upstox Market Quotes API
+    const { rows } = await query(
+      "SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = 'upstox' AND expires_at > NOW()",
+      [req.user.id]
+    );
+
+    if (!rows[0]?.access_token) {
+      // Return the in-memory marketData as a graceful fallback
+      const fallback: Record<string, any> = {};
+      for (const [sym, d] of Object.entries(marketData)) {
+        fallback[sym] = {
+          instrument_token: sym,
+          last_price: (d as any).ltp,
+          change: (d as any).day_change,
+          change_percent: (d as any).day_change_pct,
+          ohlc: {
+            open: (d as any).open,
+            high: (d as any).high,
+            low: (d as any).low,
+            close: (d as any).prevClose,
+          },
+          timestamp: new Date().toISOString(),
+        };
+      }
+      return res.json(fallback);
+    }
+
+    const decryptedToken = decrypt(String(rows[0].access_token));
+
+    // Build instrument_key list for Upstox /market-quote/ltp
+    const instrumentKeys = [
+      ...Object.values(stockISINMap),
+      ...Object.values(indexMap).map((arr) => arr[0]),
+    ].join(",");
+
+    const response = await fetch(
+      `https://api.upstox.com/v2/market-quote/ltp?instrument_key=${encodeURIComponent(instrumentKeys)}`,
+      {
+        headers: {
+          Authorization: `Bearer ${decryptedToken}`,
+          Accept: "application/json",
+        },
+      }
+    );
+
+    if (!response.ok) {
+      logger.error(`[Snapshot] Upstox LTP API returned HTTP ${response.status}`);
+      // Graceful fallback to in-memory data
+      return res.json(
+        Object.fromEntries(
+          Object.entries(marketData).map(([sym, d]: [string, any]) => [
+            sym,
+            {
+              instrument_token: sym,
+              last_price: d.ltp,
+              change: d.day_change,
+              change_percent: d.day_change_pct,
+              ohlc: { open: d.open, high: d.high, low: d.low, close: d.prevClose },
+              timestamp: new Date().toISOString(),
+            },
+          ])
+        )
+      );
+    }
+
+    const data = await response.json();
+    const snapshot: Record<string, any> = {};
+
+    if (data?.data && typeof data.data === "object") {
+      for (const [key, quote] of Object.entries(data.data as Record<string, any>)) {
+        // Normalise the instrument key (Upstox uses "|" separator)
+        const token = key.replace(":", "|");
+        snapshot[token] = {
+          instrument_token: token,
+          last_price: quote?.last_price ?? 0,
+          change: quote?.net_change ?? 0,
+          change_percent: quote?.percentage_change ?? 0,
+          ohlc: {
+            open: quote?.ohlc?.open ?? 0,
+            high: quote?.ohlc?.high ?? 0,
+            low: quote?.ohlc?.low ?? 0,
+            close: quote?.ohlc?.close ?? 0,
+          },
+          volume: quote?.volume ?? 0,
+          timestamp: new Date().toISOString(),
+        };
+
+        // Keep in-memory marketData in sync
+        if (marketData[token]) {
+          marketData[token].ltp = quote?.last_price ?? marketData[token].ltp;
+        }
+      }
+    }
+
+    // 3. Write to Redis so the next 30s of foreground resumes hit cache
+    try {
+      await redis.setex(SNAPSHOT_CACHE_KEY, SNAPSHOT_TTL_SECONDS, JSON.stringify(snapshot));
+    } catch (redisErr) {
+      logger.warn("[Snapshot] Redis write failed:", redisErr);
+    }
+
+    logger.info(`[Snapshot] Live fetch complete, instruments: ${Object.keys(snapshot).length}`);
+    return res.json(snapshot);
+
+  } catch (e: any) {
+    logger.error("[Snapshot] Server Exception:", e);
+    return res.status(500).json({ error: "Failed to fetch market snapshot", details: e.message });
+  }
+});
 
   app.get("/api/health", async (req, res) => {
     try {
