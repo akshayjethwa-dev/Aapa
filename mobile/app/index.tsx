@@ -9,7 +9,7 @@ export default function Home() {
     setHealthStatus('loading');
     try {
       // Pinging the standard health check endpoint on your backend
-      const response = await apiClient.get('/health');
+      const response = await apiClient.get('/api/health');
       if (response.status === 200) {
         setHealthStatus('online');
       } else {
