@@ -787,35 +787,20 @@ async function startServer() {
     res.json({ url });
   });
 
+  // =========================================================================
+  // UPDATED: OAUTH CALLBACK FOR DEEP-LINKING (MOBILE)
+  // =========================================================================
   app.get("/auth/callback", async (req, res, next) => {
     const { code, state } = req.query;
-    if (!code) return res.status(400).send("No code provided.");
+    
+    if (!code) {
+      // If the user cancelled or something went wrong, redirect back to the app with an error
+      return res.redirect('aapa://oauth-callback?error=No_Code_Provided');
+    }
 
     const apiKey = process.env.UPTOX_API_KEY?.trim() ?? "";
     const apiSecret = process.env.UPTOX_API_SECRET?.trim() ?? "";
     const redirectUri = process.env.UPTOX_REDIRECT_URI?.trim() ?? "";
-
-    const frontendTargetOrigin = process.env.VITE_APP_URL?.trim() || "*";
-
-    const renderHtmlResponse = (isSuccess: boolean, message: string, payload: any) => {
-      return `
-        <html>
-          <head><title>Upstox Authentication</title></head>
-          <body style="background:#000;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;">
-            <div style="text-align:center;">
-              <h2 style="color:${isSuccess ? '#10b981' : '#ef4444'};">${message}</h2>
-              <p id="msg" style="color:#a1a1aa;font-size:14px;">Redirecting back to app...</p>
-              <script>
-                if (window.opener) {
-                  window.opener.postMessage(${JSON.stringify(payload)}, "${frontendTargetOrigin}");
-                  setTimeout(() => window.close(), 1500);
-                } else { document.getElementById('msg').innerText = "Please close this tab and return to the application."; }
-              </script>
-            </div>
-          </body>
-        </html>
-      `;
-    };
 
     try {
       const params = new URLSearchParams({
@@ -827,7 +812,9 @@ async function startServer() {
       });
 
       const response = await fetch("https://api.upstox.com/v2/login/authorization/token", {
-        method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" }, body: params,
+        method: "POST", 
+        headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" }, 
+        body: params,
       });
 
       const data = await response.json();
@@ -841,7 +828,7 @@ async function startServer() {
         logger.error(`[Upstox Auth] Host/Protocol Detected: ${req.protocol}://${req.get('host')}`);
         logger.error("===============================================");
         
-        return res.status(400).send(renderHtmlResponse(false, "Connection Failed!", { type: 'UPTOX_AUTH_ERROR', error: data }));
+        return res.redirect('aapa://oauth-callback?error=Token_Exchange_Failed');
       }
 
       const userJwt = state ? String(state) : null;
@@ -852,6 +839,7 @@ async function startServer() {
 
           const newExpiry = getUpstoxTokenExpiry();
 
+          // Save tokens in database
           await query(
             `INSERT INTO user_tokens (user_id, broker, access_token, refresh_token, expires_at)
              VALUES ($1, 'upstox', $2, $3, $4)
@@ -863,12 +851,22 @@ async function startServer() {
           
           initUpstoxWebSockets();
 
-          return res.send(renderHtmlResponse(true, "Connection Successful! ✓", { type: 'UPTOX_AUTH_SUCCESS' }));
-        } catch (jwtErr) { logger.warn("[OAuth Callback] Invalid state JWT, falling back to client-side save"); }
+          // Success -> Redirect to mobile app
+          const deepLink = `aapa://oauth-callback?token=${data.access_token}&refresh_token=${data.refresh_token || ""}`;
+          return res.redirect(deepLink);
+        } catch (jwtErr) { 
+          logger.warn("[OAuth Callback] Invalid state JWT, falling back to client-side return"); 
+        }
       }
 
-      res.send(renderHtmlResponse(true, "Connection Successful!", { type: 'UPTOX_AUTH_SUCCESS', token: data.access_token, refresh_token: data.refresh_token || "" }));
-    } catch (e) { next(e); }
+      // If state JWT wasn't provided or failed to decode, still redirect with token so the mobile client can handle it
+      const deepLink = `aapa://oauth-callback?token=${data.access_token}&refresh_token=${data.refresh_token || ""}`;
+      return res.redirect(deepLink);
+
+    } catch (e) { 
+      logger.error("[OAuth Callback] Catch block error:", e);
+      return res.redirect('aapa://oauth-callback?error=Server_Error');
+    }
   });
 
   app.post("/api/auth/uptox/save-token", authenticateToken, validate(upstoxSaveTokenSchema), async (req: any, res, next) => {
