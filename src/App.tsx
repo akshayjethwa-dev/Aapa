@@ -68,7 +68,8 @@ function App() {
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // ✅ FIX: Use ReturnType<typeof setTimeout> instead of NodeJS.Timeout
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef(0);
 
   // =========================================================================
@@ -159,7 +160,7 @@ function App() {
       }
 
       if (!user.is_uptox_connected && activeTab !== 'kyc' && activeTab !== 'more') {
-        // soft guidance only, you already had this
+        // soft guidance only
       }
 
       if (activeTab === 'onboarding') {
@@ -300,7 +301,6 @@ function App() {
             const orderId = message.data.order_id;
             const messageTxt = message.data.status_message;
 
-            // Trigger contextual toasts
             if (rawStatus === 'complete' || rawStatus === 'completed') {
               toast.success(`Success: Order Filled`, {
                 description: `${symbol} - Order ID: ${orderId}`,
@@ -319,7 +319,6 @@ function App() {
               });
             }
 
-            // Sync auth/profile background
             apiClient
               .get('/api/user/profile')
               .then((res) => {
@@ -329,7 +328,6 @@ function App() {
               })
               .catch(console.error);
 
-            // Emit local event so Orders.tsx can refetch instantly
             window.dispatchEvent(new CustomEvent('broker_portfolio_updated', { detail: message.data }));
           }
         } catch (e) {
@@ -368,12 +366,10 @@ function App() {
     setIsSearchOpen(false);
 
     if (symbolMeta.type === 'INDEX') {
-      // Open index detail overlay, irrespective of current tab
       setSelectedIndex(symbolMeta.name);
       return;
     }
 
-    // Equities: open Market tab + detail for that stock
     setSelectedStockFromSearch(symbolMeta.name);
     setActiveTab('market');
   };
@@ -503,7 +499,6 @@ function App() {
 
       {/* Overlays / modals */}
       <AnimatePresence mode="wait">
-        {/* NEW: Symbol search overlay */}
         {isSearchOpen && (
           <SymbolSearch
             isOpen={isSearchOpen}

@@ -5,12 +5,11 @@ import { toast } from 'sonner';
 import { cn } from '../lib/utils';
 import { useAuthStore } from '../store/authStore';
 import { apiClient } from '../api/client';
-import * as WebBrowser from 'expo-web-browser';
 
 const Auth = () => {
   const [isLogin, setIsLogin] = useState(true);
   const [isAdminLogin, setIsAdminLogin] = useState(false);
-  const [hasUpstox, setHasUpstox] = useState<boolean | null>(null);
+  const [hasUpstox, setHasUpstox] = useState<boolean | null>(null); // NEW: Branching state for Signup
   
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -21,7 +20,7 @@ const Auth = () => {
 
   const handleToggleMode = (toLogin: boolean) => {
     setIsLogin(toLogin);
-    setHasUpstox(null); 
+    setHasUpstox(null); // Reset branching state when switching modes
     setTermsAccepted(false);
   };
 
@@ -34,7 +33,9 @@ const Auth = () => {
     }
 
     setIsLoading(true);
+    console.log(`[Auth] Submitting ${isLogin ? 'login' : 'registration'} form...`);
     const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
+    // PASS has_upstox STATE TO BACKEND
     const body = isLogin 
       ? { login: email, password } 
       : { email, mobile, password, has_upstox: hasUpstox };
@@ -42,6 +43,8 @@ const Auth = () => {
     try {
       const res = await apiClient.post(endpoint, body);
       const data = res.data;
+      
+      console.log('[Auth] Response received:', data);
       
       if (data.token) {
         localStorage.setItem('token', data.token);
@@ -52,6 +55,7 @@ const Auth = () => {
         toast.success('Account created! Please sign in.');
       }
     } catch (err: any) {
+      console.error('[Auth] Network or parsing error:', err);
       if (err.response?.status === 401 && isLogin) {
         toast.error('Invalid credentials');
       }
@@ -60,9 +64,7 @@ const Auth = () => {
     }
   };
 
-  const handleOpenUpstox = async () => {
-    await WebBrowser.openBrowserAsync('https://upstox.com/open-demat-account/');
-  };
+  // --- RENDER HELPERS ---
 
   const renderUpstoxCheck = () => (
     <motion.div 
@@ -140,13 +142,14 @@ const Auth = () => {
         </ul>
       </div>
 
-      <button 
-        type="button"
-        onClick={handleOpenUpstox}
+      <a 
+        href="https://upstox.com/open-demat-account/" 
+        target="_blank" 
+        rel="noopener noreferrer" 
         className="w-full bg-[#5228D3] hover:bg-[#431db3] text-white font-black py-4 rounded-2xl transition-all shadow-xl shadow-[#5228D3]/20 tracking-widest uppercase text-[11px] flex items-center justify-center gap-2"
       >
         Open Upstox Account <ExternalLink className="w-4 h-4" />
-      </button>
+      </a>
 
       <div className="text-center pt-2">
         <button 
@@ -331,6 +334,13 @@ const Auth = () => {
               )}
             </button>
           </div>
+        </div>
+
+        <div className="text-center mt-4">
+          <p className="text-[8px] text-zinc-700 font-bold uppercase tracking-widest leading-relaxed">
+            Aapa Capital is a technology platform.<br />
+            Not a SEBI registered investment advisor.
+          </p>
         </div>
       </motion.div>
     </div>
