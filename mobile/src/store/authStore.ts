@@ -3,9 +3,6 @@ import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 
 // ─── Platform-safe storage adapter ─────────────────────────────────────────
-// expo-secure-store is native-only. On web we use an in-memory fallback
-// (sessionStorage if available, plain object otherwise).
-// This prevents the "getValueWithKeyAsync is not a function" crash on web.
 const webMemory: Record<string, string> = {};
 
 const storage = {
@@ -39,6 +36,7 @@ const storage = {
 
 export const SECURE_KEYS = {
   SUPABASE_TOKEN: 'supabase_token',
+  USER_ID: 'user_id',
   UPSTOX_ACCESS_TOKEN: 'upstox_access_token',
   UPSTOX_REFRESH_TOKEN: 'upstox_refresh_token',
 } as const;
@@ -59,7 +57,7 @@ interface AuthState {
   setConnectingUpstox: (value: boolean) => void;
 }
 
-export const useAuthStore = create<AuthState>((set, get) => ({
+export const useAuthStore = create<AuthState>((set) => ({
   supabaseToken: null,
   userId: null,
   isUpstoxConnected: false,
@@ -69,12 +67,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   hydrateFromStorage: async () => {
     try {
-      const [supabaseToken, upstoxAccessToken] = await Promise.all([
+      const [supabaseToken, userId, upstoxAccessToken] = await Promise.all([
         storage.getItemAsync(SECURE_KEYS.SUPABASE_TOKEN),
+        storage.getItemAsync(SECURE_KEYS.USER_ID),           // ✅ read
         storage.getItemAsync(SECURE_KEYS.UPSTOX_ACCESS_TOKEN),
       ]);
       set({
         supabaseToken: supabaseToken ?? null,
+        userId: userId ?? null,                               // ✅ FIX: now sets userId in store
         isUpstoxConnected: !!upstoxAccessToken,
         upstoxAccessToken: upstoxAccessToken ?? null,
         isHydrating: false,
@@ -86,7 +86,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   setSupabaseSession: async (token: string, userId: string) => {
-    await storage.setItemAsync(SECURE_KEYS.SUPABASE_TOKEN, token);
+    await Promise.all([
+      storage.setItemAsync(SECURE_KEYS.SUPABASE_TOKEN, token),
+      storage.setItemAsync(SECURE_KEYS.USER_ID, userId),     // ✅ FIX: persists userId to SecureStore
+    ]);
     set({ supabaseToken: token, userId });
   },
 
