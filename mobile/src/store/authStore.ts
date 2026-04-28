@@ -1,5 +1,41 @@
 import { create } from 'zustand';
+import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
+
+// ─── Platform-safe storage adapter ─────────────────────────────────────────
+// expo-secure-store is native-only. On web we use an in-memory fallback
+// (sessionStorage if available, plain object otherwise).
+// This prevents the "getValueWithKeyAsync is not a function" crash on web.
+const webMemory: Record<string, string> = {};
+
+const storage = {
+  getItemAsync: async (key: string): Promise<string | null> => {
+    if (Platform.OS !== 'web') return SecureStore.getItemAsync(key);
+    if (typeof sessionStorage !== 'undefined') {
+      return sessionStorage.getItem(key);
+    }
+    return webMemory[key] ?? null;
+  },
+
+  setItemAsync: async (key: string, value: string): Promise<void> => {
+    if (Platform.OS !== 'web') return SecureStore.setItemAsync(key, value);
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.setItem(key, value);
+    } else {
+      webMemory[key] = value;
+    }
+  },
+
+  deleteItemAsync: async (key: string): Promise<void> => {
+    if (Platform.OS !== 'web') return SecureStore.deleteItemAsync(key);
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.removeItem(key);
+    } else {
+      delete webMemory[key];
+    }
+  },
+};
+// ───────────────────────────────────────────────────────────────────────────
 
 export const SECURE_KEYS = {
   SUPABASE_TOKEN: 'supabase_token',
@@ -34,8 +70,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   hydrateFromStorage: async () => {
     try {
       const [supabaseToken, upstoxAccessToken] = await Promise.all([
-        SecureStore.getItemAsync(SECURE_KEYS.SUPABASE_TOKEN),
-        SecureStore.getItemAsync(SECURE_KEYS.UPSTOX_ACCESS_TOKEN),
+        storage.getItemAsync(SECURE_KEYS.SUPABASE_TOKEN),
+        storage.getItemAsync(SECURE_KEYS.UPSTOX_ACCESS_TOKEN),
       ]);
       set({
         supabaseToken: supabaseToken ?? null,
@@ -50,29 +86,40 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   setSupabaseSession: async (token: string, userId: string) => {
-    await SecureStore.setItemAsync(SECURE_KEYS.SUPABASE_TOKEN, token);
+    await storage.setItemAsync(SECURE_KEYS.SUPABASE_TOKEN, token);
     set({ supabaseToken: token, userId });
   },
 
   setUpstoxTokens: async (accessToken: string, refreshToken: string) => {
     await Promise.all([
-      SecureStore.setItemAsync(SECURE_KEYS.UPSTOX_ACCESS_TOKEN, accessToken),
-      SecureStore.setItemAsync(SECURE_KEYS.UPSTOX_REFRESH_TOKEN, refreshToken),
+      storage.setItemAsync(SECURE_KEYS.UPSTOX_ACCESS_TOKEN, accessToken),
+      storage.setItemAsync(SECURE_KEYS.UPSTOX_REFRESH_TOKEN, refreshToken),
     ]);
-    set({ isUpstoxConnected: true, upstoxAccessToken: accessToken, isConnectingUpstox: false });
+    set({
+      isUpstoxConnected: true,
+      upstoxAccessToken: accessToken,
+      isConnectingUpstox: false,
+    });
   },
 
   clearUpstoxTokens: async () => {
     await Promise.all([
-      SecureStore.deleteItemAsync(SECURE_KEYS.UPSTOX_ACCESS_TOKEN),
-      SecureStore.deleteItemAsync(SECURE_KEYS.UPSTOX_REFRESH_TOKEN),
+      storage.deleteItemAsync(SECURE_KEYS.UPSTOX_ACCESS_TOKEN),
+      storage.deleteItemAsync(SECURE_KEYS.UPSTOX_REFRESH_TOKEN),
     ]);
     set({ isUpstoxConnected: false, upstoxAccessToken: null });
   },
 
   logout: async () => {
-    await Promise.all(Object.values(SECURE_KEYS).map((k) => SecureStore.deleteItemAsync(k)));
-    set({ supabaseToken: null, userId: null, isUpstoxConnected: false, upstoxAccessToken: null });
+    await Promise.all(
+      Object.values(SECURE_KEYS).map((k) => storage.deleteItemAsync(k))
+    );
+    set({
+      supabaseToken: null,
+      userId: null,
+      isUpstoxConnected: false,
+      upstoxAccessToken: null,
+    });
   },
 
   setConnectingUpstox: (value: boolean) => set({ isConnectingUpstox: value }),

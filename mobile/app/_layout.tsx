@@ -3,11 +3,16 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { View, ActivityIndicator } from 'react-native';
 import { useAuthStore } from '../src/store/authStore';
+import { useMarketWebSocket } from '../src/hooks/useMarketWebSocket';
 
 export default function RootLayout() {
   const { isHydrating, hydrateFromStorage } = useAuthStore();
 
   useEffect(() => { hydrateFromStorage(); }, []);
+
+  // Inject the market WebSocket lifecycle hook at root level.
+  // Internally checks for a valid Upstox token before opening a connection.
+  useMarketWebSocket();
 
   if (isHydrating) {
     return (
