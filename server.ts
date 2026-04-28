@@ -421,13 +421,18 @@ wss.on("connection", (socket, req) => {
   app.use(
     cors({
       origin: function (origin, callback) {
+        // Allow requests with no origin (like mobile apps, curl requests)
         if (!origin) return callback(null, true);
         
-        if (allowedOrigins.includes(origin)) {
-          return callback(null, true);
+        // Dynamically check if the request is coming from Expo's local environments
+        const isLocalhost = origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:");
+        const isLocalNetwork = /^http:\/\/192\.168\.\d{1,3}\.\d{1,3}(:\d+)?$/.test(origin);
+
+        if (allowedOrigins.includes(origin) || isLocalhost || isLocalNetwork) {
+          return callback(null, true); // Allow the request
         } else {
           logger.warn(`[HTTP CORS] Blocked request from unauthorized origin: ${origin}`);
-          return callback(null, false);
+          return callback(null, false); // Block the request
         }
       },
       credentials: true, 
