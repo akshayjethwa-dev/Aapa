@@ -101,7 +101,7 @@ const SymbolSearch: React.FC<SymbolSearchProps> = ({ isOpen, onClose, stocks, on
         key="symbol-search-overlay"
         initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0, y: 8 }} transition={{ duration: 0.18 }}
-        className="fixed inset-0 z-[150] bg-black/95 backdrop-blur-xl p-4 sm:p-6 flex flex-col"
+        className="fixed inset-0 z-150 bg-black/95 backdrop-blur-xl p-4 sm:p-6 flex flex-col"
       >
         {/* Top bar */}
         <div className="flex items-center gap-3 mb-4">
