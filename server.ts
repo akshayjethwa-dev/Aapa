@@ -451,18 +451,52 @@ async function startServer() {
         ? {
             directives: {
               ...helmet.contentSecurityPolicy.getDefaultDirectives(),
-              "script-src": ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https://s3.tradingview.com", "https://www.tradingview.com"],
-              "frame-src": ["'self'", "https://s3.tradingview.com", "https://www.tradingview.com", "blob:"],
-              "worker-src": ["'self'", "blob:"], // Required for TradingView
-              "style-src": ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-              "font-src": ["'self'", "https://fonts.gstatic.com", "data:"],
-              "img-src": ["'self'", "data:", "https:", "http:"],
+              // Added unpkg.com to allow lightweight-charts and TV dynamic scripts
+              "script-src": [
+                "'self'", 
+                "'unsafe-inline'", 
+                "'unsafe-eval'", 
+                "https://s3.tradingview.com", 
+                "https://www.tradingview.com",
+                "https://unpkg.com" 
+              ],
+              "frame-src": [
+                "'self'", 
+                "https://s3.tradingview.com", 
+                "https://www.tradingview.com", 
+                "blob:"
+              ],
+              // Added unpkg.com to workers
+              "worker-src": [
+                "'self'", 
+                "blob:", 
+                "https://unpkg.com"
+              ],
+              "style-src": [
+                "'self'", 
+                "'unsafe-inline'", 
+                "https://fonts.googleapis.com"
+              ],
+              "font-src": [
+                "'self'", 
+                "https://fonts.gstatic.com", 
+                "data:"
+              ],
+              "img-src": [
+                "'self'", 
+                "data:", 
+                "https:", 
+                "http:", 
+                "blob:"
+              ],
+              // Allow connections to Upstox APIs and UNPKG
               "connect-src": [
                 "'self'", 
                 "https://api.upstox.com", 
                 "wss://api.upstox.com", 
                 "ws:", 
-                "wss:"
+                "wss:",
+                "https://unpkg.com"
               ],
             },
           }
