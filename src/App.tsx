@@ -374,6 +374,16 @@ function App() {
     setActiveTab('market');
   };
 
+  // =========================================================================
+  // Snapshot Resolver Handler
+  // =========================================================================
+  const handleSnapshotResolved = useCallback((sym: string, quote: any) => {
+    setStocks((prev) => ({
+      ...prev,
+      [sym]: { ...quote }, // merge snapshot data into global stocks map
+    }));
+  }, []);
+
   const pathname = window.location.pathname;
   if (pathname === '/terms') return <TermsOfService />;
   if (pathname === '/privacy') return <PrivacyPolicy />;
@@ -430,6 +440,7 @@ function App() {
                   onIndexClick={setOverviewIndex}
                   onPlaceOrder={setOrderConfig}
                   initialSelectedStock={selectedStockFromSearch}
+                  onSnapshotResolved={handleSnapshotResolved}
                 />
               )}
               {activeTab === 'fo' && (

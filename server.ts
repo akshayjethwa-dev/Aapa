@@ -638,7 +638,7 @@ async function startServer() {
   app.use("/api/watchlists", authenticateToken, watchlistsRouter);
   app.use("/api/instruments", instrumentRoutes); // <-- NEW INSTRUMENTS SEARCH ROUTE
 
-  // =========================================================================
+// =========================================================================
 // UPSTOX WS AUTH PROXY — frontend calls this instead of Upstox directly
 // GET /api/broker/upstox/ws-auth
 // Returns the authorized_redirect_uri for the market data WebSocket
@@ -699,6 +699,55 @@ app.get("/api/broker/upstox/ws-auth", authenticateToken, async (req: any, res) =
     return res.status(500).json({ error: "Failed to get WS auth URL", details: err.message });
   }
 });
+
+  // =========================================================================
+  // UPSTOX MARKET SNAPSHOT - Snapshot endpoint for arbitrary instrument keys
+  // =========================================================================
+  app.get('/api/broker/upstox/market/snapshot', authenticateToken, async (req: any, res) => {
+    const { instrument_key } = req.query; // e.g. "NSE_EQ|WIPRO"
+    
+    try {
+      if (!instrument_key) {
+        return res.status(400).json({ error: "Missing instrument_key parameter." });
+      }
+
+      const { rows } = await query(
+        "SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = 'upstox' AND expires_at > NOW()",
+        [req.user.id]
+      );
+
+      if (rows[0]?.access_token) {
+        const userAccessToken = decrypt(String(rows[0].access_token));
+        
+        // Call Upstox Market Quote API natively via fetch (mirroring your existing ecosystem)
+        const upstoxRes = await fetch(
+          `https://api.upstox.com/v2/market-quote/ltp?instrument_key=${encodeURIComponent(String(instrument_key))}`,
+          {
+            headers: { 
+              Authorization: `Bearer ${userAccessToken}`,
+              Accept: "application/json"
+            },
+          }
+        );
+
+        if (upstoxRes.ok) {
+          const jsonResponse = await upstoxRes.json();
+          const data = jsonResponse.data ?? {};
+          return res.json({ data }); // shape: { data: { 'NSE_EQ|WIPRO': { last_price, ... } } }
+        } else {
+          logger.warn(`[Market Snapshot] Upstox API returned status ${upstoxRes.status}`);
+        }
+      }
+      
+      // Fallback to marketData if the token is unavailable, request fails, or user is unauthenticated broker-wise
+      return res.json({ data: marketData });
+    } catch (err) {
+      logger.error("[Market Snapshot] Error:", err);
+      // Fallback to marketData if an exception occurs
+      return res.json({ data: marketData });
+    }
+  });
+
 
   app.get("/api/health", async (req, res) => {
     try {

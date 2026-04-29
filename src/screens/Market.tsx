@@ -31,12 +31,14 @@ const Market = ({
   onPlaceOrder,
   initialSelectedStock,
   marketPhase = 'CLOSED',
+  onSnapshotResolved,
 }: {
   stocks: Record<string, MarketQuote | number | any>;
   onIndexClick: (index: string) => void;
   onPlaceOrder: (config: any) => void;
   initialSelectedStock?: string | null;
   marketPhase?: MarketPhase;
+  onSnapshotResolved?: (sym: string, quote: any) => void;
 }) => {
   const [activeSegment, setActiveSegment] = useState('Watchlist');
   const [selectedStock, setSelectedStock] = useState<string | null>(
@@ -454,6 +456,7 @@ const Market = ({
             stocks={stocks}
             onClose={() => setSelectedStock(null)}
             onPlaceOrder={onPlaceOrder}
+            onSnapshotResolved={onSnapshotResolved}
           />
         )}
       </AnimatePresence>
