@@ -619,134 +619,66 @@ async function startServer() {
   app.use("/api/instruments", instrumentRoutes); // <-- NEW INSTRUMENTS SEARCH ROUTE
 
   // =========================================================================
-  // TASK 3.1: SNAPSHOT REST ENDPOINT
-  // GET /api/broker/upstox/market/snapshot
-  // =========================================================================
-  app.get("/api/broker/upstox/market/snapshot", authenticateToken, async (req: any, res, next) => {
-    try {
-      const SNAPSHOT_CACHE_KEY = "market:snapshot:latest";
-      const SNAPSHOT_TTL_SECONDS = 30;
+// UPSTOX WS AUTH PROXY — frontend calls this instead of Upstox directly
+// GET /api/broker/upstox/ws-auth
+// Returns the authorized_redirect_uri for the market data WebSocket
+// =========================================================================
+app.get("/api/broker/upstox/ws-auth", authenticateToken, async (req: any, res) => {
+  try {
+    const { rows } = await query(
+      "SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = 'upstox' AND expires_at > NOW()",
+      [req.user.id]
+    );
 
-      // 1. Try Redis cache first (populated every tick by the live Upstox feed)
-      try {
-        const cached = await redis.get(SNAPSHOT_CACHE_KEY);
-        if (cached) {
-          logger.info("[Snapshot] Serving from Redis cache");
-          return res.json(JSON.parse(cached));
-        }
-      } catch (redisErr) {
-        logger.warn("[Snapshot] Redis read failed, falling back to live fetch:", redisErr);
-      }
-
-      // 2. Cache miss — fetch live LTP from Upstox Market Quotes API
-      const { rows } = await query(
-        "SELECT access_token FROM user_tokens WHERE user_id = $1 AND broker = 'upstox' AND expires_at > NOW()",
-        [req.user.id]
-      );
-
-      if (!rows[0]?.access_token) {
-        // Return the in-memory marketData as a graceful fallback
-        const fallback: Record<string, any> = {};
-        for (const [sym, d] of Object.entries(marketData)) {
-          fallback[sym] = {
-            instrument_token: sym,
-            last_price: (d as any).ltp,
-            change: (d as any).day_change,
-            change_percent: (d as any).day_change_pct,
-            ohlc: {
-              open: (d as any).open,
-              high: (d as any).high,
-              low: (d as any).low,
-              close: (d as any).prevClose,
-            },
-            timestamp: new Date().toISOString(),
-          };
-        }
-        return res.json(fallback);
-      }
-
-      const decryptedToken = decrypt(String(rows[0].access_token));
-
-      // Build instrument_key list for Upstox /market-quote/ltp
-      const instrumentKeys = [
-        ...Object.values(stockISINMap),
-        ...Object.values(indexMap).map((arr) => arr[0]),
-      ].join(",");
-
-      const response = await fetch(
-        `https://api.upstox.com/v2/market-quote/ltp?instrument_key=${encodeURIComponent(instrumentKeys)}`,
-        {
-          headers: {
-            Authorization: `Bearer ${decryptedToken}`,
-            Accept: "application/json",
-          },
-        }
-      );
-
-      if (!response.ok) {
-        logger.error(`[Snapshot] Upstox LTP API returned HTTP ${response.status}`);
-        // Graceful fallback to in-memory data
-        return res.json(
-          Object.fromEntries(
-            Object.entries(marketData).map(([sym, d]: [string, any]) => [
-              sym,
-              {
-                instrument_token: sym,
-                last_price: d.ltp,
-                change: d.day_change,
-                change_percent: d.day_change_pct,
-                ohlc: { open: d.open, high: d.high, low: d.low, close: d.prevClose },
-                timestamp: new Date().toISOString(),
-              },
-            ])
-          )
-        );
-      }
-
-      const data = await response.json();
-      const snapshot: Record<string, any> = {};
-
-      if (data?.data && typeof data.data === "object") {
-        for (const [key, quote] of Object.entries(data.data as Record<string, any>)) {
-          // Normalise the instrument key (Upstox uses "|" separator)
-          const token = key.replace(":", "|");
-          snapshot[token] = {
-            instrument_token: token,
-            last_price: quote?.last_price ?? 0,
-            change: quote?.net_change ?? 0,
-            change_percent: quote?.percentage_change ?? 0,
-            ohlc: {
-              open: quote?.ohlc?.open ?? 0,
-              high: quote?.ohlc?.high ?? 0,
-              low: quote?.ohlc?.low ?? 0,
-              close: quote?.ohlc?.close ?? 0,
-            },
-            volume: quote?.volume ?? 0,
-            timestamp: new Date().toISOString(),
-          };
-
-          // Keep in-memory marketData in sync
-          if (marketData[token]) {
-            marketData[token].ltp = quote?.last_price ?? marketData[token].ltp;
-          }
-        }
-      }
-
-      // 3. Write to Redis so the next 30s of foreground resumes hit cache
-      try {
-        await redis.setex(SNAPSHOT_CACHE_KEY, SNAPSHOT_TTL_SECONDS, JSON.stringify(snapshot));
-      } catch (redisErr) {
-        logger.warn("[Snapshot] Redis write failed:", redisErr);
-      }
-
-      logger.info(`[Snapshot] Live fetch complete, instruments: ${Object.keys(snapshot).length}`);
-      return res.json(snapshot);
-
-    } catch (e: any) {
-      logger.error("[Snapshot] Server Exception:", e);
-      return res.status(500).json({ error: "Failed to fetch market snapshot", details: e.message });
+    if (!rows[0]?.access_token) {
+      return res.status(401).json({ 
+        error: "Upstox token not found or expired. Please reconnect your Upstox account." 
+      });
     }
-  });
+
+    const decryptedToken = decrypt(String(rows[0].access_token));
+
+    const upstoxRes = await fetch(
+      "https://api.upstox.com/v2/feed/market-data-feed/authorize",
+      {
+        headers: {
+          Authorization: `Bearer ${decryptedToken}`,
+          Accept: "application/json",
+        },
+      }
+    );
+
+    if (!upstoxRes.ok) {
+      const errBody = await upstoxRes.text();
+      logger.error(`[WS-Auth] Upstox authorize failed: ${upstoxRes.status} - ${errBody}`);
+      
+      // If 401 from Upstox — token is expired. Clear it so user knows to reconnect
+      if (upstoxRes.status === 401) {
+        await query(
+          "DELETE FROM user_tokens WHERE user_id = $1 AND broker = 'upstox'",
+          [req.user.id]
+        );
+        await query(
+          "UPDATE users SET is_uptox_connected = false WHERE id = $1",
+          [req.user.id]
+        );
+        return res.status(401).json({ 
+          error: "Upstox session expired. Please re-login to Upstox.", 
+          code: "UPSTOX_TOKEN_EXPIRED" 
+        });
+      }
+
+      return res.status(upstoxRes.status).json({ error: "Upstox authorize failed" });
+    }
+
+    const data = await upstoxRes.json();
+    return res.json({ wsUrl: data.data?.authorized_redirect_uri });
+
+  } catch (err: any) {
+    logger.error("[WS-Auth] Exception:", err);
+    return res.status(500).json({ error: "Failed to get WS auth URL", details: err.message });
+  }
+});
 
   app.get("/api/health", async (req, res) => {
     try {
