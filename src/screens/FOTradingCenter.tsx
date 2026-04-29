@@ -1,34 +1,26 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  ArrowLeft,
-  TrendingUp,
-  ArrowUpRight,
-  ArrowDownRight,
   Layers,
-  ChevronDown,
   Zap,
-  MousePointer2,
   Activity,
   BarChart3,
   Target,
-  ArrowRightLeft,
   XCircle,
   ShieldCheck,
   AlertCircle,
   Lock,
   BarChart2,
+  X,
 } from 'lucide-react';
 import { formatCurrency, cn } from '../lib/utils';
-import TradingViewWidget from '../components/TradingViewWidget';
 import OptionChain from '../components/OptionChain';
 import OrderWindow, { OrderConfig } from './OrderWindow';
 import { useAuthStore } from '../store/authStore';
-import { F_O_INDICES } from '../constants/marketData';
 import { toast } from 'sonner';
 import Sparkline from '../components/Sparkline';
-import FullChartModal from '../components/FullChartModal';
 import { apiClient } from '../api/client';
+import TradingTerminal from '../components/TradingTerminal';
 
 // ─── FO Gate Banner ───────────────────────────────────────────────────────────
 const FOGateBanner = ({
@@ -106,13 +98,66 @@ const FOGateBanner = ({
   );
 };
 
+// ─── Position Live Chart Panel (bottom sheet) ─────────────────────────────────
+// Replaces FullChartModal for positions — uses TradingTerminal (useLiveChart hook)
+// so the chart receives live WS ticks, not just a one-time historical snapshot.
+const PositionChartPanel = ({
+  symbol,
+  instrumentKey,
+  onClose,
+}: {
+  symbol: string;
+  instrumentKey: string;
+  onClose: () => void;
+}) => (
+  <motion.div
+    key="position-chart-panel"
+    initial={{ opacity: 0, y: 60 }}
+    animate={{ opacity: 1, y: 0 }}
+    exit={{ opacity: 0, y: 60 }}
+    transition={{ type: 'spring', damping: 28, stiffness: 300 }}
+    className="fixed inset-x-0 bottom-0 z-50 bg-zinc-950 border-t border-zinc-800/60 rounded-t-3xl shadow-2xl"
+    style={{ height: '56vh' }}
+  >
+    {/* Drag handle */}
+    <div className="flex justify-center pt-3 pb-1">
+      <div className="w-8 h-1 rounded-full bg-zinc-700" />
+    </div>
+
+    {/* Header */}
+    <div className="flex items-center justify-between px-4 pb-2">
+      <div className="flex items-center gap-2">
+        <BarChart3 size={13} className="text-emerald-400" />
+        <span className="text-[11px] font-black uppercase tracking-widest text-white">
+          {symbol}
+        </span>
+        <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">
+          Live Chart
+        </span>
+      </div>
+      <button
+        onClick={onClose}
+        className="p-1.5 rounded-xl bg-zinc-800/60 text-zinc-400 hover:text-white transition-colors"
+        aria-label="Close chart"
+      >
+        <X size={14} />
+      </button>
+    </div>
+
+    {/* Chart — fills remaining height, TradingTerminal handles WS + history */}
+    <div className="px-2 pb-3" style={{ height: 'calc(56vh - 64px)' }}>
+      <TradingTerminal instrumentKey={instrumentKey} timeframe="1m" />
+    </div>
+  </motion.div>
+);
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 const FOTradingCenter = ({
   stocks,
   onOpenOptionChain,
   onConnectUptox,
   isConnectingUptox,
-  onGoToProfile, // NEW prop — pass () => setActiveTab('more') from App.tsx
+  onGoToProfile,
 }: {
   stocks: Record<string, number>;
   onOpenOptionChain: () => void;
@@ -122,7 +167,11 @@ const FOTradingCenter = ({
 }) => {
   const { user, token } = useAuthStore();
   const [isScalperMode, setIsScalperMode] = useState(false);
-  const [activeChart, setActiveChart] = useState<any>(null);
+
+  // ── activeChart now stores { symbol, instrumentKey } instead of raw pos object
+  // instrumentKey resolved from: pos.instrument_key || pos.instrumentKey || pos.symbol
+  const [activeChart, setActiveChart] = useState<{ symbol: string; instrumentKey: string } | null>(null);
+
   const [confirmExit, setConfirmExit] = useState<number | null>(null);
   const [slTgtModal, setSlTgtModal] = useState<any>(null);
   const [positions, setPositions] = useState<any[]>([]);
@@ -140,7 +189,7 @@ const FOTradingCenter = ({
 
   // Determine the gate reason (if any)
   const foGateReason: 'kyc' | 'risk' | 'segment' | null = (() => {
-    if (isAdmin) return null; // admins bypass
+    if (isAdmin) return null;
     if (!kycApproved) return 'kyc';
     if (!hasRiskProfile) return 'risk';
     if (!foEnabled) return 'segment';
@@ -250,12 +299,12 @@ const FOTradingCenter = ({
             {
               icon: Target,
               color: 'text-blue-400',
-              label: 'GTT orders, Trailing SL &amp; multi-leg strategies',
+              label: 'GTT orders, Trailing SL & multi-leg strategies',
             },
             {
               icon: Activity,
               color: 'text-emerald-400',
-              label: 'Real-time position P&amp;L with margin tracking',
+              label: 'Real-time position P&L with margin tracking',
             },
             {
               icon: ShieldCheck,
@@ -265,10 +314,7 @@ const FOTradingCenter = ({
           ].map(({ icon: Icon, color, label }) => (
             <div key={label} className="flex items-center gap-3">
               <Icon size={14} className={color} />
-              <span
-                className="text-[11px] text-zinc-400"
-                dangerouslySetInnerHTML={{ __html: label }}
-              />
+              <span className="text-[11px] text-zinc-400">{label}</span>
             </div>
           ))}
         </div>
@@ -496,12 +542,12 @@ const FOTradingCenter = ({
 
       {/* Option Chain */}
       <div className="px-4 pt-2">
-  <OptionChain
-    stocks={stocks}
-    onPlaceOrder={(config) => setOrderConfig(config as import('./OrderWindow').OrderConfig)}
-    fullChain={isAdmin}
-  />
-</div>
+        <OptionChain
+          stocks={stocks}
+          onPlaceOrder={(config) => setOrderConfig(config as import('./OrderWindow').OrderConfig)}
+          fullChain={isAdmin}
+        />
+      </div>
 
       {/* Live Positions */}
       <div className="px-4 space-y-2.5">
@@ -536,6 +582,11 @@ const FOTradingCenter = ({
               const isPositionProfit = positionPnl >= 0;
               const isDayProfit = dayPnl >= 0;
 
+              // ── Resolve instrument key for live chart ──────────────────────
+              // Tries the three possible field names Upstox/backend may use
+              const posInstrumentKey =
+                pos.instrument_key || pos.instrumentKey || pos.symbol || '';
+
               return (
                 <div key={pos.symbol} className="relative overflow-hidden rounded-xl group">
                   {user?.role === 'admin' && (
@@ -550,13 +601,18 @@ const FOTradingCenter = ({
                           <Target size={12} />
                           <span className="text-[7px] font-black uppercase">SL/Tgt</span>
                         </button>
+
+                        {/* ── CHANGED: was setActiveChart(pos), now passes typed object ── */}
                         <button
-                          onClick={() => setActiveChart(pos)}
+                          onClick={() =>
+                            setActiveChart({ symbol: pos.symbol, instrumentKey: posInstrumentKey })
+                          }
                           className="px-3 bg-zinc-800 text-white flex flex-col items-center justify-center gap-1 transition-colors hover:bg-zinc-700"
                         >
                           <BarChart3 size={12} />
                           <span className="text-[7px] font-black uppercase">Chart</span>
                         </button>
+
                         <button
                           onClick={() => handleExit(i)}
                           className={cn(
@@ -613,9 +669,7 @@ const FOTradingCenter = ({
                       </div>
                       <div className="flex flex-col items-end">
                         <div className="flex items-center gap-2 justify-end mb-1.5">
-                          <Sparkline
-                            color={isPositionProfit ? '#10b981' : '#ef4444'}
-                          />
+                          <Sparkline color={isPositionProfit ? '#10b981' : '#ef4444'} />
                           <div className="text-right">
                             <p className="text-[8px] font-bold text-zinc-500 uppercase tracking-widest leading-none mb-0.5">
                               Total P&L
@@ -623,9 +677,7 @@ const FOTradingCenter = ({
                             <p
                               className={cn(
                                 'text-sm font-black tracking-tighter leading-none',
-                                isPositionProfit
-                                  ? 'text-emerald-500'
-                                  : 'text-rose-500'
+                                isPositionProfit ? 'text-emerald-500' : 'text-rose-500'
                               )}
                             >
                               {isPositionProfit ? '+' : ''}
@@ -685,6 +737,21 @@ const FOTradingCenter = ({
                           Tgt: {formatCurrency(avg * 1.15)}
                         </span>
                       </div>
+
+                      {/* ── NEW: Chart button for regular users (non-admin) ── */}
+                      {user?.role === 'user' && (
+                        <button
+                          onClick={() =>
+                            setActiveChart({ symbol: pos.symbol, instrumentKey: posInstrumentKey })
+                          }
+                          className="ml-auto flex items-center gap-1 text-zinc-500 hover:text-emerald-400 transition-colors"
+                        >
+                          <BarChart3 size={10} />
+                          <span className="text-[8px] font-bold uppercase tracking-widest">
+                            Chart
+                          </span>
+                        </button>
+                      )}
                     </div>
 
                     {user?.role === 'user' && (
@@ -710,6 +777,7 @@ const FOTradingCenter = ({
         </div>
       </div>
 
+      {/* Risk Management */}
       <div className="px-4 space-y-2.5">
         <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-500 flex items-center gap-2">
           <ShieldCheck size={12} />
@@ -731,11 +799,15 @@ const FOTradingCenter = ({
         </div>
       </div>
 
+      {/* ── Modals / Overlays ─────────────────────────────────────────────── */}
       <AnimatePresence mode="wait">
+
+        {/* ── CHANGED: FullChartModal → PositionChartPanel (live WS chart) ── */}
         {activeChart && (
-          <FullChartModal
-            key="full-chart-modal"
-            instrument={activeChart}
+          <PositionChartPanel
+            key="position-chart-panel"
+            symbol={activeChart.symbol}
+            instrumentKey={activeChart.instrumentKey}
             onClose={() => setActiveChart(null)}
           />
         )}
