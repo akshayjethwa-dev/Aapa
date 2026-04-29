@@ -176,9 +176,15 @@ async function startServer() {
 
   const resolveInstrumentKey = (key: string): string => {
     if (!key) return "";
-    if (key.includes("|")) return key; 
+    let upperKey = key.toUpperCase();
+    
+    // If it looks like a broker format but is not an ISIN or official index, extract the symbol
+    if (upperKey.includes("|") && !upperKey.includes("INE") && !upperKey.includes("NIFTY") && !upperKey.includes("SENSEX")) {
+       upperKey = upperKey.split("|")[1];
+    }
+    
+    if (upperKey.includes("|")) return key; 
 
-    const upperKey = key.toUpperCase();
     for (const [internalName, brokerKeys] of Object.entries(indexMap)) {
       if (internalName.toUpperCase() === upperKey && brokerKeys.length > 0) {
         return brokerKeys[0]; 
@@ -446,11 +452,11 @@ async function startServer() {
             directives: {
               ...helmet.contentSecurityPolicy.getDefaultDirectives(),
               "script-src": ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https://s3.tradingview.com", "https://www.tradingview.com"],
-              "frame-src": ["'self'", "https://s3.tradingview.com", "https://www.tradingview.com"],
+              "frame-src": ["'self'", "https://s3.tradingview.com", "https://www.tradingview.com", "blob:"],
+              "worker-src": ["'self'", "blob:"], // Required for TradingView
               "style-src": ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
               "font-src": ["'self'", "https://fonts.gstatic.com", "data:"],
               "img-src": ["'self'", "data:", "https:", "http:"],
-              // ADDED THIS LINE to whitelist Upstox API and WebSockets
               "connect-src": [
                 "'self'", 
                 "https://api.upstox.com", 
@@ -1045,15 +1051,23 @@ async function startServer() {
   });
 
   // =========================================================================
-  // UPDATED: OAUTH CALLBACK FOR DEEP-LINKING (MOBILE)
+  // UPDATED: OAUTH CALLBACK FOR WEB POPUP & DEEP-LINKING (MOBILE)
   // =========================================================================
   app.get("/auth/callback", async (req, res, next) => {
     const { code, state } = req.query;
     
-    if (!code) {
-      // If the user cancelled or something went wrong, redirect back to the app with an error
-      return res.redirect('aapa://oauth-callback?error=No_Code_Provided');
-    }
+    const sendErrorHtml = (reason: string) => res.send(`
+      <!DOCTYPE html><html><body><script>
+        if (window.opener && !window.opener.closed) {
+          window.opener.postMessage({ type: 'UPTOX_AUTH_ERROR', error: { message: '${reason}' } }, "*");
+          window.close();
+        } else {
+          window.location.href = 'aapa://oauth-callback?error=${reason}';
+        }
+      </script></body></html>
+    `);
+
+    if (!code) return sendErrorHtml('No_Code_Provided');
 
     const apiKey = process.env.UPTOX_API_KEY?.trim() ?? "";
     const apiSecret = process.env.UPTOX_API_SECRET?.trim() ?? "";
@@ -1077,15 +1091,8 @@ async function startServer() {
       const data = await response.json();
 
       if (!data.access_token) {
-        logger.error("============= UPSTOX AUTH FAILURE =============");
-        logger.error(`[Upstox Auth] Token Exchange Failed!`);
-        logger.error(`[Upstox Auth] HTTP Status: ${response.status} ${response.statusText}`);
-        logger.error(`[Upstox Auth] Error Payload: ${JSON.stringify(data)}`);
-        logger.error(`[Upstox Auth] Redirect URI Sent: ${redirectUri}`);
-        logger.error(`[Upstox Auth] Host/Protocol Detected: ${req.protocol}://${req.get('host')}`);
-        logger.error("===============================================");
-        
-        return res.redirect('aapa://oauth-callback?error=Token_Exchange_Failed');
+        logger.error(`[Upstox Auth] Token Exchange Failed! Status: ${response.status} Payload: ${JSON.stringify(data)}`);
+        return sendErrorHtml('Token_Exchange_Failed');
       }
 
       const userJwt = state ? String(state) : null;
@@ -1093,10 +1100,8 @@ async function startServer() {
         try {
           const decoded: any = jwt.verify(userJwt, JWT_SECRET);
           const userId = decoded.id;
-
           const newExpiry = getUpstoxTokenExpiry();
 
-          // Save tokens in database
           await query(
             `INSERT INTO user_tokens (user_id, broker, access_token, refresh_token, expires_at)
              VALUES ($1, 'upstox', $2, $3, $4)
@@ -1105,24 +1110,41 @@ async function startServer() {
           );
 
           await query("UPDATE users SET is_uptox_connected = true WHERE id = $1", [userId]);
-          
           initUpstoxWebSockets();
-
-          // Success -> Redirect to mobile app
-          const deepLink = `aapa://oauth-callback?token=${data.access_token}&refresh_token=${data.refresh_token || ""}`;
-          return res.redirect(deepLink);
         } catch (jwtErr) { 
-          logger.warn("[OAuth Callback] Invalid state JWT, falling back to client-side return"); 
+          logger.warn("[OAuth Callback] Invalid state JWT, skipping server DB save, relying on client"); 
         }
       }
 
-      // If state JWT wasn't provided or failed to decode, still redirect with token so the mobile client can handle it
-      const deepLink = `aapa://oauth-callback?token=${data.access_token}&refresh_token=${data.refresh_token || ""}`;
-      return res.redirect(deepLink);
+      // Success -> Output HTML to message the web app parent window and close the popup
+      const htmlResponse = `
+        <!DOCTYPE html>
+        <html>
+        <head><title>Authenticating...</title></head>
+        <body>
+          <script>
+            // For Web App: send message to parent and close window
+            if (window.opener && !window.opener.closed) {
+              window.opener.postMessage({
+                type: 'UPTOX_AUTH_SUCCESS',
+                token: '${data.access_token}',
+                refresh_token: '${data.refresh_token || ""}'
+              }, "*");
+              window.close();
+            } else {
+              // For Mobile App: fallback to deep link
+              window.location.href = 'aapa://oauth-callback?token=${data.access_token}&refresh_token=${data.refresh_token || ""}';
+            }
+          </script>
+          <p>Connecting your account, please wait...</p>
+        </body>
+        </html>
+      `;
+      return res.send(htmlResponse);
 
     } catch (e) { 
       logger.error("[OAuth Callback] Catch block error:", e);
-      return res.redirect('aapa://oauth-callback?error=Server_Error');
+      return sendErrorHtml('Server_Error');
     }
   });
 
