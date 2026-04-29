@@ -91,8 +91,11 @@ export async function syncUpstoxInstruments(): Promise<void> {
         }
       };
 
-      https
-        .get(url, (response) => {
+      https.get(url, { 
+  headers: { 
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' 
+  } 
+}, (response) => {
           if (response.statusCode !== 200) {
             reject(new Error(`HTTP ${response.statusCode} for ${url}`));
             return;
