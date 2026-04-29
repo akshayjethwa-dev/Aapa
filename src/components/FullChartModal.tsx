@@ -1,12 +1,14 @@
+// src/components/FullChartModal.tsx
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { ChevronRight } from 'lucide-react';
 import { formatCurrency, cn } from '../lib/utils';
-import TradingTerminal from './TradingTerminal';
+import TradingTerminal, { Timeframe, TIMEFRAMES } from './TradingTerminal';
 import ErrorBoundary from './ErrorBoundary';
 
 const FullChartModal = ({ instrument, onClose }: { instrument: any, onClose: () => void }) => {
-  const [timeframe, setTimeframe] = useState('5m');
+  // Strongly type the timeframe state
+  const [timeframe, setTimeframe] = useState<Timeframe>('5m');
   const [livePrice, setLivePrice] = useState(instrument.ltp); 
 
   return (
@@ -38,7 +40,8 @@ const FullChartModal = ({ instrument, onClose }: { instrument: any, onClose: () 
       {/* Toolbar */}
       <div className="px-6 py-3 border-b border-zinc-900 flex justify-between items-center overflow-x-auto scrollbar-hide gap-4">
         <div className="flex gap-1">
-          {['1m', '5m', '15m', '1h', '1D'].map(tf => (
+          {/* Map through the imported TIMEFRAMES directly */}
+          {TIMEFRAMES.map(tf => (
             <button 
               key={tf}
               onClick={() => setTimeframe(tf)}
@@ -58,7 +61,7 @@ const FullChartModal = ({ instrument, onClose }: { instrument: any, onClose: () 
         <ErrorBoundary>
           <TradingTerminal 
             instrumentKey={instrument.symbol} 
-            timeframe={timeframe} // FIX: Pass timeframe to Terminal
+            timeframe={timeframe} 
             onPriceUpdate={(newPrice) => setLivePrice(newPrice)} 
           />
         </ErrorBoundary>

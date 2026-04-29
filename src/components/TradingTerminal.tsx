@@ -4,8 +4,8 @@ import LiveChart, { LiveChartRef } from './LiveChart';
 import { useLiveChart } from '../hooks/useLiveChart';
 import { cn } from '../lib/utils';
 
-type Timeframe = '1m' | '5m' | '15m' | '1h' | '1D';
-const TIMEFRAMES: Timeframe[] = ['1m', '5m', '15m', '1h', '1D'];
+export type Timeframe = '1m' | '5m' | '15m' | '1h' | '1D';
+export const TIMEFRAMES: Timeframe[] = ['1m', '5m', '15m', '1h', '1D'];
 
 const TradingTerminal = ({
   instrumentKey,
@@ -27,7 +27,7 @@ const TradingTerminal = ({
     instrumentKey,
     timeframe: activeTimeframe,
     chartRef,
-    tickRateLimit: 2,       // ← 2 updates/sec max — safe for mid-range Android
+    tickRateLimit: 2,       
     onPriceUpdate,
     onLoadingChange: setLoading,
     onError: setError,
