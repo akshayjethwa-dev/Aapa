@@ -6,6 +6,9 @@ import { useAuthStore } from './store/authStore';
 import { formatCurrency, cn } from './lib/utils';
 import { apiClient } from './api/client';
 
+// ✅ NEW: import existing constant — no manual list needed
+import { INDEX_CONSTITUENTS } from './constants/marketData';
+
 import Navbar from './components/Navbar';
 import Header from './components/Header';
 
@@ -32,32 +35,49 @@ import FullChartModal from './components/FullChartModal';
 import OptionChain from './components/OptionChain';
 import Orders from './screens/Orders';
 
-// NEW: symbol search + stock detail
 import SymbolSearch from './components/SymbolSearch';
 import StockDetail from './screens/StockDetail';
 
 export type MarketPhase = 'LIVE' | 'PRE_OPEN' | 'CLOSED';
 
+// ✅ NEW: Derive the full tradeable stock universe from INDEX_CONSTITUENTS.
+// This is always in sync with marketData.ts — no manual list to maintain.
+const ALL_STOCK_SYMBOLS: string[] = Array.from(
+  new Set(Object.values(INDEX_CONSTITUENTS).flat())
+);
+
+// Seed helper: creates a structured empty stub so getPriceData
+// can distinguish it from a bare number (bare numbers always give changePct=0).
+// ltp=0 stubs are filtered out by the gainers/losers guard until real data arrives.
+const makeEmptyStub = () => ({ ltp: 0, close: 0, day_change: 0, day_change_pct: 0 });
+
 function App() {
   const { token, user, setAuth, logout, setIsWsConnected } = useAuthStore();
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [stocks, setStocks] = useState<Record<string, number | any>>({
-    NIFTY_50: 22145.2,
-    SENSEX: 72850.4,
-    BANKNIFTY: 46800.15,
-    FINNIFTY: 20850.6,
-    RELIANCE: 2985.4,
-    TCS: 4120.15,
-    HDFCBANK: 1450.6,
-    INFY: 1680.4,
-    ICICIBANK: 1050.2,
+
+  // ✅ NEW: Initial state built dynamically from INDEX_CONSTITUENTS.
+  // All index + stock symbols get an empty stub — ltp=0 means they are
+  // invisible to gainers/losers until the snapshot/WS fills them in.
+  const [stocks, setStocks] = useState<Record<string, any>>(() => {
+    const initial: Record<string, any> = {};
+    // Add index stubs (used by index scroller)
+    const indices = [
+      'NIFTY 50', 'SENSEX', 'BANKNIFTY', 'FINNIFTY',
+      'MIDCAP NIFTY', 'SMALLCAP NIFTY',
+      'NIFTY IT', 'NIFTY AUTO', 'NIFTY PHARMA',
+      'NIFTY METAL', 'NIFTY FMCG', 'NIFTY REALTY',
+    ];
+    indices.forEach(idx => { initial[idx] = makeEmptyStub(); });
+    // Add all constituent stocks from INDEX_CONSTITUENTS
+    ALL_STOCK_SYMBOLS.forEach(sym => { initial[sym] = makeEmptyStub(); });
+    return initial;
   });
+
   const [complianceType, setComplianceType] = useState('');
   const [selectedIndex, setSelectedIndex] = useState<string | null>(null);
   const [overviewIndex, setOverviewIndex] = useState<string | null>(null);
   const [orderConfig, setOrderConfig] = useState<any>(null);
 
-  // NEW: search + stock-from-search
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [selectedStockFromSearch, setSelectedStockFromSearch] = useState<string | null>(null);
 
@@ -68,9 +88,32 @@ function App() {
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
-  // ✅ FIX: Use ReturnType<typeof setTimeout> instead of NodeJS.Timeout
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef(0);
+
+  // =========================================================================
+  // ✅ NEW: Seed stocks map with real last-close prices on mount.
+  // Uses the existing /api/market/refresh endpoint (same as handleForceRefresh).
+  // Runs once when the user is authenticated. WS ticker will overwrite
+  // with live prices once the market opens.
+  // =========================================================================
+  useEffect(() => {
+    if (!token) return;
+    const seedStocksFromSnapshot = async () => {
+      try {
+        const res = await apiClient.post('/api/market/refresh');
+        if (res.data?.last_prices && typeof res.data.last_prices === 'object') {
+          setStocks(prev => ({
+            ...prev,                   // keep stubs for any symbol not in snapshot
+            ...res.data.last_prices,   // overwrite with real structured quote objects
+          }));
+        }
+      } catch {
+        // silent — WS will fill in live data once market opens
+      }
+    };
+    seedStocksFromSnapshot();
+  }, [token]);
 
   // =========================================================================
   // HELPER: Determine if onboarding is complete
@@ -292,9 +335,6 @@ function App() {
             }
           }
 
-          // =========================================================================
-          // TASK 3.1: ENHANCED ORDER UPDATE NOTIFICATIONS
-          // =========================================================================
           if (message.type === 'order_update') {
             const rawStatus = message.data.status ? String(message.data.status).toLowerCase() : 'updated';
             const symbol = message.data.trading_symbol || 'Order';
@@ -380,7 +420,7 @@ function App() {
   const handleSnapshotResolved = useCallback((sym: string, quote: any) => {
     setStocks((prev) => ({
       ...prev,
-      [sym]: { ...quote }, // merge snapshot data into global stocks map
+      [sym]: { ...quote },
     }));
   }, []);
 

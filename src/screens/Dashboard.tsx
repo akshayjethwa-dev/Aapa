@@ -189,20 +189,32 @@ const Dashboard = ({
     return marketEvents.filter(e => e.countdown.includes('Days'));
   }, [eventFilter]);
 
+  // ── TASK 3.1: Gainers/Losers — guard against zero/missing data ──
   const sortedGainersLosers = useMemo(() => {
+    const allIndices = new Set([...primaryIndices, ...secondaryIndices]);
+
     const list = Object.entries(stocks)
-      .filter(([s]) => !primaryIndices.includes(s) && !secondaryIndices.includes(s))
+      .filter(([s]) => !allIndices.has(s))
       .map(([symbol, quote]) => {
         const { ltp, change, changePct } = getPriceData(quote);
         return { symbol, price: ltp, change, changePct };
-      });
-      
+      })
+      // ① Filter out any entry where LTP is zero/falsy OR changePct is exactly zero
+      .filter(({ price, changePct }) => price > 0 && changePct !== 0);
+
     if (gainerLoserTab === 'Gainers') {
-      list.sort((a, b) => b.changePct - a.changePct);
+      // ② Only truly positive movers for Gainers tab
+      return list
+        .filter(s => s.changePct > 0)
+        .sort((a, b) => b.changePct - a.changePct)
+        .slice(0, 5);
     } else {
-      list.sort((a, b) => a.changePct - b.changePct);
+      // ③ Only truly negative movers for Losers tab
+      return list
+        .filter(s => s.changePct < 0)
+        .sort((a, b) => a.changePct - b.changePct)
+        .slice(0, 5);
     }
-    return list.slice(0, 5);
   }, [stocks, gainerLoserTab]);
 
   return (
@@ -426,6 +438,7 @@ const Dashboard = ({
         </div>
       </div>
 
+      {/* ── Top Gainers / Losers ── */}
       <div className="px-5 space-y-2.5">
         <div className="flex bg-zinc-900/50 p-1 rounded-xl border border-zinc-800/50">
           {['Gainers', 'Losers'].map(tab => (
@@ -441,27 +454,47 @@ const Dashboard = ({
             </button>
           ))}
         </div>
-        <div className="space-y-2">
-          {sortedGainersLosers.map(({ symbol, price, change, changePct }: { symbol: string, price: number, change: number, changePct: number }) => (
-            <div key={symbol} className="bg-zinc-900/20 border border-zinc-800/30 rounded-xl p-3 flex justify-between items-center">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-xl bg-zinc-900 flex items-center justify-center font-bold text-[11px] text-zinc-500">
-                  {symbol.substring(0, 2)}
+
+        {/* ── TASK 3.1: Guard — fewer than 3 valid instruments → friendly message ── */}
+        {sortedGainersLosers.length < 3 ? (
+          <motion.div
+            key={`empty-${gainerLoserTab}`}
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="flex flex-col items-center justify-center py-10 gap-2.5"
+          >
+            <BarChart3 size={28} className="text-zinc-700" />
+            <p className="text-[11px] font-bold text-zinc-600 uppercase tracking-widest">
+              Not enough live data
+            </p>
+            <p className="text-[9px] text-zinc-700 text-center">
+              Live market feed needed to show {gainerLoserTab.toLowerCase()}.
+              <br />Data will appear once the market opens.
+            </p>
+          </motion.div>
+        ) : (
+          <div className="space-y-2">
+            {sortedGainersLosers.map(({ symbol, price, change, changePct }: { symbol: string, price: number, change: number, changePct: number }) => (
+              <div key={symbol} className="bg-zinc-900/20 border border-zinc-800/30 rounded-xl p-3 flex justify-between items-center">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-zinc-900 flex items-center justify-center font-bold text-[11px] text-zinc-500">
+                    {symbol.substring(0, 2)}
+                  </div>
+                  <div>
+                    <p className="text-[13px] font-bold text-white tracking-tight">{symbol}</p>
+                    <p className="text-[9px] font-bold text-zinc-600 uppercase">NSE</p>
+                  </div>
                 </div>
-                <div>
-                  <p className="text-[13px] font-bold text-white tracking-tight">{symbol}</p>
-                  <p className="text-[9px] font-bold text-zinc-600 uppercase">NSE</p>
+                <div className="text-right">
+                  <p className="text-[13px] font-bold text-white">{formatCurrency(price)}</p>
+                  <p className={cn("text-[9px] font-bold", change >= 0 ? "text-emerald-500" : "text-rose-500")}>
+                    {change >= 0 ? '+' : ''}{change.toFixed(2)} ({changePct.toFixed(2)}%)
+                  </p>
                 </div>
               </div>
-              <div className="text-right">
-                <p className="text-[13px] font-bold text-white">{formatCurrency(price)}</p>
-                <p className={cn("text-[9px] font-bold", change >= 0 ? "text-emerald-500" : "text-rose-500")}>
-                  {change >= 0 ? '+' : ''}{change.toFixed(2)} ({changePct.toFixed(2)}%)
-                </p>
-              </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="px-5"><AISignals /></div>
