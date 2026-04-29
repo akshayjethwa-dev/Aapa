@@ -576,6 +576,26 @@ async function startServer() {
     });
   };
 
+  // In server.ts, after authenticateToken is defined and before other routes
+  app.post('/api/admin/sync-instruments', authenticateToken, async (req: any, res) => {
+    // Only admin can trigger this
+    if (req.user.role !== 'admin') {
+      return res.sendStatus(403);
+    }
+
+    try {
+      // Optional: respond immediately and run in background
+      // res.json({ started: true });
+      // syncUpstoxInstruments().catch(err => logger.error('[Admin Sync] Failed:', err));
+
+      await syncUpstoxInstruments();
+      return res.json({ success: true });
+    } catch (err: any) {
+      logger.error('[Admin Sync] Error:', err);
+      return res.status(500).json({ error: 'Instrument sync failed', details: err.message });
+    }
+  });
+
   // =========================================================================
   // HELPER: REACTIVE TOKEN REFRESH CALLBACK FOR AXIOS/FETCH INTERCEPTORS
   // =========================================================================
