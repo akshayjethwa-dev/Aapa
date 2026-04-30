@@ -2,16 +2,16 @@
  * src/routes/instruments.ts
  *
  * GET /api/instruments/search
- *   ?q=<query>                        — required, min 2 chars
- *   &exchange=NSE|BSE|NFO             — optional (default: NSE+BSE)
+ *   ?q=<query>                  — required, min 2 chars
+ *   &exchange=NSE|BSE|NFO       — optional (default: NSE+BSE)
  *   &instrument_type=EQ|INDEX|FUT|OPT — optional (default: EQ+INDEX)
- *   &limit=<n>                        — optional, max 100, default 50
+ *   &limit=<n>                  — optional, max 100, default 50
  *
  * Response: { instruments: Instrument[], total: number }
  */
 
 import { Router, Request, Response } from 'express';
-import { pool } from '../db/index.js';
+import { pool } from '../db/index';
 
 const router = Router();
 
@@ -65,7 +65,7 @@ router.get('/search', async (req: Request, res: Response) => {
     ORDER BY
       CASE
         WHEN tradingsymbol ILIKE '${safeQ}%' THEN 0
-        WHEN tradingsymbol ILIKE $1           THEN 1
+        WHEN tradingsymbol ILIKE $1          THEN 1
         ELSE 2
       END,
       length(tradingsymbol),

@@ -21,7 +21,6 @@ type SymbolSearchProps = {
   onSelect: (symbol: any) => void;
 };
 
-// ✅ FIXED: Complete type mapping (was: ternary that mapped everything non-EQ → 'INDEX')
 function mapInstrumentType(raw: string): string {
   switch (raw?.toUpperCase()) {
     case 'EQ':               return 'EQUITY';
@@ -34,7 +33,7 @@ function mapInstrumentType(raw: string): string {
 }
 
 function typeBadgeClass(type: string): string {
-  switch (type.toUpperCase()) {
+  switch (type?.toUpperCase()) {
     case 'EQ':               return 'bg-emerald-500/10 text-emerald-400';
     case 'INDEX': case 'UNDIND': return 'bg-sky-500/10 text-sky-400';
     case 'FUT': case 'FUTIDX':  return 'bg-amber-500/10 text-amber-400';
@@ -57,12 +56,15 @@ const SymbolSearch: React.FC<SymbolSearchProps> = ({ isOpen, onClose, stocks, on
   const search = useCallback(async (q: string, exchange: ExchangeFilter) => {
     const trimmed = q.trim();
     if (trimmed.length < 2) { setResults([]); return; }
+    
     setLoading(true);
     try {
       const params = new URLSearchParams({ q: trimmed });
       if (exchange !== 'ALL') params.set('exchange', exchange);
+      
       const res  = await fetch(`/api/instruments/search?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      
       const data = await res.json();
       setResults(data.instruments ?? []);
     } catch (err) {
@@ -87,6 +89,7 @@ const SymbolSearch: React.FC<SymbolSearchProps> = ({ isOpen, onClose, stocks, on
       segment:             instrument.exchange as 'NSE' | 'BSE',
       upstoxInstrumentKey: instrument.instrument_key,
     });
+    
     setRecent((prev) =>
       [instrument.tradingsymbol, ...prev.filter((n) => n !== instrument.tradingsymbol)].slice(0, 6)
     );
@@ -153,6 +156,7 @@ const SymbolSearch: React.FC<SymbolSearchProps> = ({ isOpen, onClose, stocks, on
             const ltp = typeof quote === 'number' ? quote : (quote?.ltp ?? 0);
             const changePct = typeof quote === 'number' ? 0 : (quote?.day_change_pct ?? 0);
             const isPositive = changePct >= 0;
+            
             return (
               <div key={sym.instrument_key} role="button" tabIndex={0}
                 onClick={() => handleSelect(sym)}
@@ -166,11 +170,11 @@ const SymbolSearch: React.FC<SymbolSearchProps> = ({ isOpen, onClose, stocks, on
                     <div className="flex items-center gap-1.5">
                       <p className="text-sm font-bold text-white tracking-tight">{sym.tradingsymbol}</p>
                       <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wide', typeBadgeClass(sym.instrument_type))}>
-                        {sym.instrument_type}
+                        {sym.instrument_type || 'EQ'}
                       </span>
                     </div>
                     <p className="text-[10px] font-medium text-zinc-500 mt-0.5">
-                      {sym.exchange} • {sym.name.substring(0, 30)}
+                      {sym.exchange} • {sym.name?.substring(0, 30)}
                     </p>
                   </div>
                 </div>
