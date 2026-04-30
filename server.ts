@@ -130,18 +130,25 @@ async function startServer() {
   // =========================================================================
   // PHASE 3: RAILWAY WEBSOCKETS - Strict CORS Verification & Health
   // =========================================================================
-  const wss = new WebSocketServer({ 
-    server,
-    verifyClient: (info, callback) => {
-      const origin = info.origin;
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(true);
-      } else {
-        logger.warn(`[WS CORS] Blocked WebSocket connection from unauthorized origin: ${origin}`);
-        callback(false, 401, 'Unauthorized Origin');
-      }
+  
+const wss = new WebSocketServer({ 
+  server,
+  verifyClient: (info, callback) => {
+    const origin = info.origin;
+    // No origin = React Native / curl / mobile app fetch (always allow)
+    const wsIsLocalhost = !origin ||
+      origin.startsWith("http://localhost:") ||
+      origin.startsWith("http://127.0.0.1:");
+    // Allow 192.168.x.x (Expo on device WiFi) and 10.0.x.x (Android emulator)
+    const wsIsLocalNetwork = /^http:\/\/(192\.168|10\.0)\.\d{1,3}\.\d{1,3}(:\d+)?$/.test(origin || "");
+    if (wsIsLocalhost || wsIsLocalNetwork || allowedOrigins.includes(origin || "")) {
+      callback(true);
+    } else {
+      logger.warn(`[WS CORS] Blocked WebSocket connection from unauthorized origin: ${origin}`);
+      callback(false, 401, 'Unauthorized Origin');
     }
-  });
+  }
+});
 
   const primaryIndices = ["NIFTY 50", "SENSEX", "BANKNIFTY", "FINNIFTY", "MIDCAP NIFTY", "SMALLCAP NIFTY"];
   const secondaryIndices = ["NIFTY IT", "NIFTY AUTO", "NIFTY PHARMA", "NIFTY METAL", "NIFTY FMCG", "NIFTY REALTY"];
@@ -515,7 +522,7 @@ async function startServer() {
         
         // Dynamically check if the request is coming from Expo's local environments
         const isLocalhost = origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:");
-        const isLocalNetwork = /^http:\/\/192\.168\.\d{1,3}\.\d{1,3}(:\d+)?$/.test(origin);
+        const isLocalNetwork = /^http:\/\/(192\.168|10\.0)\.\d{1,3}\.\d{1,3}(:\d+)?$/.test(origin);
 
         if (allowedOrigins.includes(origin) || isLocalhost || isLocalNetwork) {
           return callback(null, true); // Allow the request
