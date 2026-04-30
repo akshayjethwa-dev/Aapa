@@ -8,7 +8,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install all dependencies (using ci for faster, reproducible builds)
-RUN npm install
+RUN npm ci
 
 COPY . .
 
@@ -20,6 +20,9 @@ RUN npx esbuild server.ts --bundle --platform=node --format=esm --packages=exter
 
 # Bundle the migration script using esbuild
 RUN npx esbuild scripts/migrate.ts --bundle --platform=node --format=esm --packages=external --outfile=dist-server/migrate.js
+
+# ---> ADDED: Bundle the Upstox sync script using esbuild
+RUN npx esbuild scripts/sync_upstox_instruments.ts --bundle --platform=node --format=esm --packages=external --outfile=dist-server/sync_upstox_instruments.js
 
 
 # ========================================================
@@ -38,6 +41,7 @@ COPY package*.json ./
 RUN npm install --omit=dev
 
 # Copy the bundled server and scripts from the builder stage
+# (This now includes server.js, migrate.js, AND sync_upstox_instruments.js)
 COPY --from=builder /app/dist-server ./dist-server
 
 # Copy the frontend 'dist' INSIDE 'dist-server' so the backend can serve it
@@ -46,7 +50,7 @@ COPY --from=builder /app/dist ./dist-server/dist
 # Copy migrations INSIDE 'dist-server' so the backend can run the SQL files
 COPY migrations ./dist-server/migrations
 
-# ---> FIX: Updated path because MarketDataFeed.proto was moved to the public/ directory
+# Updated path because MarketDataFeed.proto was moved to the public/ directory
 COPY --from=builder /app/public/MarketDataFeed.proto ./
 
 # Expose port 3000 to match server.ts
