@@ -34,6 +34,7 @@ interface NewsItem { id: string; headline: string; source: string; time: string;
 interface StockInNews { symbol: string; price: number | null; change: number | null; tag: string; isLive: boolean; }
 interface VolumeRocker { symbol: string; price: number; change: number; volumeMultiplier: string; }
 interface MarketEvent { id: number; company: string; symbol: string; type: string; date: string; countdown: string; color: string; }
+interface MarketMover { symbol: string; lastPrice: number; change: number; changePercent: number; }
 
 // ── DemoDataBadge — shown only when real data failed / unavailable ────────────
 const DemoDataBadge = ({ label = "Sample Data" }: { label?: string }) => (
@@ -104,6 +105,10 @@ const Dashboard = ({
   const [eventsLoading, setEventsLoading] = useState(true);
   const [eventsIsReal, setEventsIsReal] = useState(false);
 
+  const [movers, setMovers] = useState<{ gainers: MarketMover[]; losers: MarketMover[] }>({ gainers: [], losers: [] });
+  const [moversLoading, setMoversLoading] = useState(true);
+  const [moversIsReal, setMoversIsReal] = useState(false);
+
   // ── Fetch portfolio ─────────────────────────────────────────────────────────
   const fetchPortfolio = useCallback(async () => {
     try {
@@ -127,6 +132,19 @@ const Dashboard = ({
       .then(r => { setVixData(r.data); })
       .catch(() => setVixData(null))
       .finally(() => setVixLoading(false));
+
+    // Movers (Gainers / Losers)
+    setMoversLoading(true);
+    apiClient.get('/api/market/movers')
+      .then(r => {
+        const d = r.data;
+        if (d.gainers?.length > 0 || d.losers?.length > 0) {
+          setMovers({ gainers: d.gainers || [], losers: d.losers || [] });
+          setMoversIsReal(d.source === 'upstox');
+        }
+      })
+      .catch(() => {})
+      .finally(() => setMoversLoading(false));
 
     // News
     setNewsLoading(true);
@@ -185,10 +203,15 @@ const Dashboard = ({
     fetchPortfolio();
     fetchMarketData();
 
-    // Auto-refresh VIX every 60s during live market
+    // Auto-refresh VIX & Movers every 60s during live market
     const interval = setInterval(() => {
       if (marketPhase === 'LIVE') {
         apiClient.get('/api/market/vix').then(r => setVixData(r.data)).catch(() => {});
+        apiClient.get('/api/market/movers').then(r => {
+          if (r.data.gainers?.length > 0 || r.data.losers?.length > 0) {
+            setMovers({ gainers: r.data.gainers || [], losers: r.data.losers || [] });
+          }
+        }).catch(() => {});
       }
     }, 60_000);
 
@@ -270,21 +293,17 @@ const Dashboard = ({
     return marketEvents;
   }, [eventFilter, marketEvents]);
 
-  const sortedGainersLosers = useMemo(() => {
-    const allIndices = new Set([...primaryIndices, ...secondaryIndices]);
-    const list = Object.entries(stocks)
-      .filter(([s]) => !allIndices.has(s))
-      .map(([symbol, quote]) => {
-        const { ltp, change, changePct } = getPriceData(quote);
-        return { symbol, price: ltp, change, changePct };
-      })
-      .filter(({ price, changePct }) => price > 0 && changePct !== 0);
-    if (gainerLoserTab === 'Gainers')
-      return list.filter(s => s.changePct > 0).sort((a, b) => b.changePct - a.changePct).slice(0, 5);
-    return list.filter(s => s.changePct < 0).sort((a, b) => a.changePct - b.changePct).slice(0, 5);
-  }, [stocks, gainerLoserTab]);
-
   // ── Fallback demo data (shown only when API fails) ──────────────────────────
+  const fallbackMovers = {
+    gainers: [
+      { symbol: "ZOMATO", lastPrice: 201.40, change: 12.30, changePercent: 6.5 },
+      { symbol: "TATASTEEL", lastPrice: 154.20, change: 6.10, changePercent: 4.12 }
+    ],
+    losers: [
+      { symbol: "PAYTM", lastPrice: 168.10, change: -4.50, changePercent: -2.60 },
+      { symbol: "HDFCBANK", lastPrice: 1420.50, change: -25.40, changePercent: -1.75 }
+    ]
+  };
   const fallbackStocksInNews: StockInNews[] = [
     { symbol: "TATASTEEL", price: null, change: 2.45, tag: "Order Win", isLive: false },
     { symbol: "ADANIENT",  price: null, change: -1.20, tag: "Earnings Beat", isLive: false },
@@ -300,10 +319,12 @@ const Dashboard = ({
     { id: 3, company: "HDFCBANK", symbol: "HDFCBANK", type: "Board Meeting", date: "03 May 2026", countdown: "In 3 Days",  color: "orange" },
   ];
 
-  const displayStocksInNews   = stocksInNews.length > 0   ? stocksInNews   : fallbackStocksInNews;
-  const displayVolumeRockers  = volumeRockers.length > 0  ? volumeRockers  : fallbackVolumeRockers;
-  const displayEvents         = marketEvents.length > 0   ? marketEvents   : fallbackEvents;
-  const displayFilteredEvents = marketEvents.length > 0   ? filteredEvents : fallbackEvents;
+  const currentMovers           = movers[gainerLoserTab.toLowerCase() as 'gainers' | 'losers'];
+  const displayMovers           = currentMovers.length > 0  ? currentMovers  : fallbackMovers[gainerLoserTab.toLowerCase() as 'gainers' | 'losers'];
+  const displayStocksInNews     = stocksInNews.length > 0   ? stocksInNews   : fallbackStocksInNews;
+  const displayVolumeRockers    = volumeRockers.length > 0  ? volumeRockers  : fallbackVolumeRockers;
+  const displayEvents           = marketEvents.length > 0   ? marketEvents   : fallbackEvents;
+  const displayFilteredEvents   = marketEvents.length > 0   ? filteredEvents : fallbackEvents;
 
   return (
     <div className="space-y-5 pb-20">
@@ -534,8 +555,15 @@ const Dashboard = ({
         </div>
       </div>
 
-      {/* ── Top Gainers / Losers (REAL — from Upstox via stocks prop) ─────── */}
+      {/* ── Top Gainers / Losers (REAL — from /api/market/movers) ─────── */}
       <div className="px-5 space-y-2.5">
+        <div className="flex justify-between items-center">
+          <div className="flex items-center gap-2">
+            <h3 className="text-[11px] font-bold uppercase tracking-widest text-zinc-500">Top Movers (Nifty 50)</h3>
+            {moversIsReal ? <LiveBadge /> : <DemoDataBadge />}
+          </div>
+          <Activity size={14} className="text-zinc-700" />
+        </div>
         <div className="flex bg-zinc-900/50 p-1 rounded-xl border border-zinc-800/50">
           {['Gainers', 'Losers'].map(tab => (
             <button
@@ -548,19 +576,21 @@ const Dashboard = ({
             >{tab}</button>
           ))}
         </div>
-        {sortedGainersLosers.length < 3 ? (
+        {moversLoading ? (
+           <WidgetSkeleton rows={3} />
+        ) : (displayMovers.length < 1 ? (
           <motion.div
             key={`empty-${gainerLoserTab}`}
             initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}
             className="flex flex-col items-center justify-center py-10 gap-2.5"
           >
             <BarChart3 size={28} className="text-zinc-700" />
-            <p className="text-[11px] font-bold text-zinc-600 uppercase tracking-widest">Not enough live data</p>
-            <p className="text-[9px] text-zinc-700 text-center">Data will appear once the market opens.</p>
+            <p className="text-[11px] font-bold text-zinc-600 uppercase tracking-widest">No Data</p>
+            <p className="text-[9px] text-zinc-700 text-center">Data will appear once fetched.</p>
           </motion.div>
         ) : (
-          <div className="space-y-2">
-            {sortedGainersLosers.map(({ symbol, price, change, changePct }) => (
+          <div className={cn("space-y-2", !moversIsReal && "opacity-50 pointer-events-none select-none")}>
+            {displayMovers.map(({ symbol, lastPrice, change, changePercent }) => (
               <div key={symbol} className="bg-zinc-900/20 border border-zinc-800/30 rounded-xl p-3 flex justify-between items-center">
                 <div className="flex items-center gap-3">
                   <div className="w-9 h-9 rounded-xl bg-zinc-900 flex items-center justify-center font-bold text-[11px] text-zinc-500">
@@ -572,15 +602,15 @@ const Dashboard = ({
                   </div>
                 </div>
                 <div className="text-right">
-                  <p className="text-[13px] font-bold text-white">{formatCurrency(price)}</p>
+                  <p className="text-[13px] font-bold text-white">{formatCurrency(lastPrice)}</p>
                   <p className={cn("text-[9px] font-bold", change >= 0 ? "text-emerald-500" : "text-rose-500")}>
-                    {change >= 0 ? '+' : ''}{change.toFixed(2)} ({changePct.toFixed(2)}%)
+                    {change >= 0 ? '+' : ''}{change.toFixed(2)} ({changePercent.toFixed(2)}%)
                   </p>
                 </div>
               </div>
             ))}
           </div>
-        )}
+        ))}
       </div>
 
       <div className="px-5"><AISignals /></div>

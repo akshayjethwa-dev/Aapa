@@ -1,4 +1,6 @@
+// src/store/marketDataStore.ts
 import { create } from 'zustand';
+import { apiClient } from '../api/client';
 
 export interface TickData {
   ltp?: number;
@@ -17,11 +19,35 @@ export interface TickData {
   day_change_pct?: number; 
 }
 
+interface DashboardNews {
+  id: string;
+  headline: string;
+  source: string;
+  time: string;
+  url: string;
+  thumb: string | null;
+}
+
+interface MarketMover {
+  symbol: string;
+  lastPrice: number;
+  change: number;
+  changePercent: number;
+}
+
 interface MarketDataState {
+  // Tick logic
   ticks: Record<string, TickData>;
   updateTick: (instrumentKey: string, data: Partial<TickData>) => void;
   updateMultipleTicks: (updates: Record<string, Partial<TickData>>) => void;
   clearData: () => void;
+
+  // Dashboard Data logic
+  dashboardNews: DashboardNews[];
+  topGainers: MarketMover[];
+  topLosers: MarketMover[];
+  isLoadingDashboard: boolean;
+  fetchDashboardData: () => Promise<void>;
 }
 
 // ── INTERNAL HELPER ────────────────────────────────────────────────────────
@@ -70,5 +96,32 @@ export const useMarketDataStore = create<MarketDataState>((set) => ({
     return { ticks: newTicks };
   }),
   
-  clearData: () => set({ ticks: {} })
+  clearData: () => set({ ticks: {} }),
+
+  // Dashboard implementation
+  dashboardNews: [],
+  topGainers: [],
+  topLosers: [],
+  isLoadingDashboard: false,
+
+  fetchDashboardData: async () => {
+    set({ isLoadingDashboard: true });
+    try {
+      // Concurrently fetch from the two endpoints
+      const [newsRes, moversRes] = await Promise.all([
+        apiClient.get('/api/market/news'),
+        apiClient.get('/api/market/movers')
+      ]);
+
+      set({ 
+        dashboardNews: newsRes.data?.data || [],
+        topGainers: moversRes.data?.gainers || [],
+        topLosers: moversRes.data?.losers || [],
+      });
+    } catch (error) {
+      console.error('Error fetching dashboard data:', error);
+    } finally {
+      set({ isLoadingDashboard: false });
+    }
+  }
 }));

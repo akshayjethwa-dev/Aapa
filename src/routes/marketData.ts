@@ -1,11 +1,12 @@
 // src/routes/marketData.ts
 // Real data for Dashboard widgets — uses instruments table (no hardcoded keys)
 //
-//  GET /api/market/vix             — India VIX + Advance/Decline (Nifty 50)
-//  GET /api/market/volume-rockers  — Top volume surge stocks
-//  GET /api/market/news            — Real news via NewsData.io
-//  GET /api/market/stocks-in-news  — News-mentioned stocks + live Upstox price
-//  GET /api/market/events          — Market events from market_events table
+//  GET /api/market/vix            — India VIX + Advance/Decline (Nifty 50)
+//  GET /api/market/volume-rockers — Top volume surge stocks
+//  GET /api/market/movers         — Top gainers and losers from Nifty 50 basket
+//  GET /api/market/news           — Real news via NewsData.io
+//  GET /api/market/stocks-in-news — News-mentioned stocks + live Upstox price
+//  GET /api/market/events         — Market events from market_events table
 
 import { Router, Request, Response } from 'express';
 import axios from 'axios';
@@ -17,6 +18,7 @@ const cache: Record<string, { data: any; expiry: number }> = {};
 const CACHE_TTL = {
   vix:            60_000,      // 1 min  — VIX changes fast
   volumeRockers:  120_000,     // 2 min
+  movers:         60_000,      // 1 min  — Top gainers/losers change fast
   news:           15 * 60_000, // 15 min
   events:         60 * 60_000, // 1 hour
 };
@@ -46,9 +48,6 @@ async function getAnyUpstoxToken(db: any): Promise<string | null> {
 }
 
 // ── Helper: look up instrument_key(s) from your instruments table ────────────
-// symbols: ['RELIANCE', 'TCS', 'INFY', ...]
-// exchange: 'NSE' (default) | 'BSE'
-// Returns: { RELIANCE: 'NSE_EQ|INE002A01018', TCS: 'NSE_EQ|...', ... }
 async function getInstrumentKeys(
   db: any,
   symbols: string[],
@@ -74,7 +73,7 @@ async function getInstrumentKeys(
   }
 }
 
-// ── Helper: get instrument_key for a single INDEX (e.g. 'India VIX', 'Nifty 50')
+// ── Helper: get instrument_key for a single INDEX
 async function getIndexKey(db: any, name: string): Promise<string | null> {
   try {
     const r = await db.query(
@@ -92,10 +91,8 @@ async function getIndexKey(db: any, name: string): Promise<string | null> {
 }
 
 // ── Helper: get top N liquid NSE EQ stocks from instruments table ─────────────
-// Uses a curated list of Nifty 500 tradingsymbols already in your DB
 async function getTopNiftyStocks(db: any, limit = 50): Promise<Array<{ symbol: string; key: string }>> {
   try {
-    // These are the Nifty 50 tradingsymbols — already in your instruments table
     const nifty50 = [
       'RELIANCE','TCS','HDFCBANK','ICICIBANK','INFY','HINDUNILVR','ITC','SBIN',
       'BHARTIARTL','KOTAKBANK','LT','AXISBANK','BAJFINANCE','MARUTI','HCLTECH',
@@ -136,7 +133,7 @@ function formatNewsTime(pubDate: string): string {
 async function fetchUpstoxQuotes(token: string, keys: string[]): Promise<Record<string, any>> {
   if (!keys.length) return {};
   try {
-    const BATCH = 100; // Upstox allows up to 500, 100 is safe
+    const BATCH = 100;
     const all: Record<string, any> = {};
 
     for (let i = 0; i < keys.length; i += BATCH) {
@@ -156,7 +153,6 @@ async function fetchUpstoxQuotes(token: string, keys: string[]): Promise<Record<
 }
 
 // ── GET /api/market/vix ──────────────────────────────────────────────────────
-// India VIX + Nifty 50 Advance/Decline — keys fetched from instruments table
 router.get('/vix', async (req: Request, res: Response) => {
   const cached = getCache('vix');
   if (cached) return res.json(cached);
@@ -173,18 +169,13 @@ router.get('/vix', async (req: Request, res: Response) => {
   }
 
   try {
-    // 1. Get India VIX instrument_key from your DB
     const vixKey = await getIndexKey(db, 'India VIX');
-
-    // 2. Get Nifty 50 stock keys from your DB (no hardcoding!)
     const niftyStocks = await getTopNiftyStocks(db, 30);
     const niftyKeys   = niftyStocks.map(s => s.key).filter(Boolean);
 
-    // 3. Build all keys to fetch in one call
     const allKeys = [...(vixKey ? [vixKey] : []), ...niftyKeys];
     const quotes  = await fetchUpstoxQuotes(token, allKeys);
 
-    // 4. Extract VIX value
     let vix: number | null       = null;
     let vixChange: number | null = null;
 
@@ -199,10 +190,8 @@ router.get('/vix', async (req: Request, res: Response) => {
       }
     }
 
-    // 5. Count Advance / Decline from Nifty quotes
     let advance = 0, decline = 0;
     niftyStocks.forEach(({ key }) => {
-      // Upstox returns keys in format "NSE_EQ:SYMBOL" in response
       const q = quotes[key] || Object.values(quotes).find((v: any) => v.instrument_token === key) as any;
       if (!q) return;
       const chg = q.net_change ?? (q.last_price - (q.ohlc?.close ?? q.last_price));
@@ -210,23 +199,16 @@ router.get('/vix', async (req: Request, res: Response) => {
       else if (chg < 0) decline++;
     });
 
-    const payload = {
-      vix, vixChange, advance, decline,
-      total: niftyStocks.length,
-      source: 'upstox',
-      ts: new Date().toISOString(),
-    };
+    const payload = { vix, vixChange, advance, decline, total: niftyStocks.length, source: 'upstox', ts: new Date().toISOString() };
     setCache('vix', payload, CACHE_TTL.vix);
     return res.json(payload);
 
   } catch (err: any) {
-    console.error('[marketData] /vix error:', err?.response?.data || err.message);
     return res.json({ vix: null, vixChange: null, advance: null, decline: null, source: 'error' });
   }
 });
 
 // ── GET /api/market/volume-rockers ───────────────────────────────────────────
-// Top stocks with volume surge > 2× 20-day avg — keys from instruments table
 router.get('/volume-rockers', async (req: Request, res: Response) => {
   const cached = getCache('volumeRockers');
   if (cached) return res.json(cached);
@@ -237,11 +219,9 @@ router.get('/volume-rockers', async (req: Request, res: Response) => {
   if (!token) return res.json({ data: [], source: 'unavailable' });
 
   try {
-    // Fetch top 50 Nifty stocks from instruments table
     const stocks = await getTopNiftyStocks(db, 50);
     const keys   = stocks.map(s => s.key).filter(Boolean);
 
-    // Create reverse map: instrument_key → tradingsymbol
     const keyToSymbol: Record<string, string> = {};
     stocks.forEach(s => { keyToSymbol[s.key] = s.symbol; });
 
@@ -249,12 +229,7 @@ router.get('/volume-rockers', async (req: Request, res: Response) => {
     const rockers: any[] = [];
 
     Object.entries(quotes).forEach(([responseKey, q]: [string, any]) => {
-      // Match the quote back to a trading symbol
-      const symbol = q.trading_symbol
-        || keyToSymbol[q.instrument_token]
-        || keyToSymbol[responseKey]
-        || responseKey.split(':')[1];
-
+      const symbol = q.trading_symbol || keyToSymbol[q.instrument_token] || keyToSymbol[responseKey] || responseKey.split(':')[1];
       const ltp       = q.last_price ?? 0;
       const volume    = q.volume ?? q.tot_trd_qnty ?? 0;
       const avgVolume = q.average_volume_20days ?? q.avg_volume_20d ?? 0;
@@ -265,11 +240,7 @@ router.get('/volume-rockers', async (req: Request, res: Response) => {
           const close  = q.ohlc?.close ?? ltp;
           const change = close ? parseFloat(((ltp - close) / close * 100).toFixed(2)) : 0;
           rockers.push({
-            symbol,
-            price:            parseFloat(ltp.toFixed(2)),
-            change,
-            volumeMultiplier: `${ratio.toFixed(1)}x`,
-            volume,
+            symbol, price: parseFloat(ltp.toFixed(2)), change, volumeMultiplier: `${ratio.toFixed(1)}x`, volume,
           });
         }
       }
@@ -280,15 +251,71 @@ router.get('/volume-rockers', async (req: Request, res: Response) => {
     const payload = { data: rockers.slice(0, 5), source: 'upstox', ts: new Date().toISOString() };
     setCache('volumeRockers', payload, CACHE_TTL.volumeRockers);
     return res.json(payload);
-
   } catch (err: any) {
-    console.error('[marketData] /volume-rockers error:', err?.response?.data || err.message);
     return res.json({ data: [], source: 'error' });
   }
 });
 
+// ── GET /api/market/movers ───────────────────────────────────────────────────
+// Top Gainers and Losers from the Nifty 50 basket
+router.get('/movers', async (req: Request, res: Response) => {
+  const cached = getCache('movers');
+  if (cached) return res.json(cached);
+
+  const db    = (req as any).db;
+  const token = await getAnyUpstoxToken(db);
+
+  if (!token) return res.json({ gainers: [], losers: [], source: 'unavailable' });
+
+  try {
+    // 1. Fetch Nifty 50 stocks dynamically from the DB
+    const stocks = await getTopNiftyStocks(db, 50);
+    const keys   = stocks.map(s => s.key).filter(Boolean);
+
+    const keyToSymbol: Record<string, string> = {};
+    stocks.forEach(s => { keyToSymbol[s.key] = s.symbol; });
+
+    // 2. Fetch live quotes for the entire basket
+    const quotes = await fetchUpstoxQuotes(token, keys);
+    const movers: any[] = [];
+
+    // 3. Calculate % change for each
+    Object.entries(quotes).forEach(([responseKey, q]: [string, any]) => {
+      const symbol = q.trading_symbol || keyToSymbol[q.instrument_token] || keyToSymbol[responseKey] || responseKey.split(':')[1];
+      const ltp = q.last_price ?? 0;
+      const close = q.ohlc?.close ?? ltp;
+      const absChange = parseFloat((ltp - close).toFixed(2));
+      const changePct = close ? parseFloat(((ltp - close) / close * 100).toFixed(2)) : 0;
+
+      if (ltp > 0) {
+        movers.push({
+          symbol,
+          lastPrice: parseFloat(ltp.toFixed(2)),
+          change: absChange,
+          changePercent: changePct,
+        });
+      }
+    });
+
+    // 4. Sort and split into gainers and losers
+    movers.sort((a, b) => b.changePercent - a.changePercent);
+
+    const payload = { 
+      gainers: movers.slice(0, 5), 
+      losers: movers.slice(-5).reverse(), // bottom 5, worst performance first
+      source: 'upstox', 
+      ts: new Date().toISOString() 
+    };
+
+    setCache('movers', payload, CACHE_TTL.movers);
+    return res.json(payload);
+  } catch (err: any) {
+    console.error('[marketData] /movers error:', err?.response?.data || err.message);
+    return res.json({ gainers: [], losers: [], source: 'error' });
+  }
+});
+
 // ── GET /api/market/news ─────────────────────────────────────────────────────
-// Real Indian market news from NewsData.io (cached 15 min)
 router.get('/news', async (_req: Request, res: Response) => {
   const cached = getCache('news');
   if (cached) return res.json(cached);
@@ -331,10 +358,6 @@ router.get('/news', async (_req: Request, res: Response) => {
 });
 
 // ── GET /api/market/stocks-in-news ──────────────────────────────────────────
-// 1. Fetch headlines from NewsData.io
-// 2. Scan headlines for stock symbols that EXIST in your instruments table
-// 3. Fetch live prices for matched symbols from Upstox
-// → Fully dynamic — no hardcoded symbols!
 router.get('/stocks-in-news', async (req: Request, res: Response) => {
   const cached = getCache('stocksInNews');
   if (cached) return res.json(cached);
@@ -346,7 +369,6 @@ router.get('/stocks-in-news', async (req: Request, res: Response) => {
   if (!apiKey) return res.json({ data: [], source: 'unavailable' });
 
   try {
-    // Step 1: Fetch news headlines
     const newsResp = await axios.get('https://newsdata.io/api/1/news', {
       params: {
         apikey:   apiKey,
@@ -367,7 +389,6 @@ router.get('/stocks-in-news', async (req: Request, res: Response) => {
 
     if (!headlines.trim()) return res.json({ data: [], source: 'no_news' });
 
-    // Step 2: Extract candidate words from headlines (uppercase 2-15 char words)
     const words = headlines.match(/\b[A-Z][A-Z0-9&\-]{1,14}\b/g) || [];
     const candidates = [...new Set(words)].filter(w =>
       w.length >= 2 &&
@@ -376,7 +397,6 @@ router.get('/stocks-in-news', async (req: Request, res: Response) => {
 
     if (!candidates.length) return res.json({ data: [], source: 'no_match' });
 
-    // Step 3: Query YOUR instruments table — find which candidates are real stocks
     const r = await db.query(
       `SELECT tradingsymbol, instrument_key, name
        FROM instruments
@@ -395,12 +415,10 @@ router.get('/stocks-in-news', async (req: Request, res: Response) => {
       name:   row.name,
     }));
 
-    // Step 4: Fetch live prices from Upstox for matched stocks
     let priceMap:  Record<string, number> = {};
     let changeMap: Record<string, number> = {};
 
     if (token && matchedStocks.length) {
-      const keys   = matchedStocks.map(s => s.key).join(',');
       const quotes = await fetchUpstoxQuotes(token, matchedStocks.map(s => s.key));
 
       Object.values(quotes).forEach((q: any) => {
@@ -413,7 +431,6 @@ router.get('/stocks-in-news', async (req: Request, res: Response) => {
       });
     }
 
-    // Step 5: Tag each stock based on what the news says about it
     const tagForSymbol = (symbol: string): string => {
       const stockHeadlines = headlineArticles
         .filter((a: any) => `${a.title} ${a.description || ''}`.toUpperCase().includes(symbol))
@@ -449,7 +466,6 @@ router.get('/stocks-in-news', async (req: Request, res: Response) => {
 });
 
 // ── GET /api/market/events ───────────────────────────────────────────────────
-// Corporate events from market_events table (populated via Supabase SQL Editor)
 router.get('/events', async (req: Request, res: Response) => {
   const cached = getCache('events');
   if (cached) return res.json(cached);
