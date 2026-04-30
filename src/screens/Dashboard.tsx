@@ -1,7 +1,11 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
-import { TrendingUp, ArrowUpRight, ArrowDownRight, Newspaper, Calendar, Activity, Bell, Zap, ChevronRight, ZapOff, BarChart3, Link2, RefreshCw } from 'lucide-react';
+import {
+  TrendingUp, ArrowUpRight, ArrowDownRight, Newspaper,
+  Calendar, Activity, Bell, Zap, ChevronRight, ZapOff,
+  BarChart3, Link2, RefreshCw, AlertTriangle, Loader2
+} from 'lucide-react';
 import { formatCurrency, cn } from '../lib/utils';
 import Sparkline from '../components/Sparkline';
 import TradingViewWidget from '../components/TradingViewWidget';
@@ -11,109 +15,219 @@ import { apiClient } from '../api/client';
 import MarketStatusPill from '../components/MarketStatusPill';
 import { MarketPhase } from '../types';
 
-// Helper to reliably extract or calculate price and changes
+// ── Price extraction helper ───────────────────────────────────────────────────
 const getPriceData = (quote: any) => {
   if (!quote) return { ltp: 0, change: 0, changePct: 0 };
   if (typeof quote === 'number') return { ltp: quote, change: 0, changePct: 0 };
-  
   const ltp = quote.ltp || quote.price || 0;
   const close = quote.close || quote.prevClose || quote.close_price || quote.previous_close || 0;
-  
   let change = quote.day_change || quote.change || 0;
   let changePct = quote.day_change_pct || quote.changePercent || 0;
-
-  // Dynamically calculate if exact fields are missing but raw data is present
-  if (!change && ltp && close) {
-    change = ltp - close;
-  }
-  if (!changePct && ltp && close) {
-    changePct = (change / close) * 100;
-  }
-
+  if (!change && ltp && close) change = ltp - close;
+  if (!changePct && ltp && close) changePct = (change / close) * 100;
   return { ltp, change, changePct };
 };
 
-const Dashboard = ({ 
-  stocks, 
-  onMarketClick, 
-  onIndexClick, 
+// ── Types ─────────────────────────────────────────────────────────────────────
+interface VixData { vix: number | null; vixChange: number | null; advance: number | null; decline: number | null; source: string; }
+interface NewsItem { id: string; headline: string; source: string; time: string; url?: string; thumb?: string | null; }
+interface StockInNews { symbol: string; price: number | null; change: number | null; tag: string; isLive: boolean; }
+interface VolumeRocker { symbol: string; price: number; change: number; volumeMultiplier: string; }
+interface MarketEvent { id: number; company: string; symbol: string; type: string; date: string; countdown: string; color: string; }
+
+// ── DemoDataBadge — shown only when real data failed / unavailable ────────────
+const DemoDataBadge = ({ label = "Sample Data" }: { label?: string }) => (
+  <span
+    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-[8px] font-black uppercase tracking-widest text-amber-500 cursor-help"
+    title="This widget shows demo / placeholder data. Real data integration is coming soon."
+  >
+    <Zap size={7} className="shrink-0" />
+    {label}
+  </span>
+);
+
+const LiveBadge = () => (
+  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-[8px] font-black uppercase tracking-widest text-emerald-500">
+    <span className="w-1 h-1 rounded-full bg-emerald-500 animate-pulse" />
+    Live
+  </span>
+);
+
+const WidgetSkeleton = ({ rows = 3 }: { rows?: number }) => (
+  <div className="space-y-2">
+    {Array.from({ length: rows }).map((_, i) => (
+      <div key={i} className="h-14 rounded-xl bg-zinc-900/30 border border-zinc-800/30 animate-pulse" />
+    ))}
+  </div>
+);
+
+// ── Main Dashboard Component ──────────────────────────────────────────────────
+const Dashboard = ({
+  stocks,
+  onMarketClick,
+  onIndexClick,
   onProfileClick,
   marketPhase = 'CLOSED'
-}: { 
-  stocks: Record<string, any>, 
-  onMarketClick: () => void, 
-  onIndexClick: (index: string) => void, 
-  onProfileClick: () => void,
-  marketPhase?: MarketPhase
+}: {
+  stocks: Record<string, any>;
+  onMarketClick: () => void;
+  onIndexClick: (index: string) => void;
+  onProfileClick: () => void;
+  marketPhase?: MarketPhase;
 }) => {
   const { user, refreshUser } = useAuthStore();
   const [holdings, setHoldings] = useState<any[]>([]);
   const [positions, setPositions] = useState<any[]>([]);
-  
   const [availableFunds, setAvailableFunds] = useState<number | null>(null);
   const [gainerLoserTab, setGainerLoserTab] = useState<'Gainers' | 'Losers'>('Gainers');
   const [eventFilter, setEventFilter] = useState('Upcoming');
   const [confirmExit, setConfirmExit] = useState<number | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
 
+  // ── Real data states ────────────────────────────────────────────────────────
+  const [vixData, setVixData] = useState<VixData | null>(null);
+  const [vixLoading, setVixLoading] = useState(true);
+
+  const [news, setNews] = useState<NewsItem[]>([]);
+  const [newsLoading, setNewsLoading] = useState(true);
+  const [newsIsReal, setNewsIsReal] = useState(false);
+
+  const [stocksInNews, setStocksInNews] = useState<StockInNews[]>([]);
+  const [sinLoading, setSinLoading] = useState(true);
+  const [sinIsReal, setSinIsReal] = useState(false);
+
+  const [volumeRockers, setVolumeRockers] = useState<VolumeRocker[]>([]);
+  const [vrLoading, setVrLoading] = useState(true);
+  const [vrIsReal, setVrIsReal] = useState(false);
+
+  const [marketEvents, setMarketEvents] = useState<MarketEvent[]>([]);
+  const [eventsLoading, setEventsLoading] = useState(true);
+  const [eventsIsReal, setEventsIsReal] = useState(false);
+
+  // ── Fetch portfolio ─────────────────────────────────────────────────────────
   const fetchPortfolio = useCallback(async () => {
     try {
       const res = await apiClient.get('/api/portfolio');
-      const payload = res.data?.data || res.data; 
-
+      const payload = res.data?.data || res.data;
       if (payload && typeof payload === 'object') {
         if (Array.isArray(payload.holdings)) setHoldings(payload.holdings);
         if (Array.isArray(payload.positions)) setPositions(payload.positions);
         if (payload.funds !== undefined) setAvailableFunds(payload.funds);
       }
     } catch (e) {
-      console.error("Failed to fetch portfolio", e);
+      console.error('Failed to fetch portfolio', e);
     }
+  }, []);
+
+  // ── Fetch real market data ──────────────────────────────────────────────────
+  const fetchMarketData = useCallback(async () => {
+    // India VIX + Adv/Dec
+    setVixLoading(true);
+    apiClient.get('/api/market/vix')
+      .then(r => { setVixData(r.data); })
+      .catch(() => setVixData(null))
+      .finally(() => setVixLoading(false));
+
+    // News
+    setNewsLoading(true);
+    apiClient.get('/api/market/news')
+      .then(r => {
+        const d = r.data;
+        if (d.data?.length > 0) {
+          setNews(d.data);
+          setNewsIsReal(d.source !== 'unavailable' && d.source !== 'error');
+        }
+      })
+      .catch(() => {})
+      .finally(() => setNewsLoading(false));
+
+    // Stocks in News
+    setSinLoading(true);
+    apiClient.get('/api/market/stocks-in-news')
+      .then(r => {
+        const d = r.data;
+        if (d.data?.length > 0) {
+          setStocksInNews(d.data);
+          setSinIsReal(d.source !== 'unavailable' && d.source !== 'error');
+        }
+      })
+      .catch(() => {})
+      .finally(() => setSinLoading(false));
+
+    // Volume Rockers
+    setVrLoading(true);
+    apiClient.get('/api/market/volume-rockers')
+      .then(r => {
+        const d = r.data;
+        if (d.data?.length > 0) {
+          setVolumeRockers(d.data);
+          setVrIsReal(d.source === 'upstox');
+        }
+      })
+      .catch(() => {})
+      .finally(() => setVrLoading(false));
+
+    // Market Events
+    setEventsLoading(true);
+    apiClient.get('/api/market/events')
+      .then(r => {
+        const d = r.data;
+        if (d.data?.length > 0) {
+          setMarketEvents(d.data);
+          setEventsIsReal(d.source === 'supabase');
+        }
+      })
+      .catch(() => {})
+      .finally(() => setEventsLoading(false));
   }, []);
 
   useEffect(() => {
     fetchPortfolio();
+    fetchMarketData();
+
+    // Auto-refresh VIX every 60s during live market
+    const interval = setInterval(() => {
+      if (marketPhase === 'LIVE') {
+        apiClient.get('/api/market/vix').then(r => setVixData(r.data)).catch(() => {});
+      }
+    }, 60_000);
+
     window.addEventListener('broker_portfolio_updated', fetchPortfolio);
     return () => {
+      clearInterval(interval);
       window.removeEventListener('broker_portfolio_updated', fetchPortfolio);
     };
-  }, [fetchPortfolio]);
+  }, [fetchPortfolio, fetchMarketData, marketPhase]);
 
   useEffect(() => {
     const handleMessage = async (event: MessageEvent) => {
       if (event.data?.type === 'UPTOX_AUTH_SUCCESS') {
         toast.success('Upstox connected successfully!');
-        await refreshUser();      
-        await fetchPortfolio();   
+        await refreshUser();
+        await fetchPortfolio();
+        await fetchMarketData(); // re-fetch now that token is available
       }
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [refreshUser, fetchPortfolio]);
+  }, [refreshUser, fetchPortfolio, fetchMarketData]);
 
   const handleUpstoxConnect = async () => {
     setIsConnecting(true);
-    
     const width = 500, height = 700;
     const left = window.screen.width / 2 - width / 2;
     const top = window.screen.height / 2 - height / 2;
-    const authWindow = window.open('about:blank', 'UpstoxAuth', `width=${width},height=${height},top=${top},left=${left},toolbar=no,menubar=no`);
-
+    const authWindow = window.open('about:blank', 'UpstoxAuth',
+      `width=${width},height=${height},top=${top},left=${left},toolbar=no,menubar=no`);
     try {
       const res = await apiClient.get('/api/auth/uptox/url');
       const { url, error } = res.data;
-      if (url && authWindow) {
-        authWindow.location.href = url;
-      } else {
-        authWindow?.close();
-        toast.error(error || 'Upstox configuration missing on server');
-      }
-    } catch (err: any) {
+      if (url && authWindow) { authWindow.location.href = url; }
+      else { authWindow?.close(); toast.error(error || 'Upstox configuration missing on server'); }
+    } catch {
       authWindow?.close();
       toast.error('Failed to initialize Upstox connection.');
-    } finally {
-      setIsConnecting(false);
-    }
+    } finally { setIsConnecting(false); }
   };
 
   const handleExit = async (index: number) => {
@@ -129,98 +243,72 @@ const Dashboard = ({
   };
 
   const displayFunds = availableFunds !== null ? availableFunds : (user?.balance || 0);
+  const isDataLive = marketPhase === 'LIVE';
 
-  let totalInvested = 0;
-  let currentValue = 0;
-
+  let totalInvested = 0, currentValue = 0;
   holdings.forEach(h => {
     const { ltp } = getPriceData(stocks[h.symbol]);
-    const finalPrice = ltp || h.current_price || h.last_price || h.average_price;
-    totalInvested += (h.quantity * h.average_price);
-    currentValue  += (h.quantity * finalPrice);
+    const fp = ltp || h.current_price || h.average_price;
+    totalInvested += h.quantity * h.average_price;
+    currentValue  += h.quantity * fp;
   });
-
   positions.forEach(p => {
     const { ltp } = getPriceData(stocks[p.symbol]);
-    const finalPrice = ltp || p.current_price || p.last_price || p.average_price;
-    totalInvested += (p.quantity * (p.avgPrice || p.average_price));
-    currentValue  += (p.quantity * finalPrice);
+    const fp = ltp || p.current_price || p.average_price;
+    totalInvested += p.quantity * (p.avgPrice || p.average_price);
+    currentValue  += p.quantity * fp;
   });
-
   const totalPnL = currentValue - totalInvested;
   const totalPnLPercent = totalInvested > 0 ? (totalPnL / totalInvested) * 100 : 0;
-  
-  const isDataLive = marketPhase === 'LIVE';
 
   const primaryIndices   = ["NIFTY 50", "SENSEX", "BANKNIFTY", "FINNIFTY", "MIDCAP NIFTY", "SMALLCAP NIFTY"];
   const secondaryIndices = ["NIFTY IT", "NIFTY AUTO", "NIFTY PHARMA", "NIFTY METAL", "NIFTY FMCG", "NIFTY REALTY"];
 
-  const news = [
-    { id: 1, headline: "Reliance Industries expansion plans drive stock higher", source: "Mint", time: "2h ago", thumb: "https://picsum.photos/seed/reliance/100/100" },
-    { id: 2, headline: "RBI maintains repo rate, market reacts positively", source: "ET Now", time: "4h ago", thumb: "https://picsum.photos/seed/rbi/100/100" },
-    { id: 3, headline: "NIFTY hits record high amid global rally", source: "CNBC TV18", time: "5h ago", thumb: "https://picsum.photos/seed/nifty/100/100" },
-  ];
-
-  const marketEvents = [
-    { id: 1, company: "RELIANCE", type: "Results",      date: "15 Mar 2026", countdown: "In 15 Days", color: "blue" },
-    { id: 2, company: "TCS",      type: "Dividend",     date: "05 Mar 2026", countdown: "In 5 Days",  color: "green" },
-    { id: 3, company: "HDFCBANK", type: "Board Meeting",date: "03 Mar 2026", countdown: "In 3 Days",  color: "orange" },
-    { id: 4, company: "INFY",     type: "Bonus",        date: "20 Mar 2026", countdown: "In 20 Days", color: "purple" },
-  ];
-
-  const stocksInNews = [
-    { symbol: "TATASTEEL", change:  2.45, tag: "Order Win" },
-    { symbol: "ADANIENT",  change: -1.20, tag: "Earnings Beat" },
-    { symbol: "ZOMATO",    change:  5.12, tag: "Expansion" },
-    { symbol: "PAYTM",     change: -3.40, tag: "Regulatory" },
-    { symbol: "JIOFIN",    change:  1.80, tag: "New Product" },
-  ];
-
-  const volumeRockers = [
-    { symbol: "YESBANK", price:  28.45, change:  12.4, volumeMultiplier: "8.5x" },
-    { symbol: "SUZLON",  price:  45.10, change:  -4.2, volumeMultiplier: "5.2x" },
-    { symbol: "IDEA",    price:  14.20, change:   8.1, volumeMultiplier: "4.1x" },
-    { symbol: "RVNL",    price: 245.60, change:   6.5, volumeMultiplier: "3.8x" },
-  ];
-
   const filteredEvents = useMemo(() => {
     if (eventFilter === 'All') return marketEvents;
-    if (eventFilter === 'This Week') return marketEvents.slice(0, 2);
-    return marketEvents.filter(e => e.countdown.includes('Days'));
-  }, [eventFilter]);
+    if (eventFilter === 'This Week') return marketEvents.filter(e => e.countdown.includes('Tomorrow') || e.countdown === 'Today!' || (e.countdown.includes('Days') && parseInt(e.countdown.split(' ')[1]) <= 7));
+    return marketEvents;
+  }, [eventFilter, marketEvents]);
 
-  // ── TASK 3.1: Gainers/Losers — guard against zero/missing data ──
   const sortedGainersLosers = useMemo(() => {
     const allIndices = new Set([...primaryIndices, ...secondaryIndices]);
-
     const list = Object.entries(stocks)
       .filter(([s]) => !allIndices.has(s))
       .map(([symbol, quote]) => {
         const { ltp, change, changePct } = getPriceData(quote);
         return { symbol, price: ltp, change, changePct };
       })
-      // ① Filter out any entry where LTP is zero/falsy OR changePct is exactly zero
       .filter(({ price, changePct }) => price > 0 && changePct !== 0);
-
-    if (gainerLoserTab === 'Gainers') {
-      // ② Only truly positive movers for Gainers tab
-      return list
-        .filter(s => s.changePct > 0)
-        .sort((a, b) => b.changePct - a.changePct)
-        .slice(0, 5);
-    } else {
-      // ③ Only truly negative movers for Losers tab
-      return list
-        .filter(s => s.changePct < 0)
-        .sort((a, b) => a.changePct - b.changePct)
-        .slice(0, 5);
-    }
+    if (gainerLoserTab === 'Gainers')
+      return list.filter(s => s.changePct > 0).sort((a, b) => b.changePct - a.changePct).slice(0, 5);
+    return list.filter(s => s.changePct < 0).sort((a, b) => a.changePct - b.changePct).slice(0, 5);
   }, [stocks, gainerLoserTab]);
+
+  // ── Fallback demo data (shown only when API fails) ──────────────────────────
+  const fallbackStocksInNews: StockInNews[] = [
+    { symbol: "TATASTEEL", price: null, change: 2.45, tag: "Order Win", isLive: false },
+    { symbol: "ADANIENT",  price: null, change: -1.20, tag: "Earnings Beat", isLive: false },
+    { symbol: "ZOMATO",    price: null, change: 5.12, tag: "Expansion", isLive: false },
+  ];
+  const fallbackVolumeRockers: VolumeRocker[] = [
+    { symbol: "YESBANK", price: 28.45, change: 12.4, volumeMultiplier: "8.5x" },
+    { symbol: "SUZLON",  price: 45.10, change: -4.2, volumeMultiplier: "5.2x" },
+  ];
+  const fallbackEvents: MarketEvent[] = [
+    { id: 1, company: "RELIANCE", symbol: "RELIANCE", type: "Results",       date: "15 May 2026", countdown: "In 15 Days", color: "blue" },
+    { id: 2, company: "TCS",      symbol: "TCS",      type: "Dividend",      date: "05 May 2026", countdown: "In 5 Days",  color: "green" },
+    { id: 3, company: "HDFCBANK", symbol: "HDFCBANK", type: "Board Meeting", date: "03 May 2026", countdown: "In 3 Days",  color: "orange" },
+  ];
+
+  const displayStocksInNews   = stocksInNews.length > 0   ? stocksInNews   : fallbackStocksInNews;
+  const displayVolumeRockers  = volumeRockers.length > 0  ? volumeRockers  : fallbackVolumeRockers;
+  const displayEvents         = marketEvents.length > 0   ? marketEvents   : fallbackEvents;
+  const displayFilteredEvents = marketEvents.length > 0   ? filteredEvents : fallbackEvents;
 
   return (
     <div className="space-y-5 pb-20">
 
-      {/* ── Market Indices ── */}
+      {/* ── Market Indices ─────────────────────────────────────────────────── */}
       <div className="space-y-2.5">
         <div className="px-5 flex justify-between items-center">
           <h3 className="text-[11px] font-bold uppercase tracking-widest text-zinc-500">Market Indices</h3>
@@ -230,7 +318,6 @@ const Dashboard = ({
           {[...primaryIndices, ...secondaryIndices].map(index => {
             const { ltp, change, changePct } = getPriceData(stocks[index]);
             const isPositive = change >= 0;
-
             return (
               <motion.div
                 key={index}
@@ -243,7 +330,9 @@ const Dashboard = ({
                   <Sparkline color={isPositive ? '#10b981' : '#ef4444'} />
                 </div>
                 <div>
-                  <p className="text-lg font-black tracking-tight text-white">{ltp ? ltp.toLocaleString('en-IN', { minimumFractionDigits: 2 }) : '---'}</p>
+                  <p className="text-lg font-black tracking-tight text-white">
+                    {ltp ? ltp.toLocaleString('en-IN', { minimumFractionDigits: 2 }) : '---'}
+                  </p>
                   <div className="flex items-center gap-1.5 mt-0.5">
                     <div className={cn(
                       "flex items-center gap-0.5 px-1.5 py-0.5 rounded-md text-[10px] font-bold",
@@ -260,7 +349,7 @@ const Dashboard = ({
         </div>
       </div>
 
-      {/* ── Portfolio Snapshot / Connect Upstox ── */}
+      {/* ── Portfolio / Connect Upstox ─────────────────────────────────────── */}
       <div className="px-5">
         {!user?.is_uptox_connected ? (
           <motion.div
@@ -277,7 +366,7 @@ const Dashboard = ({
                 </div>
                 <h2 className="text-xl font-bold text-white mb-2">Step 2: Connect Your Broker</h2>
                 <p className="text-zinc-400 text-[11px] max-w-xl leading-relaxed">
-                  To view your portfolio, available funds, and execute trades on Aapa Capital, you must link your newly created Upstox account.
+                  To view your portfolio, available funds, and execute trades on Aapa Capital, you must link your Upstox account.
                 </p>
               </div>
               <button
@@ -303,27 +392,18 @@ const Dashboard = ({
                 <div className="flex items-center gap-2 justify-end">
                   <div className={cn("w-1.5 h-1.5 rounded-full", isDataLive ? "bg-emerald-500 animate-pulse" : "bg-zinc-500")} />
                   <p className={cn("text-[9px] font-bold uppercase tracking-widest", isDataLive ? "text-emerald-500" : "text-zinc-500")}>
-                    {isDataLive ? "Live" : (marketPhase === 'PRE_OPEN' ? "Pre-Open" : "Closed")}
+                    {isDataLive ? "Live" : marketPhase === 'PRE_OPEN' ? "Pre-Open" : "Closed"}
                   </p>
                 </div>
-                {!isDataLive && (
-                  <p className="text-[8px] text-zinc-600 font-medium mt-1">
-                    {holdings.length > 0 ? "Using last close prices" : "Waiting for market data..."}
-                  </p>
-                )}
               </div>
             </div>
-
-            {/* ── Portfolio Value Row ── */}
             <div className="grid grid-cols-3 gap-3 pt-4 border-t border-zinc-800/50">
               <div>
                 <p className="text-[9px] font-bold text-zinc-600 uppercase tracking-widest mb-1">Invested</p>
                 <p className="text-[13px] font-bold text-zinc-300">{formatCurrency(totalInvested)}</p>
               </div>
               <div>
-                <p className="text-[9px] font-bold text-zinc-600 uppercase tracking-widest mb-1">
-                  {isDataLive ? 'Current Value' : 'Last Value'}
-                </p>
+                <p className="text-[9px] font-bold text-zinc-600 uppercase tracking-widest mb-1">Current Value</p>
                 <p className="text-[13px] font-bold text-zinc-300">{formatCurrency(currentValue)}</p>
               </div>
               <div>
@@ -331,16 +411,13 @@ const Dashboard = ({
                 <p className="text-[13px] font-bold text-zinc-300">{formatCurrency(displayFunds)}</p>
               </div>
             </div>
-
             {holdings.length > 0 && (
               <div className="pt-4 border-t border-zinc-800/50 space-y-2">
-                <p className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">
-                  Holdings ({holdings.length} stocks)
-                </p>
+                <p className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">Holdings ({holdings.length} stocks)</p>
                 {holdings.slice(0, 3).map(h => {
                   const { ltp } = getPriceData(stocks[h.symbol]);
-                  const finalPrice = ltp || h.current_price || h.last_price || h.average_price;
-                  const pnl = (finalPrice - h.average_price) * h.quantity;
+                  const fp = ltp || h.current_price || h.average_price;
+                  const pnl = (fp - h.average_price) * h.quantity;
                   return (
                     <div key={h.symbol} className="flex justify-between items-center">
                       <div>
@@ -348,7 +425,7 @@ const Dashboard = ({
                         <p className="text-[9px] text-zinc-600 uppercase">{h.quantity} qty</p>
                       </div>
                       <div className="text-right">
-                        <p className="text-[11px] font-bold text-white">{formatCurrency(h.quantity * finalPrice)}</p>
+                        <p className="text-[11px] font-bold text-white">{formatCurrency(h.quantity * fp)}</p>
                         <p className={cn("text-[9px] font-bold", pnl >= 0 ? "text-emerald-500" : "text-rose-500")}>
                           {pnl >= 0 ? '+' : ''}{formatCurrency(pnl)}
                         </p>
@@ -357,9 +434,7 @@ const Dashboard = ({
                   );
                 })}
                 {holdings.length > 3 && (
-                  <p className="text-[9px] text-zinc-600 uppercase tracking-widest text-center pt-1">
-                    +{holdings.length - 3} more in Portfolio tab
-                  </p>
+                  <p className="text-[9px] text-zinc-600 uppercase tracking-widest text-center pt-1">+{holdings.length - 3} more in Portfolio tab</p>
                 )}
               </div>
             )}
@@ -367,6 +442,7 @@ const Dashboard = ({
         )}
       </div>
 
+      {/* ── Live Positions ─────────────────────────────────────────────────── */}
       {user?.role === 'user' && positions.length > 0 && (
         <div className="px-5 space-y-3">
           <div className="flex justify-between items-center">
@@ -378,9 +454,8 @@ const Dashboard = ({
           <div className="space-y-2.5">
             {positions.map((pos, i) => {
               const { ltp } = getPriceData(stocks[pos.symbol]);
-              const finalPrice = ltp || pos.current_price || pos.last_price || pos.average_price;
-              const pnl = (finalPrice - (pos.avgPrice || pos.average_price)) * pos.quantity;
-
+              const fp = ltp || pos.current_price || pos.average_price;
+              const pnl = (fp - (pos.avgPrice || pos.average_price)) * pos.quantity;
               return (
                 <div key={pos.symbol} className="bg-zinc-900/30 border border-zinc-800/50 rounded-2xl p-4 space-y-3">
                   <div className="flex justify-between items-start">
@@ -389,17 +464,11 @@ const Dashboard = ({
                         <p className="text-sm font-bold text-white tracking-tight">{pos.symbol}</p>
                         <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-[8px] font-bold text-zinc-500 uppercase">{pos.type || pos.product}</span>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <p className="text-[10px] font-bold text-zinc-500 uppercase">{pos.quantity} Qty</p>
-                        <span className="w-1 h-1 rounded-full bg-zinc-800" />
-                        <p className="text-[10px] font-bold text-zinc-500 uppercase">Avg {formatCurrency(pos.avgPrice || pos.average_price)}</p>
-                      </div>
+                      <p className="text-[10px] font-bold text-zinc-500 uppercase">{pos.quantity} Qty · Avg {formatCurrency(pos.avgPrice || pos.average_price)}</p>
                     </div>
                     <div className="text-right">
-                      <p className={cn("text-sm font-black tracking-tighter", pnl >= 0 ? "text-emerald-500" : "text-rose-500")}>
-                        {formatCurrency(pnl)}
-                      </p>
-                      <p className="text-[10px] font-bold text-zinc-500 mt-1">LTP: <span className="text-white">{formatCurrency(finalPrice)}</span></p>
+                      <p className={cn("text-sm font-black tracking-tighter", pnl >= 0 ? "text-emerald-500" : "text-rose-500")}>{formatCurrency(pnl)}</p>
+                      <p className="text-[10px] font-bold text-zinc-500 mt-1">LTP: <span className="text-white">{formatCurrency(fp)}</span></p>
                     </div>
                   </div>
                   <button
@@ -408,9 +477,7 @@ const Dashboard = ({
                       "w-full py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all",
                       confirmExit === i ? "bg-rose-500 text-black" : "bg-rose-500/10 text-rose-500 hover:bg-rose-500/20 border border-rose-500/20"
                     )}
-                  >
-                    {confirmExit === i ? 'Confirm Exit' : 'Exit Position'}
-                  </button>
+                  >{confirmExit === i ? 'Confirm Exit' : 'Exit Position'}</button>
                 </div>
               );
             })}
@@ -418,27 +485,56 @@ const Dashboard = ({
         </div>
       )}
 
-      {/* ── Market Sentiment ── */}
+      {/* ── India VIX + Adv/Dec (REAL DATA from Upstox) ───────────────────── */}
       <div className="px-5">
         <div className="bg-zinc-900/20 border border-zinc-800/30 rounded-2xl p-4 flex justify-between items-center">
-          <div className="space-y-0.5">
-            <p className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">India VIX</p>
-            <p className="text-[13px] font-bold text-white">14.25 <span className="text-emerald-500 text-[9px]">-2.4%</span></p>
-          </div>
-          <div className="h-7 w-px bg-zinc-800" />
-          <div className="space-y-0.5">
-            <p className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">Adv / Dec</p>
-            <p className="text-[13px] font-bold text-white">1240 / 850</p>
-          </div>
-          <div className="h-7 w-px bg-zinc-800" />
-          <div className="flex items-center gap-2">
-            <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-            <p className="text-[9px] font-bold text-emerald-500 uppercase tracking-widest">Bullish</p>
-          </div>
+          {vixLoading ? (
+            <div className="w-full flex justify-center py-2"><Loader2 size={16} className="text-zinc-600 animate-spin" /></div>
+          ) : (
+            <>
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-1.5">
+                  <p className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">India VIX</p>
+                  {vixData?.source === 'upstox' ? <LiveBadge /> : <DemoDataBadge />}
+                </div>
+                {vixData?.vix != null ? (
+                  <div className="flex items-center gap-1.5">
+                    <p className="text-[13px] font-bold text-white">{vixData.vix.toFixed(2)}</p>
+                    {vixData.vixChange != null && (
+                      <span className={cn("text-[10px] font-bold", vixData.vixChange >= 0 ? "text-rose-400" : "text-emerald-400")}>
+                        {vixData.vixChange >= 0 ? '▲' : '▼'} {Math.abs(vixData.vixChange)}%
+                      </span>
+                    )}
+                  </div>
+                ) : <p className="text-[13px] font-bold text-zinc-600">—</p>}
+              </div>
+              <div className="h-7 w-px bg-zinc-800" />
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-1.5">
+                  <p className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">Adv / Dec</p>
+                  {vixData?.source === 'upstox' ? <LiveBadge /> : <DemoDataBadge />}
+                </div>
+                {vixData?.advance != null ? (
+                  <p className="text-[13px] font-bold">
+                    <span className="text-emerald-500">{vixData.advance}</span>
+                    <span className="text-zinc-600 mx-1">/</span>
+                    <span className="text-rose-500">{vixData.decline}</span>
+                  </p>
+                ) : <p className="text-[13px] font-bold text-zinc-600">— / —</p>}
+              </div>
+              <div className="h-7 w-px bg-zinc-800" />
+              <div className="flex items-center gap-2">
+                {vixData?.source === 'upstox'
+                  ? <><div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /><p className="text-[9px] font-bold text-emerald-500 uppercase">Live</p></>
+                  : <><div className="w-1.5 h-1.5 rounded-full bg-zinc-600" /><p className="text-[9px] font-bold text-zinc-500 uppercase">Coming Soon</p></>
+                }
+              </div>
+            </>
+          )}
         </div>
       </div>
 
-      {/* ── Top Gainers / Losers ── */}
+      {/* ── Top Gainers / Losers (REAL — from Upstox via stocks prop) ─────── */}
       <div className="px-5 space-y-2.5">
         <div className="flex bg-zinc-900/50 p-1 rounded-xl border border-zinc-800/50">
           {['Gainers', 'Losers'].map(tab => (
@@ -449,32 +545,22 @@ const Dashboard = ({
                 "flex-1 py-1.5 rounded-lg text-[9px] font-bold uppercase tracking-widest transition-all",
                 gainerLoserTab === tab ? "bg-zinc-800 text-white shadow-lg" : "text-zinc-500"
               )}
-            >
-              {tab}
-            </button>
+            >{tab}</button>
           ))}
         </div>
-
-        {/* ── TASK 3.1: Guard — fewer than 3 valid instruments → friendly message ── */}
         {sortedGainersLosers.length < 3 ? (
           <motion.div
             key={`empty-${gainerLoserTab}`}
-            initial={{ opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
+            initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}
             className="flex flex-col items-center justify-center py-10 gap-2.5"
           >
             <BarChart3 size={28} className="text-zinc-700" />
-            <p className="text-[11px] font-bold text-zinc-600 uppercase tracking-widest">
-              Not enough live data
-            </p>
-            <p className="text-[9px] text-zinc-700 text-center">
-              Live market feed needed to show {gainerLoserTab.toLowerCase()}.
-              <br />Data will appear once the market opens.
-            </p>
+            <p className="text-[11px] font-bold text-zinc-600 uppercase tracking-widest">Not enough live data</p>
+            <p className="text-[9px] text-zinc-700 text-center">Data will appear once the market opens.</p>
           </motion.div>
         ) : (
           <div className="space-y-2">
-            {sortedGainersLosers.map(({ symbol, price, change, changePct }: { symbol: string, price: number, change: number, changePct: number }) => (
+            {sortedGainersLosers.map(({ symbol, price, change, changePct }) => (
               <div key={symbol} className="bg-zinc-900/20 border border-zinc-800/30 rounded-xl p-3 flex justify-between items-center">
                 <div className="flex items-center gap-3">
                   <div className="w-9 h-9 rounded-xl bg-zinc-900 flex items-center justify-center font-bold text-[11px] text-zinc-500">
@@ -499,88 +585,133 @@ const Dashboard = ({
 
       <div className="px-5"><AISignals /></div>
 
+      {/* ── Stocks in News (REAL — NewsData.io + Upstox price) ────────────── */}
       <div className="px-5 space-y-2.5">
         <div className="flex justify-between items-center">
-          <h3 className="text-[11px] font-bold uppercase tracking-widest text-zinc-500">Stocks in News</h3>
+          <div className="flex items-center gap-2">
+            <h3 className="text-[11px] font-bold uppercase tracking-widest text-zinc-500">Stocks in News</h3>
+            {sinIsReal ? <LiveBadge /> : <DemoDataBadge />}
+          </div>
           <button onClick={onMarketClick} className="text-[9px] font-bold text-emerald-500 uppercase tracking-widest">View All</button>
         </div>
-        <div className="space-y-2">
-          {stocksInNews.map((stock) => (
-            <div key={stock.symbol} className="bg-zinc-900/20 border border-zinc-800/30 rounded-xl p-3 flex justify-between items-center">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-xl bg-zinc-900 flex items-center justify-center">
-                  <Newspaper size={16} className="text-zinc-600" />
+        {sinLoading ? (
+          <WidgetSkeleton rows={3} />
+        ) : (
+          <div className={cn("space-y-2", !sinIsReal && "opacity-50 pointer-events-none select-none")}>
+            {displayStocksInNews.map((stock) => (
+              <div key={stock.symbol} className="bg-zinc-900/20 border border-zinc-800/30 rounded-xl p-3 flex justify-between items-center">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-zinc-900 flex items-center justify-center">
+                    <Newspaper size={16} className="text-zinc-600" />
+                  </div>
+                  <div>
+                    <p className="text-[13px] font-bold text-white tracking-tight">{stock.symbol}</p>
+                    <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-[8px] font-bold text-zinc-400 uppercase tracking-wider">{stock.tag}</span>
+                  </div>
                 </div>
-                <div>
-                  <p className="text-[13px] font-bold text-white tracking-tight">{stock.symbol}</p>
-                  <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-[8px] font-bold text-zinc-400 uppercase tracking-wider">{stock.tag}</span>
+                <div className="text-right">
+                  {stock.price && <p className="text-[11px] font-bold text-zinc-400">{formatCurrency(stock.price)}</p>}
+                  {stock.change != null ? (
+                    <p className={cn("text-[13px] font-bold", stock.change >= 0 ? "text-emerald-500" : "text-rose-500")}>
+                      {stock.change >= 0 ? '+' : ''}{stock.change.toFixed(2)}%
+                    </p>
+                  ) : <p className="text-[11px] text-zinc-600">—</p>}
+                  {!stock.isLive && <p className="text-[8px] font-bold text-zinc-700 uppercase">Demo</p>}
                 </div>
               </div>
-              <div className="text-right">
-                <p className={cn("text-[13px] font-bold", stock.change >= 0 ? "text-emerald-500" : "text-rose-500")}>
-                  {stock.change >= 0 ? '+' : ''}{stock.change}%
-                </p>
-                <p className="text-[9px] font-bold text-zinc-600 uppercase">Today</p>
-              </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
 
+      {/* ── Volume Rockers (REAL — Upstox volume filter) ──────────────────── */}
       <div className="px-5 space-y-2.5">
         <div className="flex justify-between items-center">
-          <h3 className="text-[11px] font-bold uppercase tracking-widest text-zinc-500">Volume Rockers</h3>
+          <div className="flex items-center gap-2">
+            <h3 className="text-[11px] font-bold uppercase tracking-widest text-zinc-500">Volume Rockers</h3>
+            {vrIsReal ? <LiveBadge /> : <DemoDataBadge />}
+          </div>
           <Activity size={14} className="text-zinc-700" />
         </div>
-        <div className="space-y-2">
-          {volumeRockers.map((stock) => (
-            <div key={stock.symbol} className="bg-zinc-900/20 border border-zinc-800/30 rounded-xl p-3 flex justify-between items-center">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-xl bg-zinc-900 flex items-center justify-center font-bold text-[11px] text-zinc-500">
-                  {stock.symbol.substring(0, 2)}
+        {vrLoading ? (
+          <WidgetSkeleton rows={3} />
+        ) : (
+          <div className={cn("space-y-2", !vrIsReal && "opacity-50 pointer-events-none select-none")}>
+            {displayVolumeRockers.map((stock) => (
+              <div key={stock.symbol} className="bg-zinc-900/20 border border-zinc-800/30 rounded-xl p-3 flex justify-between items-center">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-zinc-900 flex items-center justify-center font-bold text-[11px] text-zinc-500">
+                    {stock.symbol.substring(0, 2)}
+                  </div>
+                  <div>
+                    <p className="text-[13px] font-bold text-white tracking-tight">{stock.symbol}</p>
+                    <p className="text-[9px] font-bold text-zinc-600 uppercase">
+                      Vol: <span className={cn("font-black", stock.change >= 0 ? "text-emerald-500" : "text-rose-500")}>{stock.volumeMultiplier}</span>
+                    </p>
+                  </div>
                 </div>
-                <div>
-                  <p className="text-[13px] font-bold text-white tracking-tight">{stock.symbol}</p>
-                  <p className="text-[9px] font-bold text-zinc-600 uppercase">
-                    Vol: <span className={cn("font-black", stock.change >= 0 ? "text-emerald-500" : "text-rose-500")}>{stock.volumeMultiplier}</span>
+                <div className="text-right">
+                  <p className="text-[13px] font-bold text-white">{formatCurrency(stock.price)}</p>
+                  <p className={cn("text-[9px] font-bold", stock.change >= 0 ? "text-emerald-500" : "text-rose-500")}>
+                    {stock.change >= 0 ? '+' : ''}{stock.change}%
                   </p>
                 </div>
               </div>
-              <div className="text-right">
-                <p className="text-[13px] font-bold text-white">{formatCurrency(stock.price)}</p>
-                <p className={cn("text-[9px] font-bold", stock.change >= 0 ? "text-emerald-500" : "text-rose-500")}>
-                  {stock.change >= 0 ? '+' : ''}{stock.change}%
-                </p>
-              </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
 
+      {/* ── Market News (REAL — NewsData.io) ──────────────────────────────── */}
       <div className="space-y-2.5">
         <div className="px-5 flex justify-between items-center">
-          <h3 className="text-[11px] font-bold uppercase tracking-widest text-zinc-500">Market News</h3>
+          <div className="flex items-center gap-2">
+            <h3 className="text-[11px] font-bold uppercase tracking-widest text-zinc-500">Market News</h3>
+            {newsIsReal ? <LiveBadge /> : <DemoDataBadge />}
+          </div>
           <Newspaper size={14} className="text-zinc-700" />
         </div>
-        <div className="px-5 overflow-x-auto scrollbar-hide flex gap-2.5 py-2">
-          {news.map(item => (
-            <div key={item.id} className="min-w-65 bg-zinc-900/30 border border-zinc-800/50 rounded-xl p-3 flex gap-2.5">
-              <img src={item.thumb} alt="" className="w-14 h-14 rounded-xl object-cover" referrerPolicy="no-referrer" />
-              <div className="flex-1 space-y-1">
-                <p className="text-[11px] font-bold text-white leading-snug line-clamp-2">{item.headline}</p>
-                <div className="flex justify-between items-center pt-1">
-                  <span className="text-[8px] font-bold text-zinc-500 uppercase">{item.source}</span>
-                  <span className="text-[8px] font-bold text-zinc-600">{item.time}</span>
+        {newsLoading ? (
+          <div className="px-5"><WidgetSkeleton rows={2} /></div>
+        ) : news.length > 0 ? (
+          <div className={cn("px-5 overflow-x-auto scrollbar-hide flex gap-2.5 py-2", !newsIsReal && "opacity-50 pointer-events-none select-none")}>
+            {news.map(item => (
+              <a
+                key={item.id}
+                href={item.url || '#'}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="min-w-65 bg-zinc-900/30 border border-zinc-800/50 rounded-xl p-3 flex gap-2.5 cursor-pointer hover:border-zinc-700/50 transition-colors"
+              >
+                {item.thumb ? (
+                  <img src={item.thumb} alt="" className="w-14 h-14 rounded-xl object-cover shrink-0" loading="lazy" />
+                ) : (
+                  <div className="w-14 h-14 rounded-xl bg-zinc-900 flex items-center justify-center shrink-0">
+                    <Newspaper size={20} className="text-zinc-600" />
+                  </div>
+                )}
+                <div className="flex-1 space-y-1">
+                  <p className="text-[11px] font-bold text-white leading-snug line-clamp-2">{item.headline}</p>
+                  <div className="flex justify-between items-center pt-1">
+                    <span className="text-[8px] font-bold text-zinc-500 uppercase">{item.source}</span>
+                    <span className="text-[8px] font-bold text-zinc-600">{item.time}</span>
+                  </div>
                 </div>
-              </div>
-            </div>
-          ))}
-        </div>
+              </a>
+            ))}
+          </div>
+        ) : (
+          <div className="px-5 py-6 text-center text-[10px] text-zinc-600">No news available right now</div>
+        )}
       </div>
 
+      {/* ── Market Events (REAL — Supabase) ───────────────────────────────── */}
       <div className="space-y-2.5">
         <div className="px-5 flex justify-between items-center">
-          <h3 className="text-[11px] font-bold uppercase tracking-widest text-zinc-500">Market Events</h3>
+          <div className="flex items-center gap-2">
+            <h3 className="text-[11px] font-bold uppercase tracking-widest text-zinc-500">Market Events</h3>
+            {eventsIsReal ? <LiveBadge /> : <DemoDataBadge />}
+          </div>
           <div className="flex bg-zinc-900/50 p-1 rounded-lg border border-zinc-800/50">
             {['Upcoming', 'This Week', 'All'].map(filter => (
               <button
@@ -590,37 +721,41 @@ const Dashboard = ({
                   "px-2.5 py-1 rounded-md text-[8px] font-bold uppercase tracking-widest transition-all",
                   eventFilter === filter ? "bg-zinc-800 text-white" : "text-zinc-500"
                 )}
-              >
-                {filter}
-              </button>
+              >{filter}</button>
             ))}
           </div>
         </div>
-        <div className="px-5 overflow-x-auto scrollbar-hide flex gap-2.5 py-2">
-          {filteredEvents.map((event: any) => (
-            <div key={event.id} className="min-w-45 bg-zinc-900/30 border border-zinc-800/50 rounded-xl p-3 space-y-2">
-              <div className="flex justify-between items-start">
-                <p className="text-[13px] font-bold text-white tracking-tight">{event.company}</p>
-                <span className={cn(
-                  "px-2 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider",
-                  event.color === 'blue'   && "bg-blue-500/10 text-blue-400 border border-blue-500/20",
-                  event.color === 'green'  && "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20",
-                  event.color === 'orange' && "bg-orange-500/10 text-orange-400 border border-orange-500/20",
-                  event.color === 'purple' && "bg-purple-500/10 text-purple-400 border border-purple-500/20"
-                )}>
-                  {event.type}
-                </span>
-              </div>
-              <div className="space-y-1">
-                <div className="flex items-center gap-2 text-zinc-500">
-                  <Calendar size={12} />
-                  <span className="text-[10px] font-bold">{event.date}</span>
+        {eventsLoading ? (
+          <div className="px-5"><WidgetSkeleton rows={2} /></div>
+        ) : (
+          <div className={cn("px-5 overflow-x-auto scrollbar-hide flex gap-2.5 py-2", !eventsIsReal && "opacity-50 pointer-events-none select-none")}>
+            {displayFilteredEvents.map((event) => (
+              <div key={event.id} className="min-w-45 bg-zinc-900/30 border border-zinc-800/50 rounded-xl p-3 space-y-2">
+                <div className="flex justify-between items-start">
+                  <p className="text-[13px] font-bold text-white tracking-tight">{event.company}</p>
+                  <span className={cn(
+                    "px-2 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider",
+                    event.color === 'blue'   && "bg-blue-500/10 text-blue-400 border border-blue-500/20",
+                    event.color === 'green'  && "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20",
+                    event.color === 'orange' && "bg-orange-500/10 text-orange-400 border border-orange-500/20",
+                    event.color === 'purple' && "bg-purple-500/10 text-purple-400 border border-purple-500/20",
+                    event.color === 'red'    && "bg-rose-500/10 text-rose-400 border border-rose-500/20"
+                  )}>{event.type}</span>
                 </div>
-                <p className="text-[10px] font-bold text-emerald-500 uppercase tracking-widest">{event.countdown}</p>
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 text-zinc-500">
+                    <Calendar size={12} />
+                    <span className="text-[10px] font-bold">{event.date}</span>
+                  </div>
+                  <p className={cn(
+                    "text-[10px] font-bold uppercase tracking-widest",
+                    event.countdown === 'Today!' ? "text-rose-400" : "text-emerald-500"
+                  )}>{event.countdown}</p>
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
 
     </div>

@@ -18,6 +18,8 @@ import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import helmet from "helmet";
 import cors from "cors";
 
+import marketDataRouter from './src/routes/marketData';
+
 // --- NEW IMPORTS FOR INSTRUMENT SYNC & SEARCH ---
 import cron from "node-cron";
 import { syncUpstoxInstruments } from "./scripts/sync_instruments";
@@ -527,6 +529,7 @@ async function startServer() {
   );
 
   app.use(express.json());
+  app.use('/api/market', marketDataRouter);
   app.use(cookieParser());
 
   const authLimiter = rateLimit({
