@@ -1,5 +1,6 @@
+// scripts/sync_upstox_instruments.ts
 import { gunzipSync } from 'zlib';
-import { pool } from '../src/db/index'; // Using your existing DB pool
+import { pool } from '../src/db/index.js'; // <-- Notice the .js extension here! Crucial for ESM.
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -13,7 +14,7 @@ async function syncInstruments() {
   const client = await pool.connect();
 
   try {
-    // 1. Fetch the compressed file (using Node 18+ native fetch)
+    // 1. Fetch the compressed file (using Node native fetch)
     const response = await fetch(UPSTOX_URL);
     if (!response.ok) throw new Error(`Failed to fetch: ${response.statusText}`);
     const buffer = await response.arrayBuffer();
