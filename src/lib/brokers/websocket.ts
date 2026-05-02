@@ -2,6 +2,7 @@
 import * as protobuf from 'protobufjs';
 import { useMarketDataStore } from '../../store/marketDataStore';
 import { apiClient } from '../../api/client';
+import { isMarketOpen } from '../utils';
 
 const MAX_SYMBOLS = 100;
 const PROTO_URL = '/MarketDataFeed.proto';
@@ -26,11 +27,6 @@ export class UpstoxWebSocketClient {
     return UpstoxWebSocketClient.instance;
   }
 
-  /**
-   * Connect to Upstox market data WebSocket.
-   * The token parameter is NO LONGER USED for Upstox auth —
-   * the server reads it from DB. It's kept as optional for API compatibility.
-   */
   public async connect(_token?: string) {
     this.intentionalDisconnect = false;
 
@@ -39,13 +35,10 @@ export class UpstoxWebSocketClient {
     }
 
     try {
-      // 1. Load Protobuf schema if not already loaded
       if (!this.protoRoot) {
         this.protoRoot = await protobuf.load(PROTO_URL);
       }
 
-      // 2. ✅ FIX: Call YOUR server proxy instead of Upstox directly.
-      //    The server reads the encrypted token from DB and proxies the auth.
       const authRes = await apiClient.get('/api/broker/upstox/ws-auth');
       const wsUrl: string = authRes.data?.wsUrl;
 
@@ -53,7 +46,6 @@ export class UpstoxWebSocketClient {
         throw new Error('No WebSocket URL returned from auth proxy');
       }
 
-      // 3. Connect to Upstox WebSocket
       this.ws = new WebSocket(wsUrl);
       this.ws.binaryType = 'arraybuffer';
 
@@ -63,12 +55,10 @@ export class UpstoxWebSocketClient {
       this.ws.onerror   = this.handleError.bind(this);
 
     } catch (error: any) {
-      // If Upstox token expired, notify the app — don't keep retrying
       if (error?.response?.data?.code === 'UPSTOX_TOKEN_EXPIRED') {
         console.warn('[Upstox WS] Token expired. User must reconnect Upstox.');
-        // Dispatch a custom event so the UI can show a reconnect prompt
         window.dispatchEvent(new CustomEvent('upstox:session-expired'));
-        return; // Do NOT trigger reconnect — it will always fail until user re-auths
+        return; 
       }
       console.error('[Upstox WS] Connection error:', error?.message || error);
       this.triggerReconnect();
@@ -90,6 +80,13 @@ export class UpstoxWebSocketClient {
   }
 
   public subscribe(instrumentKeys: string[], mode: 'full' | 'ltpc' = 'full') {
+    // --- NEW: Handle After-Hours Static Data Fallback ---
+    if (!isMarketOpen() && instrumentKeys.length > 0) {
+      console.log('[Upstox WS] Market is closed. Fetching closing quotes via REST...');
+      useMarketDataStore.getState().fetchClosingQuotes(instrumentKeys);
+    }
+    // ----------------------------------------------------
+
     if (!this.isConnected || !this.ws) {
       instrumentKeys.forEach(k => this.currentSubscriptions.add(k));
       return;

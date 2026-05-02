@@ -220,6 +220,43 @@ export class UpstoxBrokerService implements BrokerService {
     throw new Error(data.errors?.[0]?.message || 'Failed to fetch Upstox orders');
   }
 
+  async getOrderDetails(token: string, orderId: string, onTokenRefresh?: TokenRefreshCallback): Promise<any> {
+    try {
+      const response = await this.fetchWithRetry(`https://api.upstox.com/v2/order/details?order_id=${orderId}`, {
+        method: 'GET',
+        headers: { 
+          "Authorization": `Bearer ${token}`, 
+          "Accept": "application/json" 
+        }
+      }, onTokenRefresh);
+      
+      const data = await response.json();
+      if (data.status === 'success' && data.data && data.data.length > 0) {
+        // Upstox returns an array of history; data[0] is the latest state
+        const o = data.data[0];
+        
+        const qty: number = o.quantity || 0;
+        const filledQty: number = o.filled_quantity || 0;
+        let normalizedStatus = normalizeUpstoxStatus(o.status);
+        
+        if (normalizedStatus === 'open' && filledQty > 0 && filledQty < qty) {
+          normalizedStatus = 'partially_filled';
+        }
+
+        // Return matched structure to easily integrate into frontend state
+        return {
+          ...o,
+          normalized_status: normalizedStatus,
+          is_terminal: ['completed', 'rejected', 'cancelled'].includes(normalizedStatus)
+        };
+      }
+      throw new Error(data.errors?.[0]?.message || 'Failed to fetch order details');
+    } catch (e: any) {
+      console.error("[Upstox] 🔴 Error fetching order details:", e);
+      throw e;
+    }
+  }
+
   async placeOrder(token: string, order: OrderRequest, onTokenRefresh?: TokenRefreshCallback): Promise<OrderResponse> {
     try {
       const orderType = order.order_type.toUpperCase();
@@ -246,7 +283,6 @@ export class UpstoxBrokerService implements BrokerService {
       };
 
       // --- MAPPING LOGIC: Bracket Order Spreads ---
-      // Upstox requires 'squareoff' and 'stoploss' specifically for BO Orders
       if (order.is_bracket) {
          payload.squareoff = order.target_price || 0; 
          payload.stoploss = order.stoploss_price || 0; 
@@ -453,7 +489,6 @@ export class UpstoxBrokerService implements BrokerService {
     toDate: string,
     options?: { signal?: AbortSignal }
   ): Promise<any[]> {
-    // Historical candles often do not require authentication headers natively on Upstox
     const endpoint = `https://api.upstox.com/v2/historical-candle/${encodeURIComponent(instrumentKey)}/${interval}/${toDate}/${fromDate}`;
     const response = await fetch(endpoint, {
       method: 'GET',
@@ -464,5 +499,40 @@ export class UpstoxBrokerService implements BrokerService {
     const data = await response.json();
     if (data.status === 'success' && data.data?.candles) return data.data.candles;
     return [];
+  }
+
+  // --- NEW METHOD FOR FETCHING CLOSING QUOTES AFTER MARKET HOURS ---
+  async getClosingMarketData(
+    token: string, 
+    instrumentKeys: string[], 
+    onTokenRefresh?: TokenRefreshCallback
+  ): Promise<any> {
+    try {
+      // API accepts comma separated instrument keys
+      const keysParams = encodeURIComponent(instrumentKeys.join(','));
+      const url = `https://api.upstox.com/v2/market-quote/quotes?instrument_key=${keysParams}`;
+      
+      const response = await this.fetchWithRetry(url, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': `Bearer ${token}`
+        }
+      }, onTokenRefresh);
+
+      if (!response.ok) {
+        console.error(`[Upstox] HTTP error fetching closing quotes: ${response.status}`);
+        return null;
+      }
+
+      const data = await response.json();
+      if (data.status === 'success' && data.data) {
+        return data.data; // Dictionary mapped by instrument_key containing the quote details
+      }
+      return null;
+    } catch (error) {
+      console.error("[Upstox] 🔴 Error fetching closing market data:", error);
+      return null;
+    }
   }
 }
