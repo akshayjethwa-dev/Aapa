@@ -1,72 +1,13 @@
 version: '3.8'
 
 services:
-  # ========================================================
-  # --- ADDED FOR TASK 3.1: Centralized Redis Cache      ---
-  # ========================================================
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-
-  # 1. NEW SERVICE: The Ephemeral Migration Container
-  migrator:
-    build: .
-    # This runs the separate migration script we built in the Dockerfile
-    command: node dist-server/migrate.js
-    environment:
-      - DATABASE_URL=postgresql://aapa:aapa@postgres:5432/aapa_db
-      - REDIS_URL=redis://redis:6379
-      - NODE_ENV=development
-    env_file:
-      - .env
-    depends_on:
-      postgres:
-        condition: service_healthy # Wait for the DB to be ready before migrating
-
-  # 2. UPDATED SERVICE: The Main App Container
-  app:
+  api:
     build: .
     ports:
-      - "3000:3000"
+      - "80:3000"
     environment:
-      - DATABASE_URL=postgresql://aapa:aapa@postgres:5432/aapa_db
-      - REDIS_URL=redis://redis:6379
-      - NODE_ENV=development
-    env_file:
-      - .env
-    depends_on:
-      postgres:
-        condition: service_healthy
-      migrator:
-        condition: service_completed_successfully # Critical: Wait for migrations to finish!
-      redis:
-        condition: service_started
-
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 15s
-
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: aapa
-      POSTGRES_PASSWORD: aapa
-      POSTGRES_DB: aapa_db
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./migrations:/docker-entrypoint-initdb.d
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U aapa"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-volumes:
-  postgres_data:
-  redis_data: 
+      - NODE_ENV=production
+      - DATABASE_URL=${DATABASE_URL}
+      # Add any other required env variables here
+    restart: always
+    # Removed the 'depends_on: db' since the DB is now managed by AWS RDS
