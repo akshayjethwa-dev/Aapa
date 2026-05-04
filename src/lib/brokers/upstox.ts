@@ -79,7 +79,7 @@ export class UpstoxBrokerService implements BrokerService {
   }
 
   async getFunds(token: string, onTokenRefresh?: TokenRefreshCallback): Promise<any> {
-    const response = await this.fetchWithRetry("https://api.upstox.com/v3/user/get-funds-and-margin", {
+    const response = await this.fetchWithRetry("https://api.upstox.com/v2/user/get-funds-and-margin", {
       headers: { "Authorization": `Bearer ${token}`, "Accept": "application/json" }
     }, onTokenRefresh);
     const data = await response.json();
@@ -114,7 +114,7 @@ export class UpstoxBrokerService implements BrokerService {
   }
 
   async getHoldings(token: string, onTokenRefresh?: TokenRefreshCallback): Promise<Holding[]> {
-    const response = await this.fetchWithRetry("https://api.upstox.com/v3/portfolio/long-term-holdings", {
+    const response = await this.fetchWithRetry("https://api.upstox.com/v2/portfolio/long-term-holdings", {
       headers: { "Authorization": `Bearer ${token}`, "Accept": "application/json" }
     }, onTokenRefresh);
     const data = await response.json();
@@ -181,7 +181,7 @@ export class UpstoxBrokerService implements BrokerService {
   }
 
   async getOrders(token: string, onTokenRefresh?: TokenRefreshCallback): Promise<any[]> {
-    const response = await this.fetchWithRetry("https://api.upstox.com/v3/order/retrieve-all", {
+    const response = await this.fetchWithRetry("https://api.upstox.com/v2/order/retrieve-all", {
       headers: { "Authorization": `Bearer ${token}`, "Accept": "application/json" }
     }, onTokenRefresh);
     const data = await response.json();
@@ -222,7 +222,7 @@ export class UpstoxBrokerService implements BrokerService {
 
   async getOrderDetails(token: string, orderId: string, onTokenRefresh?: TokenRefreshCallback): Promise<any> {
     try {
-      const response = await this.fetchWithRetry(`https://api.upstox.com/v3/order/details?order_id=${orderId}`, {
+      const response = await this.fetchWithRetry(`https://api.upstox.com/v2/order/details?order_id=${orderId}`, {
         method: 'GET',
         headers: { 
           "Authorization": `Bearer ${token}`, 
@@ -289,7 +289,7 @@ export class UpstoxBrokerService implements BrokerService {
          payload.trailing_ticks = 20; // Required by Upstox (minimum trailing ticks)
       }
 
-      const response = await this.fetchWithRetry('https://api.upstox.com/v3/order/place', {
+      const response = await this.fetchWithRetry('https://api.upstox.com/v2/order/place', {
         method:  'POST',
         headers: {
           Authorization:  `Bearer ${token}`,
@@ -337,7 +337,7 @@ export class UpstoxBrokerService implements BrokerService {
         is_amo:             false,
       };
 
-      const response = await this.fetchWithRetry('https://api.upstox.com/v3/order/place', {
+      const response = await this.fetchWithRetry('https://api.upstox.com/v2/order/place', {
         method:  'POST',
         headers: {
           Authorization:  `Bearer ${token}`,
@@ -388,7 +388,7 @@ export class UpstoxBrokerService implements BrokerService {
         position_type:    'TOD',
       };
 
-      const response = await this.fetchWithRetry('https://api.upstox.com/v3/order/convert-position', {
+      const response = await this.fetchWithRetry('https://api.upstox.com/v2/order/convert-position', {
         method:  'PUT',
         headers: {
           Authorization:  `Bearer ${token}`,
@@ -419,7 +419,7 @@ export class UpstoxBrokerService implements BrokerService {
       grant_type:    "refresh_token",
     });
 
-    const response = await fetch("https://api.upstox.com/v3/login/authorization/token", {
+    const response = await fetch("https://api.upstox.com/v2/login/authorization/token", {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
@@ -442,7 +442,7 @@ export class UpstoxBrokerService implements BrokerService {
     onTokenRefresh?: TokenRefreshCallback
   ): Promise<CandleData[]> {
     try {
-      const url = `https://api.upstox.com/v3/historical-candle/intraday/${encodeURIComponent(instrumentKey)}/${interval}`;
+      const url = `https://api.upstox.com/v2/historical-candle/intraday/${encodeURIComponent(instrumentKey)}/${interval}`;
       const response = await this.fetchWithRetry(url, {
         method: 'GET',
         headers: {
@@ -489,7 +489,7 @@ export class UpstoxBrokerService implements BrokerService {
     toDate: string,
     options?: { signal?: AbortSignal }
   ): Promise<any[]> {
-    const endpoint = `https://api.upstox.com/v3/historical-candle/${encodeURIComponent(instrumentKey)}/${interval}/${toDate}/${fromDate}`;
+    const endpoint = `https://api.upstox.com/v2/historical-candle/${encodeURIComponent(instrumentKey)}/${interval}/${toDate}/${fromDate}`;
     const response = await fetch(endpoint, {
       method: 'GET',
       headers: { 'Accept': 'application/json' },
@@ -510,7 +510,7 @@ export class UpstoxBrokerService implements BrokerService {
     try {
       // API accepts comma separated instrument keys
       const keysParams = encodeURIComponent(instrumentKeys.join(','));
-      const url = `https://api.upstox.com/v3/market-quote/quotes?instrument_key=${keysParams}`;
+      const url = `https://api.upstox.com/v2/market-quote/quotes?instrument_key=${keysParams}`;
       
       const response = await this.fetchWithRetry(url, {
         method: 'GET',

@@ -669,7 +669,7 @@ app.get("/api/broker/upstox/ws-auth", authenticateToken, async (req: any, res) =
     const decryptedToken = decrypt(String(rows[0].access_token));
 
     const upstoxRes = await fetch(
-      "https://api.upstox.com/v2/feed/market-data-feed/authorize",
+      "https://api.upstox.com/v3/feed/market-data-feed/authorize",
       {
         headers: {
           Authorization: `Bearer ${decryptedToken}`,
@@ -2101,7 +2101,7 @@ app.get("/api/broker/upstox/ws-auth", authenticateToken, async (req: any, res) =
       try {
         const encodedKeys = allKeysList.map(k => encodeURIComponent(k)).join(",");
         
-        const quoteRes = await fetch(`https://api.upstox.com/v3/market-quote/quotes?instrument_key=${encodedKeys}`, {
+        const quoteRes = await fetch(`https://api.upstox.com/v2/market-quote/quotes?instrument_key=${encodedKeys}`, {
           headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }
         });
 
@@ -2318,7 +2318,7 @@ app.get("/api/broker/upstox/ws-auth", authenticateToken, async (req: any, res) =
 
   const initPortfolioFeed = async (token: string, userId: number) => {
     try {
-      const authRes = await fetch("https://api.upstox.com/v2/feed/portfolio-stream-feed/authorize", {
+      const authRes = await fetch("https://api.upstox.com/v3/feed/portfolio-stream-feed/authorize", {
         headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
       });
       
