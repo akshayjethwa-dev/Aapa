@@ -138,7 +138,7 @@ async function fetchUpstoxQuotes(token: string, keys: string[]): Promise<Record<
 
     for (let i = 0; i < keys.length; i += BATCH) {
       const batch = keys.slice(i, i + BATCH).join(',');
-      const r = await axios.get('https://api.upstox.com/v2/market-quote/quotes', {
+      const r = await axios.get('https://api.upstox.com/v3/market-quote/quotes', {
         params: { instrument_key: batch },
         headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
         timeout: 8000,
