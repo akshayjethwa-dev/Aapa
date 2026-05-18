@@ -117,6 +117,22 @@ const getUpstoxTokenExpiry = () => {
 
 async function startServer() {
   const app = express();
+  // --- MAINTENANCE MODE MIDDLEWARE ---
+app.use((req, res, next) => {
+  if (process.env.MAINTENANCE_MODE === 'true') {
+    return res.status(503).send(`
+      <!DOCTYPE html>
+      <html>
+        <body style="text-align:center; padding: 50px; font-family: sans-serif; background: #f4f4f9; color: #333;">
+          <h1 style="font-size: 40px; color: #ff4757;">System Upgrade in Progress ⚙️</h1>
+          <p style="font-size: 20px;">AAPA Capital is currently undergoing scheduled maintenance to improve your trading experience.</p>
+          <p style="font-size: 18px; color: #747d8c;">We will be back online in just a few minutes. Thank you for your patience!</p>
+        </body>
+      </html>
+    `);
+  }
+  next(); // If not in maintenance mode, continue normally
+});
   const server = http.createServer(app);
 
   const allowedOrigins = [
