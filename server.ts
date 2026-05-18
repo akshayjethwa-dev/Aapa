@@ -796,10 +796,13 @@ app.get("/api/broker/upstox/ws-auth", authenticateToken, async (req: any, res) =
 
   app.post("/api/auth/register", validate(registerSchema), async (req, res, next) => {
       try {
-        let { email, mobile, password, has_upstox } = req.body || {};
+        // 1. Removed has_upstox from the destructured payload
+        let { email, mobile, password } = req.body || {};
         email = email?.toString().toLowerCase().trim();
         mobile = mobile?.toString().trim();
-        const hasUpstoxAccount = has_upstox === true;
+        
+        // 2. Default Upstox account status to false at the time of signup
+        const hasUpstoxAccount = false;
 
         logger.info(`[Auth] Registration attempt for email: ${email}`);
         const hashedPassword = await bcrypt.hash(String(password), 10);
@@ -814,9 +817,11 @@ app.get("/api/broker/upstox/ws-auth", authenticateToken, async (req: any, res) =
         }
 
         const superAdminEmail = "bharvadvijay371@gmail.com";
+        
+        // 3. Simplified role assignment: First user or admin email gets 'admin', everyone else defaults to 'user' (or 'pre-onboarding' if you enforce KYC immediately)
         const role = userCount === 0 || email === superAdminEmail 
           ? "admin" 
-          : hasUpstoxAccount ? "user" : "pre-onboarding";
+          : "user"; 
 
         const { rows: inserted } = await query(
           "INSERT INTO users (email, mobile, password, role, has_upstox_account, terms_accepted_at) VALUES ($1, $2, $3, $4, $5, NOW()) RETURNING id",

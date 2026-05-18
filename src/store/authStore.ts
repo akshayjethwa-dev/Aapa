@@ -1,7 +1,7 @@
+// src/store/authStore.ts
 import { create } from 'zustand';
 import { apiClient } from '../api/client';
 
-// ── New types for profile completeness feature ────────────────────────────────
 export type KycStatus   = 'not_started' | 'pending' | 'approved' | 'rejected';
 export type RiskProfile = 'conservative' | 'moderate' | 'aggressive' | null;
 export type SegmentCode = 'EQUITY' | 'FO' | 'COMMODITY' | 'CURRENCY';
@@ -9,18 +9,17 @@ export type SegmentCode = 'EQUITY' | 'FO' | 'COMMODITY' | 'CURRENCY';
 export interface User {
   id: number;
   email: string;
-  role: string;                          // 'admin' | 'user' | 'pre-onboarding'
+  role: string;                          
   balance: number;
   is_uptox_connected?: boolean;
   has_upstox_account?: boolean;
-  onboarding_step?: number;              // 0-4
+  onboarding_step?: number;              
   is_onboarding_complete?: boolean;
   first_login_completed_at?: string | null;
-  // ── Profile completeness fields ──────────────────────────────────────────
   kyc_status?: KycStatus;
   risk_profile?: RiskProfile;
   segments_enabled?: SegmentCode[];
-  profile_completeness?: number;         // 0-100, derived on backend
+  profile_completeness?: number;         
 }
 
 interface AuthState {
