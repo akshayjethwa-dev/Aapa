@@ -10,11 +10,15 @@ const Auth = () => {
   const [isLogin, setIsLogin] = useState(true);
   const [isAdminLogin, setIsAdminLogin] = useState(false);
   
+  // States
+  const [name, setName] = useState('');
+  const [pan, setPan] = useState('');
   const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
   const [mobile, setMobile] = useState('');
+  const [password, setPassword] = useState('');
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  
   const { setAuth } = useAuthStore();
 
   const handleToggleMode = (toLogin: boolean) => {
@@ -31,35 +35,30 @@ const Auth = () => {
     }
 
     setIsLoading(true);
-    console.log(`[Auth] Submitting ${isLogin ? 'login' : 'registration'} form...`);
     const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
     
-    // Removed has_upstox from the payload completely
+    // Updated payload to include name and pan for registration
     const body = isLogin 
       ? { login: email, password } 
-      : { email, mobile, password };
+      : { name, pan, email, mobile, password };
 
     try {
       const res = await apiClient.post(endpoint, body);
       const data = res.data;
-      
-      console.log('[Auth] Response received:', data);
       
       if (data.token) {
         localStorage.setItem('token', data.token);
         setAuth(data.user, data.token);
         toast.success('Welcome back!');
       } else if (!isLogin && data.id) {
-        // Automatically switch back to login mode on successful creation
         handleToggleMode(true);
         toast.success('Account created! Please sign in.');
       }
     } catch (err: any) {
-      console.error('[Auth] Network or parsing error:', err);
       if (err.response?.status === 401 && isLogin) {
         toast.error('Invalid credentials');
       } else {
-        toast.error(err.response?.data?.message || 'Authentication failed');
+        toast.error(err.response?.data?.message || err.response?.data?.error || 'Authentication failed');
       }
     } finally {
       setIsLoading(false);
@@ -77,6 +76,21 @@ const Auth = () => {
       className="space-y-5"
     >
       <div className="space-y-4">
+        {/* NEW: Name Field for Registration */}
+        {!isLogin && (
+          <div className="space-y-2">
+            <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest ml-1">Full Name</label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full bg-black/50 border border-zinc-800 rounded-2xl py-4 px-6 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-all"
+              placeholder="John Doe"
+              required
+            />
+          </div>
+        )}
+
         <div className="space-y-2">
           <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest ml-1">
             {isLogin ? 'Email or Mobile' : 'Email Address'}
@@ -90,6 +104,7 @@ const Auth = () => {
             required
           />
         </div>
+
         {!isLogin && (
           <div className="space-y-2">
             <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest ml-1">Mobile Number</label>
@@ -103,6 +118,23 @@ const Auth = () => {
             />
           </div>
         )}
+
+        {/* NEW: PAN Field for Registration */}
+        {!isLogin && (
+          <div className="space-y-2">
+            <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest ml-1">PAN Number</label>
+            <input
+              type="text"
+              value={pan}
+              onChange={(e) => setPan(e.target.value.toUpperCase())}
+              className="w-full bg-black/50 border border-zinc-800 rounded-2xl py-4 px-6 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-all uppercase"
+              placeholder="ABCDE1234F"
+              maxLength={10}
+              required
+            />
+          </div>
+        )}
+
         <div className="space-y-2">
           <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest ml-1">Password</label>
           <input

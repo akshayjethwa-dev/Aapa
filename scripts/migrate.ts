@@ -1,3 +1,4 @@
+// scripts/migrate.ts
 import fs from "fs/promises";
 import fsSync from "fs";
 import path from "path";
@@ -22,7 +23,7 @@ const runMigrations = async () => {
 
     // List all migrations in order
     const migrations = [
-      { file: "001_initial_schema.sql",                       label: "001 Initial Schema"               },
+      { file: "001_initial_schema.sql",                    label: "001 Initial Schema"               },
       { file: "002_add_audit_compliance_fields.sql",          label: "002 Audit Fields"                 },
       { file: "003_add_broker_audit_logs.sql",                label: "003 Broker Audit Logs"            },
       { file: "004_add_kyc_fields.sql",                       label: "004 KYC Fields"                   },
@@ -39,6 +40,8 @@ const runMigrations = async () => {
       { file: "015_add_bracket_order_fields.sql",             label: "015 Add Bracket Order Fields"     },
       // --- Task 2.1: Instrument search indexes ---
       { file: "016_instruments_exchange_index.sql",           label: "016 Instruments Exchange Index"   },
+      // --- Signup decouple update: Add Name & PAN fields ---
+      { file: "017_add_name_pan_to_users.sql",                label: "017 Add Name & PAN to Users"      },
     ];
 
     for (const migration of migrations) {

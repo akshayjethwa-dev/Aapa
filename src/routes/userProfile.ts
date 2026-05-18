@@ -12,6 +12,8 @@ router.get('/profile', async (req: any, res: Response) => {
       `SELECT
          id,
          email,
+         name,               -- <--- NEW
+         pan,                -- <--- NEW
          role,
          balance,
          is_uptox_connected,

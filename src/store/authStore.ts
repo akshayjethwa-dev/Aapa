@@ -9,6 +9,8 @@ export type SegmentCode = 'EQUITY' | 'FO' | 'COMMODITY' | 'CURRENCY';
 export interface User {
   id: number;
   email: string;
+  name?: string;                         // <--- NEW
+  pan?: string;                          // <--- NEW
   role: string;                          
   balance: number;
   is_uptox_connected?: boolean;

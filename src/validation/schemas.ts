@@ -2,6 +2,8 @@
 import { z } from 'zod';
 
 export const registerSchema = z.object({
+  name: z.string().min(2, 'Full Name is required'),
+  pan: z.string().regex(/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/, 'Invalid PAN format'),
   email: z.string().email('Invalid email address'),
   mobile: z.string().regex(/^[6-9]\d{9}$/, 'Invalid Indian mobile number').optional().nullable(),
   password: z.string()
@@ -35,39 +37,20 @@ export const placeOrderSchema = z.object({
 }).superRefine((data, ctx) => {
   const ot = data.order_type.toUpperCase();
 
-  // LIMIT and SL require price > 0
   if (['LIMIT', 'SL'].includes(ot) && (data.price ?? 0) <= 0) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'Price must be greater than 0 for Limit/SL orders',
-      path: ['price'],
-    });
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Price must be greater than 0 for Limit/SL orders', path: ['price'] });
   }
 
-  // SL and SL-M require trigger_price > 0
   if (['SL', 'SL-M'].includes(ot) && (data.trigger_price ?? 0) <= 0) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'Trigger price must be greater than 0 for SL/SL-M orders',
-      path: ['trigger_price'],
-    });
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Trigger price must be greater than 0 for SL/SL-M orders', path: ['trigger_price'] });
   }
 
-  // BRACKET orders require valid spreads
   if (data.is_bracket) {
     if ((data.target_price ?? 0) <= 0) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Target spread must be greater than 0 for bracket orders',
-        path: ['target_price'],
-      });
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Target spread must be greater than 0 for bracket orders', path: ['target_price'] });
     }
     if ((data.stoploss_price ?? 0) <= 0) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Stop loss spread must be greater than 0 for bracket orders',
-        path: ['stoploss_price'],
-      });
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Stop loss spread must be greater than 0 for bracket orders', path: ['stoploss_price'] });
     }
   }
 });

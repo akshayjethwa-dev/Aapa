@@ -794,51 +794,66 @@ app.get("/api/broker/upstox/ws-auth", authenticateToken, async (req: any, res) =
     }
   });
 
-  app.post("/api/auth/register", validate(registerSchema), async (req, res, next) => {
+  // Replace your existing /api/auth/register block in server.ts with this:
+
+app.post("/api/auth/register", validate(registerSchema), async (req, res, next) => {
+    try {
+      // 1. Extract newly added fields
+      let { email, mobile, password, name, pan } = req.body || {};
+      
+      email = email?.toString().toLowerCase().trim();
+      mobile = mobile?.toString().trim();
+      name = name?.toString().trim();
+      pan = pan?.toString().toUpperCase().trim(); // Enforce uppercase for PAN
+      
+      // 2. Default Upstox account status to false at the time of signup
+      const hasUpstoxAccount = false;
+
+      logger.info(`[Auth] Registration attempt for email: ${email}`);
+      const hashedPassword = await bcrypt.hash(String(password), 10);
+      
+      let userCount = 0;
       try {
-        // 1. Removed has_upstox from the destructured payload
-        let { email, mobile, password } = req.body || {};
-        email = email?.toString().toLowerCase().trim();
-        mobile = mobile?.toString().trim();
-        
-        // 2. Default Upstox account status to false at the time of signup
-        const hasUpstoxAccount = false;
-
-        logger.info(`[Auth] Registration attempt for email: ${email}`);
-        const hashedPassword = await bcrypt.hash(String(password), 10);
-        
-        let userCount = 0;
-        try {
-          const { rows: countRows } = await query("SELECT COUNT(*) as count FROM users");
-          userCount = parseInt(countRows[0].count);
-        } catch (dbErr: any) {
-          logger.error(`[Auth DB Error] DB query failed during register: ${dbErr.message}`);
-          return res.status(503).json({ error: "Database connection failed. If you are using a Supabase free tier, your database might be paused. Please wake it up." });
-        }
-
-        const superAdminEmail = "bharvadvijay371@gmail.com";
-        
-        // 3. Simplified role assignment: First user or admin email gets 'admin', everyone else defaults to 'user' (or 'pre-onboarding' if you enforce KYC immediately)
-        const role = userCount === 0 || email === superAdminEmail 
-          ? "admin" 
-          : "user"; 
-
-        const { rows: inserted } = await query(
-          "INSERT INTO users (email, mobile, password, role, has_upstox_account, terms_accepted_at) VALUES ($1, $2, $3, $4, $5, NOW()) RETURNING id",
-          [email, mobile, hashedPassword, role, hasUpstoxAccount]
-        );
-
-        logger.info(`[Auth] Registration successful for user ID: ${inserted[0].id} with role: ${role}`);
-        res.json({ id: inserted[0].id });
-      } catch (e: any) {
-        if (e.code === "23505") {
-          if (e.constraint === "users_email_key") return res.status(400).json({ error: "Email already registered. Please login instead." });
-          if (e.constraint === "users_mobile_key") return res.status(400).json({ error: "Mobile number already registered. Please login instead." });
-        }
-        next(e);
+        const { rows: countRows } = await query("SELECT COUNT(*) as count FROM users");
+        userCount = parseInt(countRows[0].count);
+      } catch (dbErr: any) {
+        logger.error(`[Auth DB Error] DB query failed during register: ${dbErr.message}`);
+        return res.status(503).json({ error: "Database connection failed. If you are using a Supabase free tier, your database might be paused. Please wake it up." });
       }
-    }
-  );
+
+      const superAdminEmail = "bharvadvijay371@gmail.com";
+      
+      const role = userCount === 0 || email === superAdminEmail 
+        ? "admin" 
+        : "user"; 
+
+      // 3. Added name and pan to the INSERT statement
+      const { rows: inserted } = await query(
+        "INSERT INTO users (email, mobile, password, name, pan, role, has_upstox_account, terms_accepted_at) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW()) RETURNING id",
+        [email, mobile, hashedPassword, name, pan, role, hasUpstoxAccount]
+      );
+
+      // ... (inside the /api/auth/login route) ...
+
+        logger.info(`[Auth] Login successful for ${login} (ID: ${user.id}) with role: ${effectiveRole}`);
+        res.json({
+          token,
+          user: {
+            id: user.id,
+            email: user.email,
+            name: user.name, // <--- NEW
+            pan: user.pan,   // <--- NEW
+            role: effectiveRole,
+            balance: parseFloat(user.balance || "0"),
+          },
+        });
+      } catch (e: any) {
+        logger.error("[Auth Error] Unexpected failure:", e);
+        return res.status(500).json({ 
+          error: "An unexpected error occurred during login.", 
+          details: e.message || String(e) 
+        });
+      }
 
   app.post(
     "/api/auth/login", 
