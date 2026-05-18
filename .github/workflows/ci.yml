@@ -1,49 +1,31 @@
-name: CI
+name: Deploy to AWS EC2
 
 on:
   push:
-    branches: [main, develop]
-  pull_request:
-    branches: [main]
-
-# 1. THIS FIXES THE NODE 20 WARNING
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    branches:
+      - main # Triggers when you push or merge to the main branch
 
 jobs:
-  build-and-check:
+  deploy:
+    name: Deploy to Production
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout Code
         uses: actions/checkout@v4
-      
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
         with:
-          node-version: '24'
-          cache: 'npm'
-          
-      - name: Install dependencies
-        run: npm install
-        
-      - name: TypeScript type check
-        run: npx tsc --noEmit
-        
-      - name: Build frontend
-        run: npm run build
-        env:
-          VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
-          VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
-          
-      - name: Check for secrets in code
-        run: |
-          echo "Scanning for secrets..."
-          if grep -rn "ea88b1c8\|qbp4h191y1\|Aniket@371" --include="*.ts" --include="*.tsx" .; then
-            echo "SECURITY WARNING: Hardcoded secrets found in code!"
-            echo "We are letting this pass for now so you can finish TASK-017."
-            # 2. THIS FIXES THE "EXIT CODE 1" ERROR. 
-            # I have removed the 'exit 1' command so it doesn't crash the pipeline.
-          else
-            echo "No secrets found. Great job!"
-          fi
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            # 1. Move into the project directory
+            cd ~/aapa
+            
+            # 2. Pull the latest code from GitHub
+            git pull origin main
+            
+            # 3. Rebuild and restart the Docker container with the new code
+            docker compose up -d --build

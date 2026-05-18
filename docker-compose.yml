@@ -5,9 +5,8 @@ services:
     build: .
     ports:
       - "80:3000"
-    environment:
-      - NODE_ENV=production
-      - DATABASE_URL=${DATABASE_URL}
-      # Add any other required env variables here
+    # This automatically injects all variables from your .env file
+    env_file:
+      - .env
     restart: always
-    # Removed the 'depends_on: db' since the DB is now managed by AWS RDS
+    # Database is managed by AWS RDS, so we do not declare a db service here
