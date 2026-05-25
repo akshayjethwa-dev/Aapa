@@ -53,8 +53,24 @@ dotenv.config();
 // =========================================================================
 // PHASE 1: REDIS INITIALIZATION (For Data Caching, NOT Session Auth)
 // =========================================================================
-const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
-redis.on('error', (err) => logger.error('[Redis] Cache Client Error:', err));
+const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379', {
+  maxRetriesPerRequest: null,
+  retryStrategy(times) {
+    if (times > 3) {
+      logger.warn('[Redis] Max retries reached. Stopping reconnection attempts to prevent crashes.');
+      return null;
+    }
+    return Math.min(times * 50, 2000);
+  }
+});
+
+redis.on('error', (err: any) => {
+  if (err.code === 'ECONNREFUSED') {
+    logger.error('[Redis] Connection refused. Ensure Redis is running on localhost:6379 or check REDIS_URL.');
+  } else {
+    logger.error('[Redis] Cache Client Error:', err.message);
+  }
+});
 redis.on('connect', () => logger.info('[Redis] Successfully connected for caching.'));
 
 interface ExtWebSocket extends WebSocket {
@@ -610,10 +626,6 @@ const wss = new WebSocketServer({
     }
 
     try {
-      // Optional: respond immediately and run in background
-      // res.json({ started: true });
-      // syncUpstoxInstruments().catch(err => logger.error('[Admin Sync] Failed:', err));
-
       await syncUpstoxInstruments();
       return res.json({ success: true });
     } catch (err: any) {
@@ -641,9 +653,8 @@ const wss = new WebSocketServer({
       const newTokens = await brokerService.refreshAccessToken(apiKey, apiSecret, decryptedRefreshToken);
 
       const newEncryptedAccess = encrypt(String(newTokens.access_token));
-      // Upstox sometimes doesn't return a new refresh token, so fallback to the old one
       const newEncryptedRefresh = newTokens.refresh_token ? encrypt(String(newTokens.refresh_token)) : encryptedRefreshToken;
-      const newExpiry = getUpstoxTokenExpiry(); // Your existing function
+      const newExpiry = getUpstoxTokenExpiry(); 
 
       await query(
         `UPDATE user_tokens 
@@ -662,12 +673,10 @@ const wss = new WebSocketServer({
   // =========================================================================
   app.use("/api/user", authenticateToken, userProfileRouter);
   app.use("/api/watchlists", authenticateToken, watchlistsRouter);
-  app.use("/api/instruments", instrumentRoutes); // <-- NEW INSTRUMENTS SEARCH ROUTE
+  app.use("/api/instruments", instrumentRoutes); 
 
 // =========================================================================
 // UPSTOX WS AUTH PROXY — frontend calls this instead of Upstox directly
-// GET /api/broker/upstox/ws-auth
-// Returns the authorized_redirect_uri for the market data WebSocket
 // =========================================================================
 app.get("/api/broker/upstox/ws-auth", authenticateToken, async (req: any, res) => {
   try {
@@ -698,16 +707,9 @@ app.get("/api/broker/upstox/ws-auth", authenticateToken, async (req: any, res) =
       const errBody = await upstoxRes.text();
       logger.error(`[WS-Auth] Upstox authorize failed: ${upstoxRes.status} - ${errBody}`);
       
-      // If 401 from Upstox — token is expired. Clear it so user knows to reconnect
       if (upstoxRes.status === 401) {
-        await query(
-          "DELETE FROM user_tokens WHERE user_id = $1 AND broker = 'upstox'",
-          [req.user.id]
-        );
-        await query(
-          "UPDATE users SET is_uptox_connected = false WHERE id = $1",
-          [req.user.id]
-        );
+        await query("DELETE FROM user_tokens WHERE user_id = $1 AND broker = 'upstox'", [req.user.id]);
+        await query("UPDATE users SET is_uptox_connected = false WHERE id = $1", [req.user.id]);
         return res.status(401).json({ 
           error: "Upstox session expired. Please re-login to Upstox.", 
           code: "UPSTOX_TOKEN_EXPIRED" 
@@ -727,10 +729,10 @@ app.get("/api/broker/upstox/ws-auth", authenticateToken, async (req: any, res) =
 });
 
   // =========================================================================
-  // UPSTOX MARKET SNAPSHOT - Snapshot endpoint for arbitrary instrument keys
+  // UPSTOX MARKET SNAPSHOT 
   // =========================================================================
   app.get('/api/broker/upstox/market/snapshot', authenticateToken, async (req: any, res) => {
-    const { instrument_key } = req.query; // e.g. "NSE_EQ|WIPRO"
+    const { instrument_key } = req.query; 
     
     try {
       if (!instrument_key) {
@@ -745,7 +747,6 @@ app.get("/api/broker/upstox/ws-auth", authenticateToken, async (req: any, res) =
       if (rows[0]?.access_token) {
         const userAccessToken = decrypt(String(rows[0].access_token));
         
-        // Call Upstox Market Quote API natively via fetch (mirroring your existing ecosystem)
         const upstoxRes = await fetch(
           `https://api.upstox.com/v2/market-quote/ltp?instrument_key=${encodeURIComponent(String(instrument_key))}`,
           {
@@ -759,17 +760,15 @@ app.get("/api/broker/upstox/ws-auth", authenticateToken, async (req: any, res) =
         if (upstoxRes.ok) {
           const jsonResponse = await upstoxRes.json();
           const data = jsonResponse.data ?? {};
-          return res.json({ data }); // shape: { data: { 'NSE_EQ|WIPRO': { last_price, ... } } }
+          return res.json({ data }); 
         } else {
           logger.warn(`[Market Snapshot] Upstox API returned status ${upstoxRes.status}`);
         }
       }
       
-      // Fallback to marketData if the token is unavailable, request fails, or user is unauthenticated broker-wise
       return res.json({ data: marketData });
     } catch (err) {
       logger.error("[Market Snapshot] Error:", err);
-      // Fallback to marketData if an exception occurs
       return res.json({ data: marketData });
     }
   });
@@ -794,19 +793,19 @@ app.get("/api/broker/upstox/ws-auth", authenticateToken, async (req: any, res) =
     }
   });
 
-  // Replace your existing /api/auth/register block in server.ts with this:
 
-app.post("/api/auth/register", validate(registerSchema), async (req, res, next) => {
+  // =========================================================================
+  // USER REGISTRATION
+  // =========================================================================
+  app.post("/api/auth/register", validate(registerSchema), async (req: any, res: any, next: any) => {
     try {
-      // 1. Extract newly added fields
       let { email, mobile, password, name, pan } = req.body || {};
       
       email = email?.toString().toLowerCase().trim();
       mobile = mobile?.toString().trim();
       name = name?.toString().trim();
-      pan = pan?.toString().toUpperCase().trim(); // Enforce uppercase for PAN
+      pan = pan?.toString().toUpperCase().trim(); 
       
-      // 2. Default Upstox account status to false at the time of signup
       const hasUpstoxAccount = false;
 
       logger.info(`[Auth] Registration attempt for email: ${email}`);
@@ -827,37 +826,29 @@ app.post("/api/auth/register", validate(registerSchema), async (req, res, next) 
         ? "admin" 
         : "user"; 
 
-      // 3. Added name and pan to the INSERT statement
       const { rows: inserted } = await query(
         "INSERT INTO users (email, mobile, password, name, pan, role, has_upstox_account, terms_accepted_at) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW()) RETURNING id",
         [email, mobile, hashedPassword, name, pan, role, hasUpstoxAccount]
       );
 
-      // ... (inside the /api/auth/login route) ...
-
-        logger.info(`[Auth] Login successful for ${login} (ID: ${user.id}) with role: ${effectiveRole}`);
-        res.json({
-          token,
-          user: {
-            id: user.id,
-            email: user.email,
-            name: user.name, // <--- NEW
-            pan: user.pan,   // <--- NEW
-            role: effectiveRole,
-            balance: parseFloat(user.balance || "0"),
-          },
-        });
-      } catch (e: any) {
-        logger.error("[Auth Error] Unexpected failure:", e);
-        return res.status(500).json({ 
-          error: "An unexpected error occurred during login.", 
-          details: e.message || String(e) 
-        });
+      logger.info(`[Auth] Registration successful for user ID: ${inserted[0].id} with role: ${role}`);
+      res.json({ id: inserted[0].id });
+    } catch (e: any) {
+      if (e.code === "23505") {
+        if (e.constraint === "users_email_key") return res.status(400).json({ error: "Email already registered. Please login instead." });
+        if (e.constraint === "users_mobile_key") return res.status(400).json({ error: "Mobile number already registered. Please login instead." });
       }
+      next(e);
+    }
+  });
 
+
+  // =========================================================================
+  // USER LOGIN
+  // =========================================================================
   app.post(
     "/api/auth/login", 
-    (req, res, next) => {
+    (req: any, res: any, next: any) => {
       if (req.body && !req.body.login) {
         req.body.login = req.body.email || req.body.mobile;
       }
@@ -877,10 +868,7 @@ app.post("/api/auth/register", validate(registerSchema), async (req, res, next) 
 
         let rows;
         try {
-          const result = await query(
-            "SELECT * FROM users WHERE email = $1 OR mobile = $1",
-            [login]
-          );
+          const result = await query("SELECT * FROM users WHERE email = $1 OR mobile = $1", [login]);
           rows = result.rows;
         } catch (dbErr: any) {
           logger.error(`[Auth DB Error] DB query failed during login: ${dbErr.message}`);
@@ -923,6 +911,8 @@ app.post("/api/auth/register", validate(registerSchema), async (req, res, next) 
           user: {
             id: user.id,
             email: user.email,
+            name: user.name, 
+            pan: user.pan,   
             role: effectiveRole,
             balance: parseFloat(user.balance || "0"),
           },
@@ -2235,7 +2225,6 @@ app.post("/api/auth/register", validate(registerSchema), async (req, res, next) 
         }, 1000);
       });
 
-      // ── FIX: Extract Previous Close directly from WebSocket feed for accurate day change ──
       upstoxMarketWs.on("message", (data: any) => {
         try {
           const decoded = FeedResponse.decode(data as Buffer);
