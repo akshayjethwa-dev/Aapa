@@ -483,7 +483,7 @@ const wss = new WebSocketServer({
     clearInterval(tokenRefreshInterval);
   });
 
-  app.set("trust proxy", true);
+  app.set("trust proxy", 1);
 
   // ── FIX: Updated CSP to allow external fonts, images, 'unsafe-eval' (for TradingView & Recharts), and Upstox APIs ──
   app.use(

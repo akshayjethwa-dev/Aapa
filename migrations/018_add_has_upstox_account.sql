@@ -1,0 +1,1 @@
+ALTER TABLE users ADD COLUMN IF NOT EXISTS has_upstox_account BOOLEAN DEFAULT false;
