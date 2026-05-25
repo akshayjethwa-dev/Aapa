@@ -15,9 +15,6 @@ export default defineConfig(({mode}) => {
         '@': path.resolve(__dirname, '.'),
       },
     },
-    // ========================================================
-    // --- ADDED FOR TASK 5.2: Production Logging Removal   ---
-    // ========================================================
     build: {
       minify: 'terser',
       terserOptions: {
@@ -27,14 +24,10 @@ export default defineConfig(({mode}) => {
         },
       },
     },
-    // ========================================================
     server: {
       hmr: process.env.DISABLE_HMR !== 'true',
-      allowedHosts: [
-        'aapa-production.up.railway.app', 
-        '.up.railway.app', 
-        '.railway.app'
-      ],
+      // Allow all hosts in development so AWS Load Balancers don't get blocked
+      allowedHosts: true, 
     },
   };
 });

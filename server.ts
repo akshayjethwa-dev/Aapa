@@ -151,29 +151,31 @@ app.use((req, res, next) => {
 });
   const server = http.createServer(app);
 
-  const allowedOrigins = [
-    process.env.VITE_APP_URL?.trim() || "https://aapacapital.com",
-    "https://aapa-production.up.railway.app", 
-    "http://localhost:3000",
-    "http://localhost:5173", 
-    "http://localhost:8081",
-  ];
 
-  // =========================================================================
-  // PHASE 3: RAILWAY WEBSOCKETS - Strict CORS Verification & Health
-  // =========================================================================
-  
+const allowedOrigins = [
+  process.env.VITE_APP_URL?.trim() || "https://aapacapital.com",
+  "https://www.aapacapital.com",
+  "http://localhost:3000",
+  "http://localhost:5173", 
+  "http://localhost:8081",
+];
+
 const wss = new WebSocketServer({ 
   server,
   verifyClient: (info, callback) => {
-    const origin = info.origin;
-    // No origin = React Native / curl / mobile app fetch (always allow)
-    const wsIsLocalhost = !origin ||
-      origin.startsWith("http://localhost:") ||
-      origin.startsWith("http://127.0.0.1:");
-    // Allow 192.168.x.x (Expo on device WiFi) and 10.0.x.x (Android emulator)
-    const wsIsLocalNetwork = /^http:\/\/(192\.168|10\.0)\.\d{1,3}\.\d{1,3}(:\d+)?$/.test(origin || "");
-    if (wsIsLocalhost || wsIsLocalNetwork || allowedOrigins.includes(origin || "")) {
+    const origin = info.origin || "";
+    const cleanOrigin = origin.replace(/\/$/, ""); // Strip trailing slashes
+
+    // Allow empty origins (mobile apps/curl) or localhost
+    const wsIsLocalhost = !origin || cleanOrigin.startsWith("http://localhost:") || cleanOrigin.startsWith("http://127.0.0.1:");
+    // Allow local network IPs for Expo/Android testing
+    const wsIsLocalNetwork = /^http:\/\/(192\.168|10\.0)\.\d{1,3}\.\d{1,3}(:\d+)?$/.test(cleanOrigin);
+    // Allow your official domain
+    const isAllowedDomain = allowedOrigins.some(allowed => allowed.replace(/\/$/, '') === cleanOrigin);
+    // Allow ANY AWS generic domain just in case you are testing before DNS propagates
+    const isAWSDomain = cleanOrigin.includes(".amazonaws.com") || cleanOrigin.includes(".elasticbeanstalk.com");
+
+    if (wsIsLocalhost || wsIsLocalNetwork || isAllowedDomain || isAWSDomain) {
       callback(true);
     } else {
       logger.warn(`[WS CORS] Blocked WebSocket connection from unauthorized origin: ${origin}`);
@@ -549,18 +551,19 @@ const wss = new WebSocketServer({
   app.use(
     cors({
       origin: function (origin, callback) {
-        // Allow requests with no origin (like mobile apps, curl requests)
         if (!origin) return callback(null, true);
+        const cleanOrigin = origin.replace(/\/$/, '');
         
-        // Dynamically check if the request is coming from Expo's local environments
-        const isLocalhost = origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:");
-        const isLocalNetwork = /^http:\/\/(192\.168|10\.0)\.\d{1,3}\.\d{1,3}(:\d+)?$/.test(origin);
+        const isLocalhost = cleanOrigin.startsWith("http://localhost:") || cleanOrigin.startsWith("http://127.0.0.1:");
+        const isLocalNetwork = /^http:\/\/(192\.168|10\.0)\.\d{1,3}\.\d{1,3}(:\d+)?$/.test(cleanOrigin);
+        const isAllowedDomain = allowedOrigins.some(allowed => allowed.replace(/\/$/, '') === cleanOrigin);
+        const isAWSDomain = cleanOrigin.includes(".amazonaws.com") || cleanOrigin.includes(".elasticbeanstalk.com");
 
-        if (allowedOrigins.includes(origin) || isLocalhost || isLocalNetwork) {
-          return callback(null, true); // Allow the request
+        if (isAllowedDomain || isLocalhost || isLocalNetwork || isAWSDomain) {
+          return callback(null, true);
         } else {
           logger.warn(`[HTTP CORS] Blocked request from unauthorized origin: ${origin}`);
-          return callback(null, false); // Block the request
+          return callback(null, false);
         }
       },
       credentials: true, 
