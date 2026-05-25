@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   User as UserIcon,
-  Link2,
   ShieldCheck,
   Rocket,
   CheckCircle2,
@@ -21,13 +20,14 @@ interface OnboardingProps {
   isConnectingUpstox?: boolean;
 }
 
+// ✅ 3 steps only — broker connect removed
 const STEPS = [
   {
     id: 1,
     key: 'account',
     label: 'Account',
     title: 'Welcome to Aapa Capital',
-    subtitle: 'Let\'s get you set up in 4 quick steps',
+    subtitle: "Your account is ready. Let's complete a quick setup",
     icon: UserIcon,
     color: 'text-blue-400',
     bg: 'bg-blue-500/10',
@@ -35,17 +35,6 @@ const STEPS = [
   },
   {
     id: 2,
-    key: 'broker',
-    label: 'Connect Broker',
-    title: 'Connect Your Upstox Account',
-    subtitle: 'Link your Upstox broker to enable live trading',
-    icon: Link2,
-    color: 'text-emerald-400',
-    bg: 'bg-emerald-500/10',
-    glow: 'shadow-emerald-500/20',
-  },
-  {
-    id: 3,
     key: 'kyc',
     label: 'KYC & Risk',
     title: 'KYC & Risk Disclosure',
@@ -56,10 +45,10 @@ const STEPS = [
     glow: 'shadow-amber-500/20',
   },
   {
-    id: 4,
+    id: 3,
     key: 'ready',
     label: 'Ready',
-    title: 'You\'re All Set!',
+    title: "You're All Set!",
     subtitle: 'Your account is ready. Start exploring the markets',
     icon: Rocket,
     color: 'text-emerald-400',
@@ -77,7 +66,8 @@ const RISK_ITEMS = [
   'Please read the full risk disclosure document before placing any trade.',
 ];
 
-const Onboarding = ({ onComplete, onConnectUpstox, isConnectingUpstox = false }: OnboardingProps) => {
+// ✅ Removed onConnectUpstox / isConnectingUpstox from usage (kept in props for App.tsx compatibility)
+const Onboarding = ({ onComplete }: OnboardingProps) => {
   const { user, setAuth, token } = useAuthStore();
   const [step, setStep] = useState<number>(1);
   const [isSaving, setIsSaving] = useState(false);
@@ -86,19 +76,12 @@ const Onboarding = ({ onComplete, onConnectUpstox, isConnectingUpstox = false }:
   const [mobile, setMobile] = useState('');
   const [nameError, setNameError] = useState('');
 
-  // Resume from last saved step on mount
+  // Resume from last saved step — but only within new 3-step range
   useEffect(() => {
-    if (user?.onboarding_step && user.onboarding_step > 0 && user.onboarding_step < 4) {
+    if (user?.onboarding_step && user.onboarding_step > 0 && user.onboarding_step < 3) {
       setStep(user.onboarding_step);
     }
   }, []);
-
-  // Watch for upstox connection success and auto-advance
-  useEffect(() => {
-    if (step === 2 && user?.is_uptox_connected) {
-      advanceStep(2);
-    }
-  }, [user?.is_uptox_connected]);
 
   const saveStep = async (newStep: number) => {
     try {
@@ -119,31 +102,27 @@ const Onboarding = ({ onComplete, onConnectUpstox, isConnectingUpstox = false }:
     }
   };
 
-  const advanceStep = async (currentStep: number) => {
-    const nextStep = currentStep + 1;
-    await saveStep(nextStep);
-    setStep(nextStep);
-  };
-
   const handleStep1Continue = async () => {
     if (!fullName.trim() || fullName.trim().length < 2) {
       setNameError('Please enter your full name (min 2 characters)');
       return;
     }
     setNameError('');
-    await advanceStep(1);
+    await saveStep(2);
+    setStep(2);
   };
 
-  const handleStep3Continue = async () => {
+  const handleStep2Continue = async () => {
     if (!riskAccepted) {
       toast.error('Please accept the risk disclosure to continue');
       return;
     }
-    await advanceStep(3);
+    // ✅ Save as step 4 so isOnboardingComplete = true in App.tsx
+    await saveStep(4);
+    setStep(3);
   };
 
-  const handleFinish = async () => {
-    await saveStep(4);
+  const handleFinish = () => {
     toast.success('🎉 Welcome to Aapa Capital! Happy Trading!');
     onComplete();
   };
@@ -186,7 +165,6 @@ const Onboarding = ({ onComplete, onConnectUpstox, isConnectingUpstox = false }:
             </React.Fragment>
           ))}
         </div>
-        {/* Step labels */}
         <div className="flex justify-between mt-2">
           {STEPS.map((s) => (
             <span
@@ -225,7 +203,7 @@ const Onboarding = ({ onComplete, onConnectUpstox, isConnectingUpstox = false }:
             </div>
             <div className="pt-1">
               <div className="text-[9px] font-black text-zinc-600 uppercase tracking-[0.2em] mb-1">
-                Step {step} of 4
+                Step {step} of 3
               </div>
               <h2 className="text-xl font-black tracking-tight text-white leading-tight">
                 {currentStepData.title}
@@ -242,21 +220,21 @@ const Onboarding = ({ onComplete, onConnectUpstox, isConnectingUpstox = false }:
               <div className="bg-zinc-900/40 border border-zinc-800/50 rounded-3xl p-5 space-y-2">
                 <div className="flex items-center gap-3">
                   <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
-                  <span className="text-xs font-bold text-zinc-300">Email / Mobile registered</span>
+                  <span className="text-xs font-bold text-zinc-300">Email & Mobile registered</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                  <span className="text-xs font-bold text-zinc-300">PAN number saved</span>
                 </div>
                 <div className="flex items-center gap-3">
                   <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
                   <span className="text-xs font-bold text-zinc-300">Account created securely</span>
                 </div>
-                <div className="flex items-center gap-3">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
-                  <span className="text-xs font-bold text-zinc-300">Beta access approved</span>
-                </div>
               </div>
 
               <div className="space-y-2">
                 <label className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest ml-1">
-                  Full Name
+                  Confirm Full Name
                 </label>
                 <input
                   type="text"
@@ -264,7 +242,7 @@ const Onboarding = ({ onComplete, onConnectUpstox, isConnectingUpstox = false }:
                   value={fullName}
                   onChange={(e) => { setFullName(e.target.value); setNameError(''); }}
                   className={cn(
-                    'w-full bg-zinc-900/30 border rounded-2xl py-4 px-5 text-sm font-bold focus:outline-none transition-all',
+                    'w-full bg-zinc-900/30 border rounded-2xl py-4 px-5 text-sm font-bold text-white focus:outline-none transition-all',
                     nameError
                       ? 'border-rose-500/60 focus:border-rose-500'
                       : 'border-zinc-800/50 focus:border-emerald-500/50'
@@ -287,86 +265,14 @@ const Onboarding = ({ onComplete, onConnectUpstox, isConnectingUpstox = false }:
                   placeholder="10-digit mobile number"
                   value={mobile}
                   onChange={(e) => setMobile(e.target.value.replace(/\D/g, '').slice(0, 10))}
-                  className="w-full bg-zinc-900/30 border border-zinc-800/50 rounded-2xl py-4 px-5 text-sm font-bold focus:outline-none focus:border-emerald-500/50 transition-all"
+                  className="w-full bg-zinc-900/30 border border-zinc-800/50 rounded-2xl py-4 px-5 text-sm font-bold text-white focus:outline-none focus:border-emerald-500/50 transition-all"
                 />
               </div>
             </div>
           )}
 
-          {/* ── STEP 2: Connect Broker ── */}
+          {/* ── STEP 2: KYC & Risk ── */}
           {step === 2 && (
-            <div className="space-y-5">
-              {user?.is_uptox_connected ? (
-                <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-3xl p-6 text-center space-y-3">
-                  <div className="w-16 h-16 bg-emerald-500/10 rounded-2xl mx-auto flex items-center justify-center">
-                    <CheckCircle2 className="w-8 h-8 text-emerald-500" />
-                  </div>
-                  <p className="text-base font-black text-emerald-400 tracking-tight">Upstox Connected!</p>
-                  <p className="text-[11px] font-bold text-zinc-500">
-                    Your broker is linked. Live market data is now enabled.
-                  </p>
-                </div>
-              ) : (
-                <>
-                  <div className="bg-zinc-900/40 border border-zinc-800/50 rounded-3xl p-5 space-y-4">
-                    <div className="flex items-center gap-4">
-                      <div className="w-12 h-12 bg-zinc-900 rounded-2xl flex items-center justify-center border border-zinc-800">
-                        <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">UPSTOX</span>
-                      </div>
-                      <div>
-                        <p className="text-sm font-black text-white">Upstox</p>
-                        <p className="text-[10px] font-bold text-zinc-500">SEBI Registered Broker • API v2</p>
-                      </div>
-                    </div>
-                    <div className="space-y-2">
-                      {[
-                        'Live NSE / BSE market data',
-                        'Place Equity & F&O orders',
-                        'Real-time portfolio sync',
-                        'Secure OAuth 2.0 — no passwords stored',
-                      ].map((item) => (
-                        <div key={item} className="flex items-center gap-3">
-                          <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
-                          <span className="text-[11px] font-bold text-zinc-400">{item}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="bg-amber-500/5 border border-amber-500/20 rounded-2xl p-4 flex items-start gap-3">
-                    <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                    <p className="text-[11px] font-bold text-amber-300/70 leading-relaxed">
-                      You can skip this step and connect your broker later from the More tab. Some features will be limited until connected.
-                    </p>
-                  </div>
-
-                  {onConnectUpstox && (
-                    <button
-                      onClick={onConnectUpstox}
-                      disabled={isConnectingUpstox}
-                      className="w-full bg-emerald-500 text-black font-black py-4 rounded-2xl flex items-center justify-center gap-3 hover:bg-emerald-400 transition-all disabled:opacity-60 disabled:cursor-not-allowed shadow-lg shadow-emerald-500/10"
-                    >
-                      {isConnectingUpstox ? (
-                        <>
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                          <span className="text-[11px] uppercase tracking-widest">Connecting...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Link2 className="w-4 h-4" />
-                          <span className="text-[11px] uppercase tracking-widest">Connect Upstox</span>
-                          <ChevronRight className="w-4 h-4" />
-                        </>
-                      )}
-                    </button>
-                  )}
-                </>
-              )}
-            </div>
-          )}
-
-          {/* ── STEP 3: KYC & Risk ── */}
-          {step === 3 && (
             <div className="space-y-5">
               <div className="bg-zinc-900/40 border border-zinc-800/50 rounded-3xl p-5 space-y-3 max-h-64 overflow-y-auto">
                 <p className="text-[10px] font-black text-zinc-600 uppercase tracking-widest sticky top-0 bg-zinc-900/80 backdrop-blur-sm pb-2">
@@ -405,14 +311,14 @@ const Onboarding = ({ onComplete, onConnectUpstox, isConnectingUpstox = false }:
               <div className="bg-zinc-900/30 border border-zinc-800/30 rounded-2xl p-4 flex items-start gap-3">
                 <ShieldCheck className="w-4 h-4 text-zinc-600 shrink-0 mt-0.5" />
                 <p className="text-[11px] font-bold text-zinc-600 leading-relaxed">
-                  KYC verification via Upstox is handled by your registered broker. Aapa Capital does not store Aadhaar or PAN data.
+                  You can connect your broker (Upstox) anytime from the More tab. It's not required to get started.
                 </p>
               </div>
             </div>
           )}
 
-          {/* ── STEP 4: Ready to Trade ── */}
-          {step === 4 && (
+          {/* ── STEP 3: Ready ── */}
+          {step === 3 && (
             <div className="space-y-5">
               <div className="bg-zinc-900/20 border border-zinc-800/30 rounded-[2.5rem] p-10 text-center space-y-5">
                 <motion.div
@@ -432,7 +338,7 @@ const Onboarding = ({ onComplete, onConnectUpstox, isConnectingUpstox = false }:
                 >
                   <p className="text-2xl font-black tracking-tighter text-white">Ready to Trade!</p>
                   <p className="text-[11px] font-bold text-zinc-500 leading-relaxed max-w-xs mx-auto">
-                    Your Aapa Capital account is fully configured. Access live markets, track your portfolio, and trade seamlessly.
+                    Your Aapa Capital account is fully set up. Connect your broker from the More tab to enable live trading.
                   </p>
                 </motion.div>
               </div>
@@ -459,10 +365,9 @@ const Onboarding = ({ onComplete, onConnectUpstox, isConnectingUpstox = false }:
       {/* Bottom Action Bar */}
       <div className="fixed bottom-0 left-0 right-0 p-6 bg-black/90 backdrop-blur-xl border-t border-zinc-900 z-50">
         <div className="max-w-md mx-auto flex gap-3">
-          {/* Back button — not on step 1 or 4 */}
-          {step > 1 && step < 4 && (
+          {step === 2 && (
             <button
-              onClick={() => setStep(step - 1)}
+              onClick={() => setStep(1)}
               disabled={isSaving}
               className="flex-[0.4] bg-zinc-900 text-zinc-400 font-bold py-4 rounded-2xl border border-zinc-800 hover:text-white transition-all text-[10px] uppercase tracking-widest disabled:opacity-50"
             >
@@ -470,7 +375,6 @@ const Onboarding = ({ onComplete, onConnectUpstox, isConnectingUpstox = false }:
             </button>
           )}
 
-          {/* Primary CTA */}
           {step === 1 && (
             <button
               onClick={handleStep1Continue}
@@ -483,31 +387,9 @@ const Onboarding = ({ onComplete, onConnectUpstox, isConnectingUpstox = false }:
             </button>
           )}
 
-          {step === 2 && !user?.is_uptox_connected && (
+          {step === 2 && (
             <button
-              onClick={() => advanceStep(2)}
-              disabled={isSaving}
-              className="flex-1 bg-zinc-800 text-zinc-400 font-bold py-4 rounded-2xl border border-zinc-700 hover:text-white hover:border-zinc-600 transition-all text-[10px] uppercase tracking-widest disabled:opacity-50"
-            >
-              Skip for Now
-            </button>
-          )}
-
-          {step === 2 && user?.is_uptox_connected && (
-            <button
-              onClick={() => advanceStep(2)}
-              disabled={isSaving}
-              className="flex-1 bg-emerald-500 text-black font-black py-4 rounded-2xl hover:bg-emerald-400 transition-all text-[10px] uppercase tracking-widest disabled:opacity-60 flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/10"
-            >
-              {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-              Continue
-              <ChevronRight className="w-4 h-4" />
-            </button>
-          )}
-
-          {step === 3 && (
-            <button
-              onClick={handleStep3Continue}
+              onClick={handleStep2Continue}
               disabled={isSaving || !riskAccepted}
               className="flex-1 bg-emerald-500 text-black font-black py-4 rounded-2xl hover:bg-emerald-400 transition-all text-[10px] uppercase tracking-widest disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/10"
             >
@@ -517,13 +399,13 @@ const Onboarding = ({ onComplete, onConnectUpstox, isConnectingUpstox = false }:
             </button>
           )}
 
-          {step === 4 && (
+          {step === 3 && (
             <button
               onClick={handleFinish}
               disabled={isSaving}
               className="flex-1 bg-emerald-500 text-black font-black py-4 rounded-2xl hover:bg-emerald-400 transition-all text-[10px] uppercase tracking-widest disabled:opacity-60 flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20"
             >
-              {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Rocket className="w-4 h-4" />}
+              <Rocket className="w-4 h-4" />
               Start Trading
             </button>
           )}

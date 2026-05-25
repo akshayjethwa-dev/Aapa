@@ -37,7 +37,6 @@ const Auth = () => {
     setIsLoading(true);
     const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
     
-    // Updated payload to include name and pan for registration
     const body = isLogin 
       ? { login: email, password } 
       : { name, pan, email, mobile, password };
@@ -49,10 +48,24 @@ const Auth = () => {
       if (data.token) {
         localStorage.setItem('token', data.token);
         setAuth(data.user, data.token);
-        toast.success('Welcome back!');
+        toast.success(isLogin ? 'Welcome back!' : 'Account created successfully!');
       } else if (!isLogin && data.id) {
-        handleToggleMode(true);
-        toast.success('Account created! Please sign in.');
+        // Auto-login after successful registration
+        try {
+          const loginRes = await apiClient.post('/api/auth/login', { login: email, password });
+          const loginData = loginRes.data;
+          
+          if (loginData.token) {
+            localStorage.setItem('token', loginData.token);
+            setAuth(loginData.user, loginData.token);
+          } else {
+            handleToggleMode(true);
+            toast.success('Account created! Please sign in.');
+          }
+        } catch (loginErr) {
+          handleToggleMode(true);
+          toast.success('Account created! Please sign in.');
+        }
       }
     } catch (err: any) {
       if (err.response?.status === 401 && isLogin) {
@@ -76,7 +89,6 @@ const Auth = () => {
       className="space-y-5"
     >
       <div className="space-y-4">
-        {/* NEW: Name Field for Registration */}
         {!isLogin && (
           <div className="space-y-2">
             <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest ml-1">Full Name</label>
@@ -111,15 +123,14 @@ const Auth = () => {
             <input
               type="tel"
               value={mobile}
-              onChange={(e) => setMobile(e.target.value)}
+              onChange={(e) => setMobile(e.target.value.replace(/\D/g, '').slice(0, 10))}
               className="w-full bg-black/50 border border-zinc-800 rounded-2xl py-4 px-6 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-all"
-              placeholder="+91 00000 00000"
+              placeholder="9876543210"
               required
             />
           </div>
         )}
 
-        {/* NEW: PAN Field for Registration */}
         {!isLogin && (
           <div className="space-y-2">
             <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest ml-1">PAN Number</label>
@@ -246,13 +257,6 @@ const Auth = () => {
               )}
             </button>
           </div>
-        </div>
-
-        <div className="text-center mt-4">
-          <p className="text-[8px] text-zinc-700 font-bold uppercase tracking-widest leading-relaxed">
-            Aapa Capital is a technology platform.<br />
-            Not a SEBI registered investment advisor.
-          </p>
         </div>
       </motion.div>
     </div>

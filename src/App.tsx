@@ -119,10 +119,10 @@ function App() {
   // HELPER: Determine if onboarding is complete
   // =========================================================================
   const isOnboardingComplete = Boolean(
-    user &&
-      user.role !== 'admin' &&
-      (user.is_onboarding_complete === true || (user.onboarding_step ?? 0) >= 4),
-  );
+  user &&
+    user.role !== 'admin' &&
+    (user.is_onboarding_complete === true || (user.onboarding_step ?? 0) >= 3),
+);
 
   // =========================================================================
   // UPSTOX CONNECTION TRIGGER
