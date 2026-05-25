@@ -164,18 +164,9 @@ const wss = new WebSocketServer({
   server,
   verifyClient: (info, callback) => {
     const origin = info.origin || "";
-    const cleanOrigin = origin.replace(/\/$/, ""); // Strip trailing slashes
-
-    // Allow empty origins (mobile apps/curl) or localhost
-    const wsIsLocalhost = !origin || cleanOrigin.startsWith("http://localhost:") || cleanOrigin.startsWith("http://127.0.0.1:");
-    // Allow local network IPs for Expo/Android testing
-    const wsIsLocalNetwork = /^http:\/\/(192\.168|10\.0)\.\d{1,3}\.\d{1,3}(:\d+)?$/.test(cleanOrigin);
-    // Allow your official domain
-    const isAllowedDomain = allowedOrigins.some(allowed => allowed.replace(/\/$/, '') === cleanOrigin);
-    // Allow ANY AWS generic domain just in case you are testing before DNS propagates
-    const isAWSDomain = cleanOrigin.includes(".amazonaws.com") || cleanOrigin.includes(".elasticbeanstalk.com");
-
-    if (wsIsLocalhost || wsIsLocalNetwork || isAllowedDomain || isAWSDomain) {
+    
+    // Foolproof check: Just look for your domain or localhost anywhere in the origin string
+    if (!origin || origin.includes("aapacapital.com") || origin.includes("localhost") || origin.includes("127.0.0.1")) {
       callback(true);
     } else {
       logger.warn(`[WS CORS] Blocked WebSocket connection from unauthorized origin: ${origin}`);
@@ -551,15 +542,7 @@ const wss = new WebSocketServer({
   app.use(
     cors({
       origin: function (origin, callback) {
-        if (!origin) return callback(null, true);
-        const cleanOrigin = origin.replace(/\/$/, '');
-        
-        const isLocalhost = cleanOrigin.startsWith("http://localhost:") || cleanOrigin.startsWith("http://127.0.0.1:");
-        const isLocalNetwork = /^http:\/\/(192\.168|10\.0)\.\d{1,3}\.\d{1,3}(:\d+)?$/.test(cleanOrigin);
-        const isAllowedDomain = allowedOrigins.some(allowed => allowed.replace(/\/$/, '') === cleanOrigin);
-        const isAWSDomain = cleanOrigin.includes(".amazonaws.com") || cleanOrigin.includes(".elasticbeanstalk.com");
-
-        if (isAllowedDomain || isLocalhost || isLocalNetwork || isAWSDomain) {
+        if (!origin || origin.includes("aapacapital.com") || origin.includes("localhost") || origin.includes("127.0.0.1")) {
           return callback(null, true);
         } else {
           logger.warn(`[HTTP CORS] Blocked request from unauthorized origin: ${origin}`);
