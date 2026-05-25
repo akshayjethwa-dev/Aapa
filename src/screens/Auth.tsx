@@ -21,6 +21,7 @@ const Auth = () => {
   
   const { setAuth } = useAuthStore();
 
+  // Directly toggles between Login and Registration forms
   const handleToggleMode = (toLogin: boolean) => {
     setIsLogin(toLogin);
     setTermsAccepted(false);
