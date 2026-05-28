@@ -246,13 +246,15 @@ function App() {
   // =========================================================================
   useEffect(() => {
     const handleMessage = async (event: MessageEvent) => {
-      const allowedOrigins = [window.location.origin, import.meta.env.VITE_APP_URL];
-
-      if (!allowedOrigins.includes(event.origin)) return;
-
       const data = event.data;
 
-      if (data?.type === 'UPTOX_AUTH_SUCCESS') {
+      // 👇 FIX: Only check for our trusted message types instead of strict origins. 
+      // This ensures it works regardless of your AWS frontend/backend domain structure.
+      if (!data || (data.type !== 'UPTOX_AUTH_SUCCESS' && data.type !== 'UPTOX_AUTH_ERROR')) {
+        return;
+      }
+
+      if (data.type === 'UPTOX_AUTH_SUCCESS') {
         try {
           const { token: uptoxToken, refresh_token: uptoxRefreshToken } = data;
 
@@ -263,6 +265,7 @@ function App() {
             });
           }
 
+          // Small delay to ensure DB syncs
           await new Promise((r) => setTimeout(r, 600));
 
           const profileRes = await apiClient.get('/api/user/profile');
@@ -276,7 +279,7 @@ function App() {
         } finally {
           setIsConnectingUptox(false);
         }
-      } else if (data?.type === 'UPTOX_AUTH_ERROR') {
+      } else if (data.type === 'UPTOX_AUTH_ERROR') {
         toast.error(data.error?.message || 'Upstox connection failed or was cancelled.');
         setIsConnectingUptox(false);
       }

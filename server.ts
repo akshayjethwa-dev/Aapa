@@ -478,14 +478,13 @@ const wss = new WebSocketServer({
 
   app.set("trust proxy", 1);
 
-  // ── FIX: Updated CSP to allow external fonts, images, 'unsafe-eval' (for TradingView & Recharts), and Upstox APIs ──
+  // ── FIX: Updated CSP and Cross-Origin Policies ──
   app.use(
     helmet({
       contentSecurityPolicy: process.env.NODE_ENV === "production" 
         ? {
             directives: {
               ...helmet.contentSecurityPolicy.getDefaultDirectives(),
-              // Added unpkg.com to allow lightweight-charts and TV dynamic scripts
               "script-src": [
                 "'self'", 
                 "'unsafe-inline'", 
@@ -500,7 +499,6 @@ const wss = new WebSocketServer({
                 "https://www.tradingview.com", 
                 "blob:"
               ],
-              // Added unpkg.com to workers
               "worker-src": [
                 "'self'", 
                 "blob:", 
@@ -523,7 +521,6 @@ const wss = new WebSocketServer({
                 "http:", 
                 "blob:"
               ],
-              // Allow connections to Upstox APIs and UNPKG
               "connect-src": [
                 "'self'", 
                 "https://api.upstox.com", 
@@ -536,6 +533,9 @@ const wss = new WebSocketServer({
           }
         : false,
       crossOriginEmbedderPolicy: false,
+      // 👇 ADD THESE TWO LINES TO FIX THE OAUTH POPUP COMMUNICATION 👇
+      crossOriginOpenerPolicy: false,
+      crossOriginResourcePolicy: false,
     })
   );
 
@@ -1110,7 +1110,7 @@ app.get("/api/broker/upstox/ws-auth", authenticateToken, async (req: any, res) =
   // =========================================================================
   // UPDATED: OAUTH CALLBACK FOR WEB POPUP & DEEP-LINKING (MOBILE)
   // =========================================================================
-  app.get("/auth/callback", async (req, res, next) => {
+  app.get(["/auth/callback", "/api/upstox/callback"], async (req, res, next) => {
     const { code, state } = req.query;
     
     const sendErrorHtml = (reason: string) => res.send(`
