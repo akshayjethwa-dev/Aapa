@@ -5,7 +5,7 @@ import { apiClient } from '../api/client';
 export interface TickData {
   ltp?: number;
   close?: number;
-  prevClose?: number; // Standardized to handle both REST API and WebSocket payloads
+  prevClose?: number; 
   open?: number;
   high?: number;
   low?: number;
@@ -14,7 +14,6 @@ export interface TickData {
   bidQty?: number;
   askPrice?: number;
   askQty?: number;
-  // Automatically calculated fields
   day_change?: number;     
   day_change_pct?: number; 
 }
@@ -36,27 +35,28 @@ interface MarketMover {
 }
 
 interface MarketDataState {
-  // Tick logic
   ticks: Record<string, TickData>;
   updateTick: (instrumentKey: string, data: Partial<TickData>) => void;
   updateMultipleTicks: (updates: Record<string, Partial<TickData>>) => void;
   clearData: () => void;
   
-  // REST Fallback logic
   fetchClosingQuotes: (instrumentKeys: string[]) => Promise<void>;
 
-  // Dashboard Data logic
   dashboardNews: DashboardNews[];
   topGainers: MarketMover[];
   topLosers: MarketMover[];
   isLoadingDashboard: boolean;
+  
+  // ✅ FIX: Dynamic Market Status State
+  isMarketOpen: boolean;
+  marketPhase: string;
+  fetchMarketStatus: () => Promise<boolean>;
+  
   fetchDashboardData: () => Promise<void>;
 }
 
-// ── INTERNAL HELPER ────────────────────────────────────────────────────────
 const processTick = (existing: TickData = {}, incoming: Partial<TickData>): TickData => {
   const updated = { ...existing, ...incoming };
-  
   const closePrice = updated.close || updated.prevClose || (updated as any).cp;
   
   if (closePrice !== undefined && closePrice > 0) {
@@ -68,10 +68,8 @@ const processTick = (existing: TickData = {}, incoming: Partial<TickData>): Tick
       updated.day_change_pct = (updated.day_change / closePrice) * 100;
     }
   }
-  
   return updated;
 };
-// ───────────────────────────────────────────────────────────────────────────
 
 export const useMarketDataStore = create<MarketDataState>((set, get) => ({
   ticks: {},
@@ -93,21 +91,16 @@ export const useMarketDataStore = create<MarketDataState>((set, get) => ({
   
   clearData: () => set({ ticks: {} }),
 
-  // --- NEW: Fetch closing quotes for after-hours fallback ---
   fetchClosingQuotes: async (instrumentKeys) => {
     if (!instrumentKeys || instrumentKeys.length === 0) return;
-    
     try {
-      // Assuming your backend exposes an endpoint to fetch market quotes
       const response = await apiClient.get('/api/market/quotes', {
         params: { keys: instrumentKeys.join(',') }
       });
-      
       const quotes = response.data?.data || {};
       const batchUpdates: Record<string, Partial<TickData>> = {};
       
       for (const [key, quote] of Object.entries<any>(quotes)) {
-        // ✅ FIX: Correctly parse Upstox v3 nested OHLC format
         batchUpdates[key] = {
           ltp: quote.last_price,
           close: quote.ohlc?.close || quote.last_price,
@@ -125,24 +118,42 @@ export const useMarketDataStore = create<MarketDataState>((set, get) => ({
     }
   },
 
-  // Dashboard implementation
   dashboardNews: [],
   topGainers: [],
   topLosers: [],
   isLoadingDashboard: false,
+  
+  isMarketOpen: false,
+  marketPhase: 'CLOSED',
+  
+  fetchMarketStatus: async () => {
+    try {
+      const res = await apiClient.get('/api/market/status');
+      const isOpen = res.data?.isOpen ?? false;
+      const phase = res.data?.phase || 'CLOSED';
+      set({ isMarketOpen: isOpen, marketPhase: phase });
+      return isOpen;
+    } catch (e) {
+      console.error('Error fetching market status:', e);
+      return false;
+    }
+  },
 
   fetchDashboardData: async () => {
     set({ isLoadingDashboard: true });
     try {
-      const [newsRes, moversRes] = await Promise.all([
+      const [newsRes, moversRes, statusRes] = await Promise.all([
         apiClient.get('/api/market/news'),
-        apiClient.get('/api/market/movers')
+        apiClient.get('/api/market/movers'),
+        apiClient.get('/api/market/status') // Parallel fetch guarantees fresh UI mapping
       ]);
 
       set({ 
         dashboardNews: newsRes.data?.data || [],
         topGainers: moversRes.data?.gainers || [],
         topLosers: moversRes.data?.losers || [],
+        isMarketOpen: statusRes.data?.isOpen ?? false,
+        marketPhase: statusRes.data?.phase || 'CLOSED'
       });
     } catch (error) {
       console.error('Error fetching dashboard data:', error);

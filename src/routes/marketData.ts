@@ -523,7 +523,6 @@ router.get('/events', async (req: Request, res: Response) => {
 });
 
 // ── GET /api/market/quotes ───────────────────────────────────────────────────
-// ✅ FIX: Added the missing route to fulfill the fetchClosingQuotes request
 router.get('/quotes', async (req: Request, res: Response) => {
   const keysParam = req.query.keys as string;
   if (!keysParam) {
@@ -537,12 +536,51 @@ router.get('/quotes', async (req: Request, res: Response) => {
 
   try {
     const keys = keysParam.split(',');
-    // We reuse the existing fetchUpstoxQuotes helper!
     const quotes = await fetchUpstoxQuotes(token, keys);
     return res.json({ data: quotes });
   } catch (err: any) {
     console.error('[marketData] /quotes error:', err.message);
     return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── GET /api/market/status ───────────────────────────────────────────────────
+// ✅ FIX: Long-term robust market status directly from Upstox API
+router.get('/status', async (req: Request, res: Response) => {
+  const cached = getCache('marketStatus');
+  if (cached) return res.json(cached);
+
+  const token = await getAnyUpstoxToken();
+  if (!token) {
+    // If we have no token, default to closed to prevent rogue WS attempts
+    return res.json({ isOpen: false, phase: 'CLOSED', raw: 'NO_TOKEN', source: 'unavailable' });
+  }
+
+  try {
+    const r = await axios.get('https://api.upstox.com/v2/market/status/NSE', {
+      headers: { 'Accept': 'application/json', 'Authorization': `Bearer ${token}` },
+      timeout: 5000,
+    });
+    
+    const statusStr = r.data?.data?.status || 'NORMAL_CLOSE';
+    let isOpen = false;
+    let phase = 'CLOSED';
+    
+    if (statusStr === 'NORMAL_OPEN') {
+      isOpen = true;
+      phase = 'LIVE';
+    } else if (statusStr.includes('PRE_OPEN')) {
+      isOpen = true;
+      phase = 'PRE_OPEN';
+    }
+    
+    const payload = { isOpen, phase, raw: statusStr, source: 'upstox' };
+    setCache('marketStatus', payload, 60_000); // Cache for 1 minute to prevent rate limits
+    return res.json(payload);
+
+  } catch (err: any) {
+    console.error('[marketData] /status error:', err.message);
+    return res.json({ isOpen: false, phase: 'CLOSED', raw: 'ERROR', source: 'error' });
   }
 });
 

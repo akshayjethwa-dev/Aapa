@@ -1,6 +1,7 @@
 // src/hooks/useLiveChart.ts
 import { useEffect, useRef, useCallback } from 'react';
 import { apiClient } from '../api/client';
+import { useMarketDataStore } from '../store/marketDataStore';
 import type { LiveChartRef, CandleData } from '../components/LiveChart';
 
 type Timeframe = '1m' | '5m' | '15m' | '1h' | '1D';
@@ -9,7 +10,6 @@ interface UseLiveChartOptions {
   instrumentKey: string;
   timeframe?: Timeframe;
   chartRef: React.RefObject<LiveChartRef | null>;
-  /** Max ticks sent to chart per second. Default: 2 */
   tickRateLimit?: number;
   onPriceUpdate?: (ltp: number) => void;
   onLoadingChange?: (loading: boolean) => void;
@@ -49,10 +49,10 @@ export function useLiveChart({
   onLoadingChange,
   onError,
 }: UseLiveChartOptions) {
-  // Stable callback refs — prevent effect re-runs when callbacks change identity
   const onPriceUpdateRef = useRef(onPriceUpdate);
   const onLoadingRef     = useRef(onLoadingChange);
   const onErrorRef       = useRef(onError);
+  
   useEffect(() => { onPriceUpdateRef.current = onPriceUpdate;  }, [onPriceUpdate]);
   useEffect(() => { onLoadingRef.current     = onLoadingChange; }, [onLoadingChange]);
   useEffect(() => { onErrorRef.current       = onError;         }, [onError]);
@@ -87,7 +87,11 @@ export function useLiveChart({
       onLoadingRef.current?.(true);
       onErrorRef.current?.(null);
 
-      // ── 1. Historical candles ──────────────────────────────────────────────
+      // ── 1. Check real Upstox market status first ───────────────────────────
+      const isLive = await useMarketDataStore.getState().fetchMarketStatus();
+      if (destroyed) return;
+
+      // ── 2. Historical candles ──────────────────────────────────────────────
       try {
         const res = await apiClient.get(
           `/api/market/history?instrument=${encodeURIComponent(instrumentKey)}&interval=${fetchInterval}`
@@ -111,7 +115,6 @@ export function useLiveChart({
             }))
             .filter((d) => Number.isFinite(d.time) && Number.isFinite(d.close))
             .sort((a, b) => (a.time as number) - (b.time as number))
-            // deduplicate consecutive timestamps
             .filter((v, i, arr) => i === 0 || v.time !== arr[i - 1].time);
 
           chartRef.current?.setHistoricalData(aggregateCandles(mapped, bucketSecs));
@@ -123,7 +126,12 @@ export function useLiveChart({
       onLoadingRef.current?.(false);
       if (destroyed) return;
 
-      // ── 2. WebSocket live ticks ────────────────────────────────────────────
+      // ── 3. WebSocket live ticks ────────────────────────────────────────────
+      if (!isLive) {
+        console.log(`[LiveChart] Market closed via Upstox API. Skipping live WS for ${instrumentKey}`);
+        return; 
+      }
+
       const wsBase =
         (import.meta as any).env?.VITE_WS_URL?.trim() ||
         `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`;
@@ -138,7 +146,7 @@ export function useLiveChart({
           const tickKey = tick.instrumentKey || tick.symbol || "";
             const isMatch =
               tickKey === instrumentKey ||
-              tickKey === instrumentKey.split("|")[1] || // match ISIN part only
+              tickKey === instrumentKey.split("|")[1] || 
               tick.symbol === instrumentKey;
             if (!isMatch || !tick.ltp) return;
 
@@ -147,7 +155,6 @@ export function useLiveChart({
 
           let alignedTime: number;
           if (timeframe === '1D') {
-            // Align to IST midnight (UTC+5:30 = +19800 seconds offset)
             const ist = tickSecs + 19800;
             alignedTime = ist - (ist % 86400) - 19800;
           } else {
@@ -175,7 +182,6 @@ export function useLiveChart({
 
     init();
 
-    // ── Cleanup: close WS on symbol/timeframe change or unmount ───────────
     return () => {
       destroyed = true;
       ws?.close();

@@ -2,7 +2,6 @@
 import * as protobuf from 'protobufjs';
 import { useMarketDataStore } from '../../store/marketDataStore';
 import { apiClient } from '../../api/client';
-import { isMarketOpen } from '../utils';
 
 const MAX_SYMBOLS = 100;
 const PROTO_URL = '/MarketDataFeed.proto';
@@ -30,13 +29,14 @@ export class UpstoxWebSocketClient {
   public async connect(_token?: string) {
     this.intentionalDisconnect = false;
 
-    // ✅ FIX: Block WebSocket connection entirely if the market is closed
-    if (!isMarketOpen()) {
-      console.log('[Upstox WS] Market is closed. Skipping WS connection.');
+    if (this.isConnected || this.ws?.readyState === WebSocket.CONNECTING) {
       return;
     }
 
-    if (this.isConnected || this.ws?.readyState === WebSocket.CONNECTING) {
+    // ✅ FIX: Fetch actual Upstox market status dynamically before connecting
+    const isLive = await useMarketDataStore.getState().fetchMarketStatus();
+    if (!isLive) {
+      console.log('[Upstox WS] Market is closed (via Upstox API). Skipping WS connection.');
       return;
     }
 
@@ -86,19 +86,21 @@ export class UpstoxWebSocketClient {
   }
 
   public subscribe(instrumentKeys: string[], mode: 'full' | 'ltpc' = 'full') {
-    // --- NEW: Handle After-Hours Static Data Fallback ---
-    if (!isMarketOpen() && instrumentKeys.length > 0) {
-      console.log('[Upstox WS] Market is closed. Fetching closing quotes via REST...');
-      useMarketDataStore.getState().fetchClosingQuotes(instrumentKeys);
-      return; // ✅ FIX: Early return so it doesn't proceed to WS subscription
-    }
-    // ----------------------------------------------------
+    const store = useMarketDataStore.getState();
 
+    // If the WebSocket hasn't connected, queue the subscription for later
     if (!this.isConnected || !this.ws) {
       instrumentKeys.forEach(k => this.currentSubscriptions.add(k));
+      
+      // ✅ FIX: Trigger a REST fetch. If market is actually open, WS will connect shortly and override these.
+      // If market is closed, WS won't connect, and we gracefully fall back to these static quotes indefinitely.
+      if (instrumentKeys.length > 0) {
+        store.fetchClosingQuotes(instrumentKeys);
+      }
       return;
     }
 
+    // If we reach here, WS is definitely connected (which means market is LIVE via Upstox)
     const newSubs = instrumentKeys.filter(k => !this.currentSubscriptions.has(k));
     if (newSubs.length === 0) return;
 
