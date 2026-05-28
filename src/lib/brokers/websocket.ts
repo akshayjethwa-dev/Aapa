@@ -30,6 +30,12 @@ export class UpstoxWebSocketClient {
   public async connect(_token?: string) {
     this.intentionalDisconnect = false;
 
+    // ✅ FIX: Block WebSocket connection entirely if the market is closed
+    if (!isMarketOpen()) {
+      console.log('[Upstox WS] Market is closed. Skipping WS connection.');
+      return;
+    }
+
     if (this.isConnected || this.ws?.readyState === WebSocket.CONNECTING) {
       return;
     }
@@ -84,6 +90,7 @@ export class UpstoxWebSocketClient {
     if (!isMarketOpen() && instrumentKeys.length > 0) {
       console.log('[Upstox WS] Market is closed. Fetching closing quotes via REST...');
       useMarketDataStore.getState().fetchClosingQuotes(instrumentKeys);
+      return; // ✅ FIX: Early return so it doesn't proceed to WS subscription
     }
     // ----------------------------------------------------
 

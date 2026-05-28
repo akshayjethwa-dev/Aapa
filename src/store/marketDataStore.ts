@@ -107,12 +107,13 @@ export const useMarketDataStore = create<MarketDataState>((set, get) => ({
       const batchUpdates: Record<string, Partial<TickData>> = {};
       
       for (const [key, quote] of Object.entries<any>(quotes)) {
+        // ✅ FIX: Correctly parse Upstox v3 nested OHLC format
         batchUpdates[key] = {
           ltp: quote.last_price,
-          close: quote.close_price,
-          open: quote.open_price,
-          high: quote.high_price,
-          low: quote.low_price,
+          close: quote.ohlc?.close || quote.last_price,
+          open: quote.ohlc?.open,
+          high: quote.ohlc?.high,
+          low: quote.ohlc?.low,
         };
       }
       

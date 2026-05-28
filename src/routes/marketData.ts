@@ -7,6 +7,7 @@
 //  GET /api/market/news           — Real news via NewsData.io
 //  GET /api/market/stocks-in-news — News-mentioned stocks + live Upstox price
 //  GET /api/market/events         — Market events from market_events table
+//  GET /api/market/quotes         — Static/closing quotes fallback
 
 import { Router, Request, Response } from 'express';
 import axios from 'axios';
@@ -162,7 +163,7 @@ router.get('/vix', async (req: Request, res: Response) => {
   const cached = getCache('vix');
   if (cached) return res.json(cached);
 
-  const token = await getAnyUpstoxToken(); // ✅ FIX: no longer passing db
+  const token = await getAnyUpstoxToken();
 
   if (!token) {
     return res.json({
@@ -173,8 +174,8 @@ router.get('/vix', async (req: Request, res: Response) => {
   }
 
   try {
-    const vixKey      = await getIndexKey('India VIX'); // ✅ FIX: no db arg
-    const niftyStocks = await getTopNiftyStocks(30);    // ✅ FIX: no db arg
+    const vixKey      = await getIndexKey('India VIX');
+    const niftyStocks = await getTopNiftyStocks(30);
     const niftyKeys   = niftyStocks.map(s => s.key).filter(Boolean);
 
     const allKeys = [...(vixKey ? [vixKey] : []), ...niftyKeys];
@@ -222,12 +223,12 @@ router.get('/volume-rockers', async (req: Request, res: Response) => {
   const cached = getCache('volumeRockers');
   if (cached) return res.json(cached);
 
-  const token = await getAnyUpstoxToken(); // ✅ FIX
+  const token = await getAnyUpstoxToken();
 
   if (!token) return res.json({ data: [], source: 'unavailable' });
 
   try {
-    const stocks = await getTopNiftyStocks(50); // ✅ FIX
+    const stocks = await getTopNiftyStocks(50);
     const keys   = stocks.map(s => s.key).filter(Boolean);
 
     const keyToSymbol: Record<string, string> = {};
@@ -271,12 +272,12 @@ router.get('/movers', async (req: Request, res: Response) => {
   const cached = getCache('movers');
   if (cached) return res.json(cached);
 
-  const token = await getAnyUpstoxToken(); // ✅ FIX
+  const token = await getAnyUpstoxToken();
 
   if (!token) return res.json({ gainers: [], losers: [], source: 'unavailable' });
 
   try {
-    const stocks = await getTopNiftyStocks(50); // ✅ FIX
+    const stocks = await getTopNiftyStocks(50);
     const keys   = stocks.map(s => s.key).filter(Boolean);
 
     const keyToSymbol: Record<string, string> = {};
@@ -324,14 +325,14 @@ router.get('/news', async (_req: Request, res: Response) => {
   }
 
   try {
-    const r = await axios.get('https://newsdata.io/api/1/latest', { // ✅ FIX: use /latest endpoint
+    const r = await axios.get('https://newsdata.io/api/1/latest', {
       params: {
         apikey:   apiKey,
         q:        'NSE OR BSE OR Nifty OR Sensex',
         country:  'in',
         language: 'en',
         category: 'business',
-        size:     10, // ✅ max allowed on free plan
+        size:     10,
       },
       timeout: 10000,
     });
@@ -361,19 +362,19 @@ router.get('/stocks-in-news', async (req: Request, res: Response) => {
   if (cached) return res.json(cached);
 
   const apiKey = process.env.NEWSDATA_API_KEY;
-  const token  = await getAnyUpstoxToken(); // ✅ FIX
+  const token  = await getAnyUpstoxToken();
 
   if (!apiKey) return res.json({ data: [], source: 'unavailable' });
 
   try {
-    const newsResp = await axios.get('https://newsdata.io/api/1/latest', { // ✅ FIX: /latest endpoint
+    const newsResp = await axios.get('https://newsdata.io/api/1/latest', {
       params: {
         apikey:   apiKey,
         q:        'NSE stock shares India earnings',
         country:  'in',
         language: 'en',
         category: 'business',
-        size:     10, // ✅ FIX: was 20, free plan max is 10
+        size:     10,
       },
       timeout: 10000,
     });
@@ -394,7 +395,7 @@ router.get('/stocks-in-news', async (req: Request, res: Response) => {
 
     if (!candidates.length) return res.json({ data: [], source: 'no_match' });
 
-    const r = await query( // ✅ FIX: use shared query directly
+    const r = await query(
       `SELECT tradingsymbol, instrument_key, name
        FROM instruments
        WHERE tradingsymbol = ANY($1)
@@ -471,7 +472,6 @@ router.get('/events', async (req: Request, res: Response) => {
   const cached = getCache('events');
   if (cached) return res.json(cached);
 
-  // ✅ FIX: Read filter from query safely with a fallback
   const filter = typeof req.query?.filter === 'string' ? req.query.filter : 'upcoming';
 
   try {
@@ -486,7 +486,7 @@ router.get('/events', async (req: Request, res: Response) => {
       dateCeil = d.toISOString().split('T')[0];
     }
 
-    const result = await query( // ✅ FIX: use shared query directly — no req.db needed
+    const result = await query(
       `SELECT id, company, symbol, event_type, event_date, color
        FROM market_events
        WHERE is_active = TRUE
@@ -519,6 +519,30 @@ router.get('/events', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('[marketData] /events error:', err.message);
     return res.json({ data: [], source: 'error' });
+  }
+});
+
+// ── GET /api/market/quotes ───────────────────────────────────────────────────
+// ✅ FIX: Added the missing route to fulfill the fetchClosingQuotes request
+router.get('/quotes', async (req: Request, res: Response) => {
+  const keysParam = req.query.keys as string;
+  if (!keysParam) {
+    return res.status(400).json({ error: 'keys parameter is required' });
+  }
+
+  const token = await getAnyUpstoxToken();
+  if (!token) {
+    return res.status(401).json({ error: 'No active Upstox token' });
+  }
+
+  try {
+    const keys = keysParam.split(',');
+    // We reuse the existing fetchUpstoxQuotes helper!
+    const quotes = await fetchUpstoxQuotes(token, keys);
+    return res.json({ data: quotes });
+  } catch (err: any) {
+    console.error('[marketData] /quotes error:', err.message);
+    return res.status(500).json({ error: err.message });
   }
 });
 
