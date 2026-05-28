@@ -8,11 +8,12 @@
 //  GET /api/market/stocks-in-news — News-mentioned stocks + live Upstox price
 //  GET /api/market/events         — Market events from market_events table
 //  GET /api/market/quotes         — Static/closing quotes fallback
+//  GET /api/market/status         — Dynamic Market Status
 
 import { Router, Request, Response } from 'express';
 import axios from 'axios';
-import { query } from '../db/index';         // ✅ FIX: Use shared DB pool directly
-import { decrypt } from '../utils/encryption'; // ✅ FIX: Decrypt stored tokens
+import { query } from '../db/index';         
+import { decrypt } from '../utils/encryption'; 
 
 const router = Router();
 
@@ -48,7 +49,7 @@ async function getAnyUpstoxToken(): Promise<string | null> {
     );
     const encryptedToken = r.rows[0]?.access_token;
     if (!encryptedToken) return null;
-    return decrypt(String(encryptedToken)); // ✅ Decrypt before use
+    return decrypt(String(encryptedToken)); 
   } catch {
     return null;
   }
@@ -144,7 +145,8 @@ async function fetchUpstoxQuotes(token: string, keys: string[]): Promise<Record<
 
     for (let i = 0; i < keys.length; i += BATCH) {
       const batch = keys.slice(i, i + BATCH).join(',');
-      const r = await axios.get('https://api.upstox.com/v3/market-quote/quotes', {
+      // ✅ FIX: Changed from V3 to V2. Upstox market quotes endpoint lives on V2.
+      const r = await axios.get('https://api.upstox.com/v2/market-quote/quotes', {
         params: { instrument_key: batch },
         headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
         timeout: 8000,
@@ -154,7 +156,7 @@ async function fetchUpstoxQuotes(token: string, keys: string[]): Promise<Record<
     return all;
   } catch (e: any) {
     console.error('[fetchUpstoxQuotes] error:', e?.response?.data || e.message);
-    return {};
+    return {}; // Returns empty on failure, causing the dummy data if V3 was used
   }
 }
 
@@ -536,6 +538,7 @@ router.get('/quotes', async (req: Request, res: Response) => {
 
   try {
     const keys = keysParam.split(',');
+    // This utilizes the corrected fetchUpstoxQuotes which now correctly hits V2
     const quotes = await fetchUpstoxQuotes(token, keys);
     return res.json({ data: quotes });
   } catch (err: any) {
@@ -545,14 +548,12 @@ router.get('/quotes', async (req: Request, res: Response) => {
 });
 
 // ── GET /api/market/status ───────────────────────────────────────────────────
-// ✅ FIX: Long-term robust market status directly from Upstox API
 router.get('/status', async (req: Request, res: Response) => {
   const cached = getCache('marketStatus');
   if (cached) return res.json(cached);
 
   const token = await getAnyUpstoxToken();
   if (!token) {
-    // If we have no token, default to closed to prevent rogue WS attempts
     return res.json({ isOpen: false, phase: 'CLOSED', raw: 'NO_TOKEN', source: 'unavailable' });
   }
 
@@ -575,7 +576,7 @@ router.get('/status', async (req: Request, res: Response) => {
     }
     
     const payload = { isOpen, phase, raw: statusStr, source: 'upstox' };
-    setCache('marketStatus', payload, 60_000); // Cache for 1 minute to prevent rate limits
+    setCache('marketStatus', payload, 60_000); 
     return res.json(payload);
 
   } catch (err: any) {
