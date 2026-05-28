@@ -374,30 +374,36 @@ const wss = new WebSocketServer({
     });
   }, 25000); 
 
+  // --- STATE FOR CHECKING ACTIVE UPSTOX CONNECTIONS ---
+  // Define these here so both intervals can share the connection status
+  let cachedTokenCount = 0;
+  let lastTokenCountCheck = 0;
+
   // ── LIVE TICK BROADCASTER (feeds LiveChart via per-symbol ticks) ──────────
   const tickBroadcastInterval = setInterval(() => {
     const phase = getMarketPhase();
 
-    // Simulate small price movements when market is CLOSED (dev/testing)
-    // In production, this is replaced by real Upstox proto feed below
-    for (const sym of allSymbols) {
-      const d = marketData[sym];
-      if (!d) continue;
-      const drift = d.ltp * (Math.random() * 0.002 - 0.001); // ±0.1%
-      d.ltp = parseFloat((d.ltp + drift).toFixed(2));
-      d.high = Math.max(d.high, d.ltp);
-      d.low  = Math.min(d.low,  d.ltp);
-      d.day_change = d.ltp - d.prevClose;
-      d.day_change_pct = d.prevClose ? ((d.ltp - d.prevClose) / d.prevClose) * 100 : 0;
+    // 🛑 FIX: ONLY simulate random drift if NO Upstox tokens exist AND Market is LIVE.
+    // If Upstox is connected OR Market is Closed, this leaves the real static prices alone.
+    if (cachedTokenCount === 0 && phase === 'LIVE') {
+      for (const sym of allSymbols) {
+        const d = marketData[sym];
+        if (!d) continue;
+        const drift = d.ltp * (Math.random() * 0.002 - 0.001); // ±0.1%
+        d.ltp = parseFloat((d.ltp + drift).toFixed(2));
+        d.high = Math.max(d.high, d.ltp);
+        d.low  = Math.min(d.low,  d.ltp);
+        d.day_change = d.ltp - d.prevClose;
+        d.day_change_pct = d.prevClose ? ((d.ltp - d.prevClose) / d.prevClose) * 100 : 0;
+      }
     }
 
     // Broadcast individual tick frames to all connected clients
-    // ← THIS is what useLiveChart hook listens for
     const payloads: string[] = allSymbols.map((sym) => {
       const d = marketData[sym];
       return JSON.stringify({
-        type: "tick",                         // ← hook checks type === "tick"
-        instrumentKey: resolveInstrumentKey(sym), // ← e.g. "NSE_EQ|INE002A01018"
+        type: "tick",                                 
+        instrumentKey: resolveInstrumentKey(sym), 
         symbol: sym,
         ltp: d.ltp,
         open: d.open,
@@ -413,7 +419,7 @@ const wss = new WebSocketServer({
       if (ws.readyState !== WebSocket.OPEN) return;
       payloads.forEach((p) => ws.send(p));
     });
-  }, 1000); // broadcast every 1 second
+  }, 1000);
 
   const tokenRefreshInterval = setInterval(async () => {
     try {
@@ -2391,51 +2397,29 @@ app.get("/api/broker/upstox/ws-auth", authenticateToken, async (req: any, res) =
     logger.error("Failed to start initial websockets", err);
   }
 
-  let cachedTokenCount = 0;
-  let lastTokenCountCheck = 0;
-
   setInterval(async () => {
     const now = Date.now();
     const currentPhase = getMarketPhase();
     
     try {
       if (now - lastTokenCountCheck > 10000) {
-        const { rows } = await query("SELECT COUNT(*) as count FROM user_tokens WHERE broker = 'upstox'");
+        // 🛑 FIX: Only count valid, unexpired tokens
+        const { rows } = await query("SELECT COUNT(*) as count FROM user_tokens WHERE broker = 'upstox' AND expires_at > NOW()");
         cachedTokenCount = parseInt(rows[0].count);
         lastTokenCountCheck = now;
       }
 
-      if (cachedTokenCount === 0) {
-        if (currentPhase === 'LIVE') {
-          allSymbols.forEach((symbol) => {
-            const oldLtp = marketData[symbol].ltp;
-            const newLtp = oldLtp + oldLtp * (Math.random() * 0.0002 - 0.0001);
-            const prevClose = marketData[symbol].prevClose;
-            
-            marketData[symbol].ltp = newLtp;
-            marketData[symbol].day_change = newLtp - prevClose;
-            marketData[symbol].day_change_pct = prevClose ? ((newLtp - prevClose) / prevClose) * 100 : 0;
-          });
-        }
-        
-        const payload = JSON.stringify({ 
-          type: "ticker", 
-          data: marketData, 
-          marketPhase: currentPhase 
-        });
-        wss.clients.forEach((c) => {
-          if (c.readyState === WebSocket.OPEN) c.send(payload);
-        });
-      } else {
-        const payload = JSON.stringify({ 
-          type: "ticker", 
-          data: marketData, 
-          marketPhase: currentPhase 
-        });
-        wss.clients.forEach((c) => {
-          if (c.readyState === WebSocket.OPEN) c.send(payload);
-        });
-      }
+      // 🛑 FIX: Removed the duplicate random price mutation here. 
+      // We only broadcast the 'ticker' batch payload now.
+      const payload = JSON.stringify({ 
+        type: "ticker", 
+        data: marketData, 
+        marketPhase: currentPhase 
+      });
+      
+      wss.clients.forEach((c) => {
+        if (c.readyState === WebSocket.OPEN) c.send(payload);
+      });
     } catch (e) {
       logger.error("[MarketData] Error calculating simulated token count", e);
     }
