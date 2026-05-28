@@ -1166,8 +1166,10 @@ app.get("/api/broker/upstox/ws-auth", authenticateToken, async (req: any, res) =
             [userId, encrypt(String(data.access_token)), encrypt(String(data.refresh_token || "")), newExpiry]
           );
 
-          await query("UPDATE users SET is_uptox_connected = true WHERE id = $1", [userId]);
+          // FIX: Automatically approve KYC and mark account as created when Upstox links
+          await query("UPDATE users SET is_uptox_connected = true, has_upstox_account = true, kyc_status = 'approved' WHERE id = $1", [userId]);
           initUpstoxWebSockets();
+
         } catch (jwtErr) { 
           logger.warn("[OAuth Callback] Invalid state JWT, skipping server DB save, relying on client"); 
         }
@@ -1216,7 +1218,8 @@ app.get("/api/broker/upstox/ws-auth", authenticateToken, async (req: any, res) =
            ON CONFLICT (user_id, broker) DO UPDATE SET access_token = EXCLUDED.access_token, refresh_token = EXCLUDED.refresh_token, expires_at = EXCLUDED.expires_at`,
           [req.user.id, encrypt(String(access_token)), encrypt(String(refresh_token)), newExpiry]
         );
-        await query("UPDATE users SET is_uptox_connected = true WHERE id = $1", [req.user.id]);
+        // FIX: Automatically approve KYC and mark account as created when Upstox links
+        await query("UPDATE users SET is_uptox_connected = true, has_upstox_account = true, kyc_status = 'approved' WHERE id = $1", [req.user.id]);
         
         initUpstoxWebSockets();
         res.json({ success: true });
